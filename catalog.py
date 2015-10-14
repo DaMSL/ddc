@@ -1,18 +1,24 @@
 import sqlite3
 import redis
 import sys
+import os
 import common
 
-import logging, logging.handlers
+import logging
 logger = common.setLogger()
 
 
 class serverLess:
   def __init__(self, name):
-    self.dbName = name + ".db"
+    self.dbName = "data.db"
     self.conn = 0
     self.cur  = 0
-    self.start()
+
+  def exists(self):
+    db = self.dbName
+    result = os.path.exists(db)
+    logger.debug(" CHECK EXIST: " + db + "   (%s)" % result)
+    return result
 
   def initialize(self):
     self.start()
@@ -33,8 +39,14 @@ class serverLess:
   #  conn = psycopg2.connect(host=HOST, dbname=DNAME, user=USER, password=PASSWD)
     self.conn = sqlite3.connect(self.dbName)
 
+  def stop(self):
+  #  conn = psycopg2.connect(host=HOST, dbname=DNAME, user=USER, password=PASSWD)
+    self.conn.close()
+
+
   def register(self, key, val):
     logger.debug(" Register: %s: %s" % (key, val))
+    self.conn = sqlite3.connect(self.dbName)
     if type(val) == list:
       logger.debug("  Registering a list")
       insert = "INSERT INTO store VALUES ('%s', '%s');" % (key, 'LIST')
@@ -48,28 +60,48 @@ class serverLess:
     else:
       insert = "INSERT INTO store VALUES ('%s', '%s');" % (key, val)
       self.query(insert)
+    self.conn.close()
 
   def load(self, key):
     logger.debug(" Loading: %s", key)
     project = "SELECT value FROM store WHERE key='%s';" % key
+    self.conn = sqlite3.connect(self.dbName)
     self.query(project)
-    result = self.cur.fetchone()
-    if len(result) == 0:
+    row = self.cur.fetchone()
+    if len(row) == 0:
       print("Key retrieval error. Value not initialized in store")
-      return 0
+      result = 0
     else:
-      value = result[0]
+      value = row[0]
       logger.debug("  Loaded: %s", value)
       if value == 'LIST':
         project = "SELECT * FROM %s;" % key
         self.query(project)
-        return self.cur.fetchall()
-      return value
+        result = []
+        for i in self.cur.fetchall():
+          result.append(i[0])
+        logger.debug ("     list is len=%d" % len(result))
+      else: 
+        result = value
+    self.conn.close()
+    return result
 
   def save(self, key, val):
     logging.debug(" Saving: %s: %s" % (key, val))
-    insert = "UPDATE store SET value = '%s' WHERE key='%s';" % (val, key)
-    self.query(insert)
+    self.conn = sqlite3.connect(self.dbName)
+    if type(val) == list:
+      logger.debug("Saving a list")
+      # DELETE OLD LIST, FOR NOW
+      delete = "DELETE FROM %s;" % key
+      self.query(delete)
+      for i in val:
+        logger.debug("  Inserting  " + str(i))
+        insert = "INSERT INTO %s VALUES ('%s');" % (key, i)
+        self.query(insert)
+    else:
+      insert = "UPDATE store SET value = '%s' WHERE key='%s';" % (val, key)
+      self.query(insert)
+    self.conn.close()
 
   def incr(self, key):
     # TODO: Not most efficient
@@ -78,10 +110,21 @@ class serverLess:
     self.save(key, val + 1)
 
   def append(self, key, val):
-    logging.debug(" Appending: %s: %s" % (key, val))
-    # TODO: Not most efficient
-    curVal = list(self.load(key))
-    self.save(key, curVal.append(val))
+
+    logger.debug("Appending: %s: %s" % (key, val))
+    # # TODO: Not most efficient
+    # curVal = list(self.load(key))
+    # logger.debug("  curVal = %s, len=%d" % (str(curVal), len(curVal)))
+    # newList = [val] if len(curVal) == 0 else curVal.append(val)
+    # logger.debug("  newVal = %s" % str(newList))
+    # self.save(key, newList)
+    self.conn = sqlite3.connect(self.dbName)
+    insert = "INSERT INTO %s VALUES ('%s');" % (key, val)
+    self.query(insert)
+    self.conn.close()
+
+
+    logger.debug("DONE APPENDING\n")
 
 class dataStore:
   def __init__(self):
