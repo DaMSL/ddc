@@ -1,8 +1,8 @@
 #!/bin/bash
 
-python3 reset.py
-python3 piEstimator.py -i
+python3 src/reset.py
+python3 src/piEstimator.py -i
 rm -f redis.lock
 rm -f out/*
 rm -f pi/*
-rm job0*
+rm -f sh/*

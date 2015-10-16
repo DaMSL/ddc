@@ -2,4 +2,4 @@
 
 #SBATCH --output=out/sim-M-init.out
 
-srun python3 piEstimator.py sim -m
+srun python3 src/piEstimator.py sim -m
