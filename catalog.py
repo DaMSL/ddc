@@ -174,19 +174,23 @@ class dataStore(catalog):
   def initialize(self):
     self.start()
 
-  def start(self):
+  def clear(self):
+    self.r.flushdb()
 
+  def start(self):
+    # Check if it's already started and connected
     if self.r and self.r.ping():
-      logger.debug('Data store is already started')
       return
 
+    # If already locked by another node, that node's connection info
     if os.path.exists(self.lockfile):
       with open(self.lockfile, 'r') as connect:
         h, p, d = connect.read().split(',')
         self.host = h
         self.port = int(p)
         self.database = int(d)
-      logger.debug('Data store is already running on ' + h)
+
+    # Otherwise, start it locally as a daemon server process
     else:
       self.host = socket.gethostname()
       with open(self.lockfile, 'w') as connect:
@@ -196,14 +200,13 @@ class dataStore(catalog):
         logger.error("ERROR starting local redis service on %s", self.host)    
       logger.debug('Started redis locally on ' + self.host)
 
-    logger.debug('Connecting to Redis')
+    # Connect to redis as client
     self.conn()
 
     if not self.r or not self.r.ping():
       logger.error("ERROR connecting to redis service on %s", self.host)
-    else:
-      logger.debug('Connected to redis')
 
+  # TODO: Graceful shutdown and hand off
   def stop(self):
     if self.r:
       self.r.save()
@@ -232,22 +235,22 @@ class dataStore(catalog):
     self.r.ltrim(key, num-1, self.r.llen(key)-1)
     return [d.decode() for d in data]
 
+  # Check if key exists in db
   def check(self, key):
     if self.r.type(key).decode() == 'none':
       return False
-
     else:
-      logger.debug('CHECK found val' + str(self.r.get(key)))
-      logger.debug('CHECK found type' + str(self.r.type(key)))
       return True
 
+  # Retrieve data stored at key
   def load(self, key):
-    if self.r.type(key) in ['list', 'none']:
+    if self.r.type(key).decode() in ['list', 'none']:
       data = self.r.lrange(key, 0, self.r.llen(key)-1)
       return [d.decode() for d in data]
     else:
       return self.r.get(key).decode()
 
+  # Save data in place (note: for data store, this is the same as register)
   def save(self, key, val):
     self.register(key, val)
 
@@ -259,15 +262,11 @@ class dataStore(catalog):
   def incr(self, key):
     self.r.incr(key)
 
+  # Connect as client
   def conn(self):
-    # pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
-    # self.r = redis.StrictRedis(connection_pool=pool)
     self.r = redis.StrictRedis(host=self.host, port=self.port, db=self.database)
 
-  def insert(self, key, val):
-    # TODO: Exception handling
-    self.r.set(key, value)
-
+  # TODO:  Additional notification logic, as needed
   def notify(self, key, state):
     if state == 'ready':
       self.r.set(key, state)

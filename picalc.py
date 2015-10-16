@@ -19,8 +19,6 @@ def piSim(f, param):
   time.sleep(10)
 
 def piAnl(f):
-  print ('PI ANALYZE PARAM TYPE = ' + str(type(f)))
-  print ('PI ANALYZE FILE: ' + str(f))
   time.sleep(10)
   circ = 0
   num  = 0
@@ -35,6 +33,9 @@ def piAnl(f):
 
 def piEst(circ, num):
   time.sleep(5)
+  if num == 0:
+    return 0
+    
   return 4. * circ / num
 
 
