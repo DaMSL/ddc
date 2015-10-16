@@ -1,4 +1,6 @@
 import logging
+import os
+import uuid
 
 logger = 0
 
@@ -13,3 +15,12 @@ def setLogger():
     logger.setLevel(logging.DEBUG)
     logger.addHandler(log_console)
   return logger
+
+
+def getUID():
+  return str(uuid.uuid1()).split('-')[0]
+
+def chmodX(path):
+    mode = os.stat(path).st_mode
+    mode |= (mode & 0o444) >> 2 
+    os.chmod(path, mode)

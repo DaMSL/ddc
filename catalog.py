@@ -1,15 +1,41 @@
 import sqlite3
 import redis
+import socket
 import sys
 import os
 import common
+import subprocess as proc
 
 import logging
 logger = common.setLogger()
 
 
-class serverLess:
-  def __init__(self, name):
+class catalog:
+  def __init__(self):
+    pass
+  def exists(self):
+    return False
+  def initialize(self):
+    pass
+  def start(self):
+    pass
+  def stop(self):
+    pass
+  def register(self, key, val):
+    pass
+  def load(self, key):
+    pass
+  def save(self, key, val):
+    pass
+  def append(self, key, val):
+    pass
+  def incr(self, key):
+    pass
+
+
+class serverLess(catalog):
+  def __init__(self):
+    catalog.__init__(self)
     self.dbName = "data.db"
     self.conn = 0
     self.cur  = 0
@@ -126,26 +152,123 @@ class serverLess:
 
     logger.debug("DONE APPENDING\n")
 
-class dataStore:
-  def __init__(self):
+class dataStore(catalog):
+  def __init__(self, lockfile):
+    catalog.__init__(self)
     self.r = 0
+    self.lockfile = lockfile
+
+    self.host = ''
+    self.port = 6379
+    self.database = 0
+
+    self.start()
+
+  def exists(self):
+    if os.path.exists(self.lockfile):
+      return self.r and self.r.ping()
+
+    return False
+
+
+  def initialize(self):
+    self.start()
 
   def start(self):
-    if not self.r or not self.r.ping():
-      err = subprocess.call(['redis-server', 'redis.conf'])
+
+    if self.r and self.r.ping():
+      logger.debug('Data store is already started')
+      return
+
+    if os.path.exists(self.lockfile):
+      with open(self.lockfile, 'r') as connect:
+        h, p, d = connect.read().split(',')
+        self.host = h
+        self.port = int(p)
+        self.database = int(d)
+      logger.debug('Data store is already running on ' + h)
+    else:
+      self.host = socket.gethostname()
+      with open(self.lockfile, 'w') as connect:
+        connect.write('%s,%d,%d' % (self.host, self.port, self.database))
+      err = proc.call(['redis-server', 'redis.conf'])
       if err:
-        print ("ERROR starting/codennecting to local redis service")    
+        logger.error("ERROR starting local redis service on %s", self.host)    
+      logger.debug('Started redis locally on ' + self.host)
+
+    logger.debug('Connecting to Redis')
     self.conn()
 
+    if not self.r or not self.r.ping():
+      logger.error("ERROR connecting to redis service on %s", self.host)
+    else:
+      logger.debug('Connected to redis')
+
   def stop(self):
-    self.r.save()
-    self.r.shutdown()
-    self.r = 0
+    if self.r:
+      self.r.save()
+      self.r.shutdown()
+      self.r = 0
+    else:
+      if os.path.exists(self.lockfile):
+        os.remove(self.lockfile)
+
+
+  def register(self, key, val):
+    if type(val) == list:
+      if len(val) == 0:
+        return
+      expr = 'self.r.rpush(key'
+      for v in val:
+        expr += ','+str(v)
+      expr += ')'
+      eval(expr)      
+    else:
+      self.r.set(key, val)
+
+  # Slice off data in-place. Asssume key stores a list
+  def slice(self, key, num):
+    data = self.r.lrange(key, 0, num-1)
+    self.r.ltrim(key, num-1, self.r.llen(key)-1)
+    return [d.decode() for d in data]
+
+  def check(self, key):
+    if self.r.type(key).decode() == 'none':
+      return False
+
+    else:
+      logger.debug('CHECK found val' + str(self.r.get(key)))
+      logger.debug('CHECK found type' + str(self.r.type(key)))
+      return True
+
+  def load(self, key):
+    if self.r.type(key) in ['list', 'none']:
+      data = self.r.lrange(key, 0, self.r.llen(key)-1)
+      return [d.decode() for d in data]
+    else:
+      return self.r.get(key).decode()
+
+  def save(self, key, val):
+    self.register(key, val)
+
+  # Asssume key stores a list
+  def append(self, key, val):
+    self.r.rpush(key, val)
+
+  # Asssume key stores a number
+  def incr(self, key):
+    self.r.incr(key)
 
   def conn(self):
-    pool = redis.ConnectionPool(host='localhost', port=6379, db=0)
-    self.r = redis.StrictRedis(connection_pool=pool)
+    # pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
+    # self.r = redis.StrictRedis(connection_pool=pool)
+    self.r = redis.StrictRedis(host=self.host, port=self.port, db=self.database)
 
   def insert(self, key, val):
     # TODO: Exception handling
     self.r.set(key, value)
+
+  def notify(self, key, state):
+    if state == 'ready':
+      self.r.set(key, state)
+
