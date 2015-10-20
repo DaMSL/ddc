@@ -6,3 +6,4 @@ rm -f redis.lock
 rm -f out/*
 rm -f pi/*
 rm -f sh/*
+pkill redis-server

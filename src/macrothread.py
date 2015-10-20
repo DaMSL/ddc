@@ -4,9 +4,17 @@ import sys
 import os
 import subprocess as proc
 import argparse
+import abc
+import redis
+# from retrying import retry
+
 import common
 import catalog
 from slurm import slurm
+
+from collections import namedtuple
+ddl = namedtuple('key', 'value, type')
+
 
 # FOR PI DEMO ONLY
 import picalc as pi
@@ -16,46 +24,128 @@ logger = common.setLogger()
 
 
 class macrothread(object):
-  def __init__(self, fname, name):
+  __metaclass__ = abc.ABCMeta
+
+  def __init__(self, schema, fname, name):
     self.name = name
     self.fname = fname
+
+    self._input = {}
+    self._term  = {}
+    self._split = {}
+    self._exec  = {}
+
+    self.data = schema
 
     # TODO: upstream/downstream handling
     # DO: congestion control
     self.upStream = None
     self.downStream = None
 
-  def initialize(self, catalog):
-    logger.debug("INITIALIZING:")
+    self.catalog = None
 
+
+  # For now retain 2 copies -- to enable reverting of data
+  #   Eventually this may change to a flag based data structure for inp/exec/term, etc...
+  def setInput(self, *arg):
+    for a in arg:
+      self._input[a] = self.data[a]
+
+  def setExec(self, *arg):
+    for a in arg:
+      self._exec[a] = self.data[a]
+
+  def setTerm(self, *arg):
+    for a in arg:
+      self._term[a] = self.data[a]
+
+  def setSplit(self, *arg):
+    for a in arg:
+      self._split[a] = self.data[a]
+
+    # TODO: job ID management  
+    self._split['id_' + self.name] = 0
+
+
+  def setCatalog(self, catalog):
+    self.catalog = catalog
+    #  TODO: COnnection logic
+
+  def getCatalog(self):
+    return self.catalog
+
+  @abc.abstractmethod
   def term(self):
     pass
 
+  @abc.abstractmethod
   def split(self):
     print ("passing")
 
+  @abc.abstractmethod
   def execute(self, item):
     pass
 
-  def fetch(self, i):
-    pass
+  def retry_redisConn(ex):
+    return isinstance(ex, redis.ConnectionError)
 
 
-  def manager(self, catalog):
+  def load(self, state):
+    """
+    Load state from remote catalog to local cache
+    """
+    # TODO: Check for catalog here (????)
+    # pass expeected data types (interim solution)
+    self.catalog.load(state)
+    for key, value in state.items():
+      self.data[key] = value
+
+  def save(self, state):
+    """
+    Save state to remote catalog
+    """
+    logger.debug(" --> call for mt.save")    
+    # TODO: Check for catalog here (????)
+    for key, value in state.items():
+      logger.debug("    --> saving: " + key)    
+      state[key]      = self.data[key]
+    self.catalog.save(state)
+
+
+
+  def manager(self):
     logger.debug("\n==========================\n  %s  -- MANAGER", self.name)
 
     # TODO: Catalog Service Check here
 
     # Check for Termination
-    if self.term(catalog):
+    if self.catalog.exists():
+      logger.debug("Catalog is UP")
+    else:
+      logger.info("Bringing catalog service up locally....")
+      self.catalog.start()
+
+      # raise redis.ConnectionError("Redis Service not available. TODO: Est svc")
+
+    self.load(self._term)
+
+    if self.term():
       logger.info('TERMINATION condition for ' + self.name)
       sys.exit(0)
 
-    # Split input data set
-    immed = self.split(catalog)
 
-    # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
-    jobid = int(catalog.load('id_' + self.name))
+    # Split input data set
+    self.load(self._split)
+    self.load(self._input)
+
+    # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
+    # jobid = int(catalog.load('id_' + self.name))
+    # logger.debug("Loaded ID = %d" % jobid)
+
+    #  TODO:  Det if manager should load entire input data set, make this abstract, or
+    #     push into UDF portion
+    immed = self.split()
+    jobid = self.data['id_%s' % self.name]
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
@@ -68,7 +158,7 @@ class macrothread(object):
     else:
       for i in immed:
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
-        slurm.schedule('%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, i), name=self.name + '-W')
+        slurm.schedule('%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, str(i)), name=self.name + '-W')
         jobid += 1
 
       # Reschedule Next Manager:
@@ -79,10 +169,16 @@ class macrothread(object):
 
       # METHOD 2.  After.... use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
 
-    catalog.save('id_' + self.name, jobid)
+    self.data['id_%s' % self.name] = jobid
+
+    self.save(self._split)
+    # catalog.save('id_' + self.name, jobid)
     logger.debug("==========================")
 
-  def worker(self, catalog, i):
+    return 1
+
+
+  def worker(self, i):
     logger.debug("\n--------------------------\n  %s  -- WORKER", self.name)
 
     # TODO:  Does the worker need to fetch input data? (ergo: should this be abstracted)
@@ -93,14 +189,25 @@ class macrothread(object):
     #  catalog.notify(i, "active")
 
     # Call user-defined execution function
-    data = self.execute(catalog, jobInput)
 
+    #  CHECK CATALOG STATUS
+
+    self.load(self._exec)
+    self.load(self._term)
+
+    logger.debug("Starting Worker Execution")
+    result = self.execute(jobInput)
+    logger.debug("Worker Execution Complete")
     # Ensure returned results are a list
-    if type(data) != list:
-      data = [data]
+    if type(result) != list:
+      result = [result]
+
+    #  CHECK CATALOG STATUS
+    self.save(self._exec)
+    self.save(self._term)
 
     #  catalog.notify(i, "complete")
-    for d in data:
+    for r in result:
 
       # TODO:  Notification of downstream data to catalog
 
@@ -110,11 +217,11 @@ class macrothread(object):
       #   If data should be prioritized, then you need to be active
       # Boils down to scheduling model
 
-      # catalog.notify(d, 'ready')
+      # catalog.notify(r, 'ready')
       # TODO: Add in notification for congestion control
       #   Need feedback to upstreaam to adjust split param
       #     trigger flow bet streams is tuning action (e.g. assume 1:1 to start)
 
-      print ("  output: ", d)  
+      print ("  output: ", r)  
     logger.debug("--------------------------")
 

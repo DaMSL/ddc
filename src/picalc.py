@@ -10,16 +10,14 @@ jc = [(0., 1., 0., 1.),
 
 def piSim(f, param):
   x0, x1, y0, y1 = param
-  time.sleep(10)
   with open(f, 'w') as output:
     for i in range(100):
       x = uniform(x0, x1)
       y = uniform(y0, y1)
       output.write("%f %f\n" % (x, y))
-  time.sleep(10)
+  time.sleep(5)
 
 def piAnl(f):
-  time.sleep(10)
   circ = 0
   num  = 0
   with open(f) as infile:
@@ -28,7 +26,7 @@ def piAnl(f):
       x,y = [float(v) for v in line.split()]
       if sqrt(x*x + y*y) <= 1.:
         circ += 1
-  time.sleep(10)
+  time.sleep(5)
   return circ, num
 
 def piEst(circ, num):
