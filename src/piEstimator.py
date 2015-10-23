@@ -19,8 +19,6 @@ import logging, logging.handlers
 logger = common.setLogger()
 
 
-
-
   # simState = dict(
   #     JCQueue = initParams,
   #     JCComplete = 0,
@@ -46,6 +44,11 @@ logger = common.setLogger()
 
 #  TODO:  Move this to abstract and est. 'dispather' method
 def initialize(catalog, threadlist, schema):
+
+  logger.debug("Getting the registry...")
+  catalog.conn()
+  logger.debug(" Registry found on %s" % registry.host)
+
   catalog.clear()
   # Job ID Management
   ids = {'id_' + name : 0 for name in threadlist.keys()}
@@ -189,13 +192,6 @@ if __name__ == "__main__":
   parser.add_argument('-i', '--init', action='store_true')
   args = parser.parse_args()
 
-  # TODO: Catalog check here OR inside manader/worker
-  # registry = catalog.serverLess()
-  logger.debug("Getting the registry...")
-  registry = redisCatalog.dataStore('redis.lock')
-  logger.debug("... got the registry...")
-
-
   #  USER DEFINED THReAD AND DATA -- DDL/SCHEMA
   initParams = [0,1,2] * 5
   schema = dict(  
@@ -217,15 +213,14 @@ if __name__ == "__main__":
              'anl': anlThread(__file__, schema),
              'ctl': ctlThread(__file__, schema)}
 
-
-
-
+  # Determine type of registry to use
+  registry = redisCatalog.dataStore('redis.lock')  
 
   if args.init:
     initialize(registry, threads, schema)
     logger.info("Initialization Complete. Exiting")
     sys.exit(0)
-  
+
     # Make DDC app class to hide __main__ details; 
     #  e.g. add macrothread.... ref: front end for gui app
     #  pick registry
@@ -235,8 +230,9 @@ if __name__ == "__main__":
   # Implementation options:  Separate files for each macrothread OR
   #    dispatch macrothread via command line arg
   mt = threads[args.name]
-
   mt.setCatalog(registry)
+
+  # mt.setCatalog(registry)
 
   if args.manager:
     mt.manager()

@@ -22,13 +22,39 @@ class dataStore(catalog, redis.StrictRedis):
     self.port = port
     self.database = db
 
-    self.start()
+    self.conn()
 
 
   def conn (self, host='localhost'):
-    self.host = host
-    pool = redis.ConnectionPool(host=host, port=self.port, db=self.database)
-    self.connection_pool = pool        
+
+    # # Check if it's already started and connected
+    
+    if self.exists():
+      return
+
+    # If already started by another node, get connection info
+    if os.path.exists(self.lockfile):
+      with open(self.lockfile, 'r') as connectFile:
+        h, p, d = connectFile.read().split(',')
+        self.host = h
+        self.port = int(p)
+        self.database = int(d)
+
+      logger.debug("Service already running on " + h)
+
+    # Otherwise, start it locally as a daemon server process
+    else:
+      self.start()
+
+    # Connect to redis as client
+    try:
+      pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
+      self.connection_pool = pool        
+
+      if not self.ping():
+        logger.error("ERROR connecting to redis service on %s", self.host)
+    except redis.ConnectionError as ex:
+      logger.error("ERROR connecting to redis service on %s", self.host)
 
 
 
@@ -44,40 +70,15 @@ class dataStore(catalog, redis.StrictRedis):
 
 
   def start(self):
-    # # Check if it's already started and connected
-    # if self.ping():
-    #   return
+    self.host = socket.gethostname()
+    with open(self.lockfile, 'w') as connectFile:
+      connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
 
-    # If already started by another node, get node's connection info
-    if os.path.exists(self.lockfile):
-      with open(self.lockfile, 'r') as connect:
-        h, p, d = connect.read().split(',')
-        self.host = h
-        self.port = int(p)
-        self.database = int(d)
-
-      logger.debug("Service already running on " + h)
-
-    # Otherwise, start it locally as a daemon server process
-    else:
-
-      self.host = socket.gethostname()
-      with open(self.lockfile, 'w') as connectFile:
-        connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
-
-      err = proc.call(['redis-server', 'redis.conf'])
-      if err:
-        logger.error("ERROR starting local redis service on %s", self.host)    
-      logger.debug('Started redis locally on ' + self.host)
-
-    # Connect to redis as client
-    try:
-      self.conn(self.host)
-
-      if not self.ping():
-        logger.error("ERROR connecting to redis service on %s", self.host)
-    except redis.ConnectionError as ex:
-      logger.error("ERROR connecting to redis service on %s", self.host)
+    # Start redis via suprocess
+    err = proc.call(['redis-server', 'redis.conf'])
+    if err:
+      logger.error("ERROR starting local redis service on %s", self.host)    
+    logger.debug('Started redis locally on ' + self.host)
 
   # TODO: Graceful shutdown and hand off -- will need to notify all clients
   def stop(self):

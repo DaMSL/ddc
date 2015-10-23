@@ -30,10 +30,9 @@ def piAnl(f):
   return circ, num
 
 def piEst(circ, num):
-  time.sleep(5)
   if num == 0:
     return 0
-    
+  time.sleep(5)
   return 4. * circ / num
 
 

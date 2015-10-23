@@ -116,23 +116,16 @@ class macrothread(object):
   def manager(self):
     logger.debug("\n==========================\n  %s  -- MANAGER", self.name)
 
-    # TODO: Catalog Service Check here
+    # Catalog Service Check here
+    self.catalog.conn()
 
-    # Check for Termination
-    if self.catalog.exists():
-      logger.debug("Catalog is UP")
-    else:
-      logger.info("Bringing catalog service up locally....")
-      self.catalog.start()
-
-      # raise redis.ConnectionError("Redis Service not available. TODO: Est svc")
-
+    # Check for termination  
     self.load(self._term)
-
     if self.term():
       logger.info('TERMINATION condition for ' + self.name)
       sys.exit(0)
 
+    # TODO: what if catalog stops here
 
     # Split input data set
     self.load(self._split)
