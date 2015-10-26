@@ -90,26 +90,30 @@ class dataStore(catalog, redis.StrictRedis):
 
 
 
-  # Save data in place (note: for data store, this is the same as register)
   def save(self, data):
+
     pipe = self.pipeline()
     for key, value in data.items():
-      logger.debug(" SAVING: %s as %s with type %s" % (key, str(value), type(value)))
+      if key == 'JCQueue':
+        print (key, type(key), value, type(value))
       if isinstance(value, list):
-        if len(value) == 0:
-          continue
-        else:
+        tp = 'LIST'
+        pipe.delete(key)
+        if len(value) > 0:
+          if key == 'JCQueue':
+            print ("     SETTING:", value, type(value), len(value))
+          pipe.rpush(key, *(tuple(value)))
 
-          # TODO:  Det if this is inefficient (deleting list and then re-saving it)
-          pipe.delete(key)
-          expr = 'pipe.rpush(key'
-          for v in value:
-            expr += ',\''+str(v)+'\''
-          expr += ')'
-          logger.debug('  Saving List expr: ' + expr)
-          eval(expr)
+      elif isinstance(value, dict):
+        print ("     SETTING a dict for :" + key)
+        for k, v in value.items():
+          print("    ", k, v)
+        pipe.hmset(key, value)
+        tp = 'DICT'
       else:
         pipe.set(key, value)
+        tp = 'VAL'
+      logger.debug("Saving data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
 
       # TODO:  handle other datatypes beside list
 
@@ -118,15 +122,24 @@ class dataStore(catalog, redis.StrictRedis):
 
   # Retrieve data stored for each key in data & store into data 
   def load(self, data):
-    # TODO: Pipeline. May need to track datatypes via protobuf or other serializeable 
+
+    # Support single item data retrieval:
     keys = data.keys()
     pipe = self.pipeline()
     for key in keys:
-      logger.debug("Loading data elm  `%s` of type `%ss`" % (key, type(data[key])))
+      tp = ''
       if isinstance(data[key], list):
+        if key == 'JCQueue':
+            print ("     GETTING:", data[key], type(data[key]))
         pipe.lrange(key, 0, -1)
+        tp = 'LIST'
+      elif isinstance(data[key], dict):
+        pipe.hgetall(key)
+        tp = 'DICT'
       else:
         pipe.get(key)
+        tp = 'VAL'
+      logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
 
       # TODO:  handle other datatypes beside list
 
@@ -136,6 +149,8 @@ class dataStore(catalog, redis.StrictRedis):
       logger.debug('Caching:  ' + key)
       if isinstance(data[key], list):
         data[key] = [val.decode() for val in vals[i]]
+      elif isinstance(data[key], dict):
+        data[key] = {k.decode():v.decode() for k,v in vals[i].items()}
       elif isinstance(data[key], int):
         data[key] = int(vals[i].decode())
       elif isinstance(data[key], float):

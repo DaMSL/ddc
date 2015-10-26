@@ -44,6 +44,11 @@ class macrothread(object):
 
     self.catalog = None
 
+    # RUNTIME Parameters
+    #  These vary from mt to mt (and among workers), but are passed to SLURM manager
+    self.modules = []
+    self.slurmParams = {'time':'0:10:0', 'nodes':1, 'cpus-per-task':24, 'job-name':self.name}
+
 
   # For now retain 2 copies -- to enable reverting of data
   #   Eventually this may change to a flag based data structure for inp/exec/term, etc...
@@ -76,15 +81,16 @@ class macrothread(object):
 
   @abc.abstractmethod
   def term(self):
-    pass
+    raise NotImplementedError("This method has not been implemented.")
 
   @abc.abstractmethod
   def split(self):
-    print ("passing")
+    raise NotImplementedError("This method has not been implemented.")
 
   @abc.abstractmethod
   def execute(self, item):
-    pass
+    raise NotImplementedError("This method has not been implemented.")
+
 
   def retry_redisConn(ex):
     return isinstance(ex, redis.ConnectionError)
@@ -113,7 +119,10 @@ class macrothread(object):
 
 
 
-  def manager(self):
+  def manager(self, fork=False):
+
+    home = os.getenv('HOME')
+
     logger.debug("\n==========================\n  %s  -- MANAGER", self.name)
 
     # Catalog Service Check here
@@ -151,13 +160,37 @@ class macrothread(object):
     else:
       for i in immed:
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
-        slurm.schedule('%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, str(i)), name=self.name + '-W')
+
+
+        if fork:
+          # OPTION B:  Fork worker thread as a separate unsupervised (e.g. daemonized) process
+          logger.debug("Forking Worker: " + str(i))
+          self.execute(i)        
+
+        else:
+          # OPTION A:  Make worker child thread within python worker process
+          slurm.sbatch(jobid='%04d' % jobid,
+              workdir = os.getcwd(), 
+              options = self.slurmParams,
+              modules = self.modules,
+              cmd = "python3 %s %s -w %s" % (self.fname, self.name, str(i)))
+
+
+        # slurm.sbatch(self.name + '%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, str(i)), name=self.name + '-W')
         jobid += 1
 
       # Reschedule Next Manager:
 
       # METHOD 1.  Schedule self after scheduling ALL workers
-      slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), name=self.name + '-M')
+            # workdir = '~/bpti/manager', 
+
+        # slurm.sbatch(jobid='%s%04d' % (self.name, jobid),
+        #     workdir = os.getcwd(), 
+        #     options = self.slurmParams,
+        #     modules = self.modules,
+        #     cmd = "python3 %s %s -m" % (self.fname, self.name))
+
+      # slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), name=self.name + '-M')
       jobid += 1
 
       # METHOD 2.  After.... use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
@@ -165,6 +198,7 @@ class macrothread(object):
     self.data['id_%s' % self.name] = jobid
 
     self.save(self._split)
+    self.save(self._exec)
     # catalog.save('id_' + self.name, jobid)
     logger.debug("==========================")
 
@@ -187,6 +221,7 @@ class macrothread(object):
 
     self.load(self._exec)
     self.load(self._term)
+
 
     logger.debug("Starting Worker Execution")
     result = self.execute(jobInput)

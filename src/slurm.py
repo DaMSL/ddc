@@ -2,8 +2,11 @@ import time
 import subprocess as proc
 from common import *
 
-from collections import namedtuple
+import logging
+logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
+
+from collections import namedtuple
 slurmJob = namedtuple('slurmJob', 'jobid, partition, name, user, state, time, time_limit, nodes, nodelist')
 
 
@@ -26,6 +29,36 @@ class slurm:
       cmd.append('--state=' + kwargs.get('state'))
     joblist = filter(None, proc.check_output(cmd).decode().split('\n'))
     return [slurmJob(*(job.split())) for job in joblist]
+
+  @classmethod
+  def sbatch(cls, jobid, workdir, options, modules, cmd):
+
+    logging.info("Sbatch Job submitted for " + str(jobid))
+
+    inline = '#!/bin/bash -l\n\n#SBATCH\n'
+    for k, v in options.items():
+      inline += '#SBATCH --%s=%s\n' % (k, str(v))
+
+    inline += '#SBATCH --output=%s.out\n' % str(jobid)
+    inline += '#SBATCH --workdir=%s\n' % str(workdir)
+
+    for mod in modules:
+      inline += 'module load %s\n' % mod
+
+    inline += '\n%s\n' % cmd
+
+
+    logging.info("Inline SBATCH: ")
+    logging.info(inline)
+
+    # Launch job
+    job = proc.Popen('sbatch <<EOF\n%sEOF' % inline,
+      shell=True, stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
+    stdout, stderr = job.communicate()
+
+    logging.info("SBAtch Submitted. Output follows:")
+    logging.info(stdout.decode())
+    return stdout.decode()
 
 
   @classmethod
