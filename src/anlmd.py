@@ -1,6 +1,7 @@
 import argparse
 import sys
 import os
+import mdtraj
 
 import redisCatalog
 from common import DEFAULT, executecmd
@@ -38,9 +39,20 @@ class analysisJob(macrothread):
  
 
     def dcd2xyz(self):
-      cmd = 'catdcd -o ' + self.xyzfile + ' -otype xyz -stype psf -s ' + self.psf + ' ' + self.dcdfile
-      result = executecmd(cmd)
-      logging.info(result)
+
+      traj = mdtraj.load_dcd(self.dcdfile, top=self.psf)
+      with open(self.xyzfile, 'w') as xyz:
+        xyz.write('%d %d\n' % (traj.n_frames, traj.n_atoms*3))
+        for frame in traj.xyz:
+          for pt in frame:
+            xyz.write('%#.06f %#.06f %#.06f\n' % (pt[0], pt[1], pt[2]))
+
+      logging.debug("DCD File converted: " + self.dcdfile)
+
+      # cmd = 'catdcd -o ' + self.xyzfile + ' -otype xyz -stype psf -s ' + self.psf + ' ' + self.dcdfile
+      # result = executecmd(cmd)
+      # logging.info(result)
+
 
     def inFile(self, ext):
       return '%s.%s' % (self.name, ext)
@@ -56,8 +68,9 @@ class analysisJob(macrothread):
         # Write the input file for RMDS fortran program
         nneigh=DEFAULT.NUM_NEIGH
         rms = os.path.join(self.workdir, self.inFile(EXT.rms))
+        logging.debug("Writing RMS file: " + rms)
         with open(rms, 'w') as input:
-          input.write(self.xyzfile + '\n')
+          input.write(os.path.basename(self.xyzfile) + '\n')
 
           # TODO:  Should all subsets start at frame #1????
           input.write('%d %d\n' % (1, self.size))
@@ -68,9 +81,10 @@ class analysisJob(macrothread):
         # Write input file for local_MDS fortran program
         args = dict(size=10, nneigh=5, mds=10)
         lmd = os.path.join(self.workdir, self.inFile(EXT.lmd))
+        logging.debug("Writing LMD file: " + lmd)
         with open(lmd, 'w') as input:
-          input.write(self.xyzfile + '\n')
-          input.write(self.xyzfile + '_neighbor\n')
+          input.write(os.path.basename(self.xyzfile) + '\n')
+          input.write(os.path.basename(self.xyzfile) + '_neighbor\n')
 
           # TODO:  Should all subsets start at frame #1????
           input.write('%d %d\n' % (1, args['size']))
@@ -85,12 +99,13 @@ class analysisJob(macrothread):
     def genInput_LMAP(self):
         # Write input file for local_MDS fortran program
         lmap = os.path.join(self.workdir, self.inFile(EXT.map))
+        logging.debug("Writing LMAP file: " + lmap)
         with open(lmap, 'w') as w:
           
           # Hard code following line -- NOTE: very confusing from source (README is backwards)
           w.write('0 1\n')
           w.write('%d\n' % self.size)
-          w.write(self.xyzfile + '_rmsd\n')
+          w.write(os.path.basename(self.xyzfile) + '_rmsd\n')
           w.write('weight.dat\n')   # This will be ignored
           w.write(self.results + '\n')
           w.write('0.0\n')
@@ -143,15 +158,20 @@ module load lsdmap/4.0
 
           # Convert DCD to XYZ format
           shell.write('\n')
-          shell.write('pwd\n')
-          shell.write('\n')
-          shell.write('echo Convert DCD to XYZ format\n')
-          shell.write('catdcd -o ' + self.xyzfile + ' -otype xyz -stype psf -s ' + self.psf + ' ' + self.dcdfile)
+          # shell.write('pwd\n')
+          # shell.write('\n')
+          # shell.write('# Convert DCD to XYZ format\n')
+          # shell.write('echo Convert DCD to XYZ format\n')
+          # shell.write('echo\n')
+          # shell.write('catdcd -o ' + self.xyzfile + ' -otype xyz -stype psf -s ' + self.psf + ' ' + self.dcdfile + '\n')
+          # shell.write('echo\n')
 
           # Call rmds program
           shell.write('\n')
           shell.write('# Call rmds program\n')
+          shell.write('echo Call rmds program\n')
           shell.write('mpiexec -n %d p_rmsd_neighbor<%s>%s\n' % (nnodes*DEFAULT.CPU_PER_NODE, self.inFile(EXT.rms), self.logFile(EXT.rms)))
+          shell.write('echo\n')
 
           # Neighbor Files are hard-coded in underlyng fortran
           shell.write('\n')
@@ -159,11 +179,13 @@ module load lsdmap/4.0
           neighFile = 'neighbor/' + self.name + '.xyz_neighbor'
           shell.write('cat ' + neighFile + '_9* > ' + neighFile +'\n')
           shell.write('rm ' + neighFile + '_9*\n')
+          shell.write('echo\n')
 
           # Call local_mds program 
           shell.write('\n')
           shell.write('# Call local_mds program \n')
           shell.write('mpiexec -n %d p_local_mds<%s>%s\n' % (nnodes*DEFAULT.CPU_PER_NODE, self.inFile(EXT.lmd), self.logFile(EXT.lmd)))
+          shell.write('echo\n')
 
           # EPS Files are hard-coded
           shell.write('\n')
@@ -172,27 +194,31 @@ module load lsdmap/4.0
           epsFile = 'localscale/' + self.epsFile
           shell.write('cat ' + epsFile + '_1* > ' + self.epsFile +'\n')
           shell.write('rm ' + epsFile + '_1*\n')
+          shell.write('echo\n')
 
           # Call wlsdmap program
           shell.write('\n')
           shell.write('# Conduct Eigen decomposition\n')
           shell.write('mpiexec -n %d p_wlsdmap<%s>%s\n' % (nnodes*DEFAULT.CPU_PER_NODE, self.inFile(EXT.map), self.logFile(EXT.map)))
+          shell.write('echo\n')
 
           # Clean Up
           shell.write('\n')
           shell.write('\n')
           shell.write('# Clean up\n')
-          for ext in [EXT.rms, EXT.lmd, EXT.map]:
-            shell.write('cat ' + self.logFile(ext) + ' >> ' + self.logFile() + '\n')
-            shell.write('rm ' + self.logFile(ext) + '\n')
-            shell.write('rm ' + self.inFile(ext) + '\n')
+          shell.write('echo Clean up goes here')
+          shell.write('echo')
+          # for ext in [EXT.rms, EXT.lmd, EXT.map]:
+          #   shell.write('cat ' + self.logFile(ext) + ' >> ' + self.logFile() + '\n')
+          #   shell.write('rm ' + self.logFile(ext) + '\n')
+          #   shell.write('rm ' + self.inFile(ext) + '\n')
 
-          shell.write('\n')
-          shell.write('mv %s %s/%s\n' % (self.epsFile, self.workdir, self.name + '.eps'))
-          shell.write('mv %s.e* %s\n' % (self.results, self.workdir))
-          shell.write('rm neighbor/%s*\n' % self.name)
-          shell.write('rm rmsd/%s*\n' % self.name)
-          shell.write('rm %s\n' % self.xyzfile)
+          # shell.write('\n')
+          # shell.write('mv %s %s/%s\n' % (self.epsFile, self.workdir, self.name + '.eps'))
+          # shell.write('mv %s.e* %s\n' % (self.results, self.workdir))
+          # shell.write('rm neighbor/%s*\n' % self.name)
+          # shell.write('rm rmsd/%s*\n' % self.name)
+          # shell.write('rm %s\n' % self.xyzfile)
 
 
 
@@ -220,12 +246,15 @@ module load lsdmap/4.0
       self.epsFile    = self.xyzfile + '_eps'
       self.sbatchFile = os.path.join(self.workdir, self.name + '_anl.sh')
       self.results    = self.name
-      self.size       = 20          # NEED TO DETERMINE INPUT DATA SIZE!!!!!
+      self.size       = 1000          # NEED TO DETERMINE INPUT DATA SIZE!!!!!
 
       for dname in ['neighbor', 'localscale', 'rmsd', 'log']:
         d = os.path.join(self.workdir, dname)
         if not os.path.exists(d):
           os.mkdir(d)      
+
+      logging.info("Converting DCD to XYZ")
+      self.dcd2xyz()
 
       logging.info("Gen RMSD input")
       self.genInput_RMSD()
