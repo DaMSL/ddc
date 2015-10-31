@@ -21,10 +21,6 @@ class EXT:
     map  = 'map'
 
 
-
-
-
-
 class analysisJob(macrothread):
     def __init__(self, schema, fname):
       macrothread.__init__(self, schema, fname, 'simmd')
@@ -39,7 +35,6 @@ class analysisJob(macrothread):
  
 
     def dcd2xyz(self):
-
       traj = mdtraj.load_dcd(self.dcdfile, top=self.psf)
       with open(self.xyzfile, 'w') as xyz:
         xyz.write('%d %d\n' % (traj.n_frames, traj.n_atoms*3))
@@ -48,10 +43,19 @@ class analysisJob(macrothread):
             xyz.write('%#.06f %#.06f %#.06f\n' % (pt[0], pt[1], pt[2]))
 
       logging.debug("DCD File converted: " + self.dcdfile)
+      self.n_frames = traj.n_frames
 
       # cmd = 'catdcd -o ' + self.xyzfile + ' -otype xyz -stype psf -s ' + self.psf + ' ' + self.dcdfile
       # result = executecmd(cmd)
       # logging.info(result)
+
+
+
+    def dcd2gro(self):
+      traj = mdtraj.load_dcd(self.dcdfile, top=self.psf)
+      self.n_frames = traj.n_frames
+      traj.save_gro(self.grofile)
+      logging.debug("DCD File converted to GRO: " + self.dcdfile)
 
 
     def inFile(self, ext):
@@ -73,13 +77,13 @@ class analysisJob(macrothread):
           input.write(os.path.basename(self.xyzfile) + '\n')
 
           # TODO:  Should all subsets start at frame #1????
-          input.write('%d %d\n' % (1, self.size))
+          input.write('%d %d\n' % (1, self.n_frames))
           input.write('%d\n' % nneigh)
 
 
     def genInput_LMDS(self):
         # Write input file for local_MDS fortran program
-        args = dict(size=10, nneigh=5, mds=10)
+        args = dict(nneigh=300, mds=150)
         lmd = os.path.join(self.workdir, self.inFile(EXT.lmd))
         logging.debug("Writing LMD file: " + lmd)
         with open(lmd, 'w') as input:
@@ -87,13 +91,13 @@ class analysisJob(macrothread):
           input.write(os.path.basename(self.xyzfile) + '_neighbor\n')
 
           # TODO:  Should all subsets start at frame #1????
-          input.write('%d %d\n' % (1, args['size']))
+          input.write('%d %d\n' % (1, self.n_frames))
           input.write('%d\n' % 1000)
       
           # INPUT PARAMS
           input.write('%d %d %d %d\n' % (args['nneigh'], args['mds'], DEFAULT.MDS_START, DEFAULT.MDS_STEP))
           input.write('%f %f %d\n' % (DEFAULT.NOISE_CUT_START, DEFAULT.NOISE_CUT_STEP, DEFAULT.NOISE_CUT_NUM))
-          input.write('%d\n' % 4)
+          input.write('%d\n' % 1)
 
 
     def genInput_LMAP(self):
@@ -176,6 +180,7 @@ module load lsdmap/4.0
           # Neighbor Files are hard-coded in underlyng fortran
           shell.write('\n')
           shell.write('# Prepare neighbor files for Local MDS\n')
+          shell.write('echo Prepare neighbor files for Local MDS\n')
           neighFile = 'neighbor/' + self.name + '.xyz_neighbor'
           shell.write('cat ' + neighFile + '_9* > ' + neighFile +'\n')
           shell.write('rm ' + neighFile + '_9*\n')
@@ -184,12 +189,14 @@ module load lsdmap/4.0
           # Call local_mds program 
           shell.write('\n')
           shell.write('# Call local_mds program \n')
+          shell.write('echo Call local_mds program \n')
           shell.write('mpiexec -n %d p_local_mds<%s>%s\n' % (nnodes*DEFAULT.CPU_PER_NODE, self.inFile(EXT.lmd), self.logFile(EXT.lmd)))
           shell.write('echo\n')
 
           # EPS Files are hard-coded
           shell.write('\n')
           shell.write('# Collect epsilon values from local MDS\n')
+          shell.write('echo Collect epsilon values from local MDS\n')
           # epsFile = 'localscale/' + job.epsFile
           epsFile = 'localscale/' + self.epsFile
           shell.write('cat ' + epsFile + '_1* > ' + self.epsFile +'\n')
@@ -199,6 +206,7 @@ module load lsdmap/4.0
           # Call wlsdmap program
           shell.write('\n')
           shell.write('# Conduct Eigen decomposition\n')
+          shell.write('echo Conduct Eigen decomposition\n')
           shell.write('mpiexec -n %d p_wlsdmap<%s>%s\n' % (nnodes*DEFAULT.CPU_PER_NODE, self.inFile(EXT.map), self.logFile(EXT.map)))
           shell.write('echo\n')
 
@@ -235,43 +243,69 @@ module load lsdmap/4.0
     def execute(self, i):
 
       # TODO: Better Job ID Mgmt
-      jobnum = i
+      jobnum = i.replace(':', '_')
 
 
       # Define analysis config environ for LSDMap Program
-      self.workdir    = os.path.join(DEFAULT.WORKDIR, str(jobnum))
-      self.dcdfile    = os.path.join(self.workdir, jobnum + '.dcd')
-      self.xyzfile    = os.path.join(self.workdir, self.name + '.xyz')
+      # self.workdir    = os.path.join(DEFAULT.WORKDIR, str(jobnum))
+      # self.dcdfile    = os.path.join(self.workdir, jobnum + '.dcd')
+      # self.grofile    = os.path.join(self.workdir, jobnum + '.gro')
+      # self.psf        = os.path.join(DEFAULT.WORKDIR, 'bpti.psf')
+      # configfile = os.path.join(DEFAULT.WORKDIR, 'lsdmap.conf')
+
+      # self.xyzfile    = os.path.join(self.workdir, self.name + '.xyz')
+      # self.epsFile    = self.xyzfile + '_eps'
+      # self.sbatchFile = os.path.join(self.workdir, self.name + '_anl.sh')
+      # self.results    = self.name
+      # self.size       = 1000          # NEED TO DETERMINE INPUT DATA SIZE!!!!!
+
       self.psf        = os.path.join(DEFAULT.WORKDIR, 'bpti.psf')
-      self.epsFile    = self.xyzfile + '_eps'
-      self.sbatchFile = os.path.join(self.workdir, self.name + '_anl.sh')
-      self.results    = self.name
-      self.size       = 1000          # NEED TO DETERMINE INPUT DATA SIZE!!!!!
+      self.configfile = os.path.join(DEFAULT.WORKDIR, 'lsdmap.conf')
 
-      for dname in ['neighbor', 'localscale', 'rmsd', 'log']:
-        d = os.path.join(self.workdir, dname)
-        if not os.path.exists(d):
-          os.mkdir(d)      
+      workdir    = os.path.join(DEFAULT.WORKDIR, str(jobnum))
+      dcdfile    = os.path.join(workdir, jobnum + '.dcd')
+      grofile    = os.path.join(workdir, jobnum + '.gro')
+      evfile    = os.path.join(workdir, jobnum + '.ev')
 
-      logging.info("Converting DCD to XYZ")
-      self.dcd2xyz()
 
-      logging.info("Gen RMSD input")
-      self.genInput_RMSD()
+      logging.debug("Converting file from DCD to GRO.")
+      traj = mdtraj.load(dcdfile, top=self.psf)
+      n_frames = traj.n_frames
+      traj.save_gro(grofile)
 
-      logging.info("Gen LMDS input")
-      self.genInput_LMDS()
+      logging.debug("Calculating LSDMap.")
+      executecmd('lsdmap -f ' + configfile+ ' -c ' + grofile)
+      num_ev = 10
 
-      logging.info("Gen LMAP input")
-      self.genInput_LMAP()
+      n = np.fromfile(evfile, sep='\n')
+      ev=np.transpose(n.reshape(len(n)/num_ev, num_ev))[1:]
 
-      logging.info("Creating sbatch Script")
-      self.loadShell()
-      self.makeScript()
-      logging.info("Script written to: " + self.sbatchFile)
 
-      logging.debug("Scheduling analysis task")
-      executecmd("sbatch " + self.sbatchFile)
+
+      # for dname in ['neighbor', 'localscale', 'rmsd', 'log']:
+      #   d = os.path.join(self.workdir, dname)
+      #   if not os.path.exists(d):
+      #     os.mkdir(d)      
+
+      # logging.info("Converting DCD to XYZ")
+      # self.dcd2xyz()
+
+      # logging.info("Gen RMSD input")
+      # self.genInput_RMSD()
+
+      # logging.info("Gen LMDS input")
+      # self.genInput_LMDS()
+
+      # logging.info("Gen LMAP input")
+      # self.genInput_LMAP()
+
+      # logging.info("Creating sbatch Script")
+      # self.loadShell()
+      # self.makeScript()
+      # logging.info("Script written to: " + self.sbatchFile)
+
+      # logging.debug("Scheduling analysis task")
+      # executecmd("sbatch " + self.sbatchFile)
 
 
 

@@ -11,7 +11,7 @@ import logging
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
-#  TODO:  Move this to abstract and est. 'dispather' method
+#  TODO:  Move this to abstract and est. 'dispatcher' method
 def initialize(catalog, threadlist, schema):
 
   logging.debug("Getting the registry...")
@@ -79,21 +79,21 @@ class simulationJob(macrothread):
 
     # TODO: Better Job ID Mgmt
     # uid = common.getUID()
-    jobnum = i
+    jobnum = i.replace(':', '_')
 
     # Load parameters from catalog & source to config file
     inputs = self.catalog.hgetall(i)
     params = {k.decode():v.decode() for k,v in inputs.items()}
-    params['outname'] = i
+    params['outname'] = jobnum
     logging.debug("Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
 
     # Prepare working directory, input/output files
     workdir = os.path.join(DEFAULT.WORKDIR, str(jobnum))
-    conFile = os.path.join(workdir, i + '.conf')
-    logFile = os.path.join(workdir, i + '.log')
-    dcdFile = os.path.join(workdir, i + '.dcd')
+    conFile = os.path.join(workdir, str(jobnum) + '.conf')
+    logFile = os.path.join(workdir, str(jobnum) + '.log')
+    dcdFile = os.path.join(workdir, str(jobnum) + '.dcd')
 
     if not os.path.exists(workdir):
       os.mkdir(workdir)
@@ -125,21 +125,21 @@ class simulationJob(macrothread):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('name', metavar='N', type=str, nargs='?', help='Name of macrothread [sim, anl, ctl]')
-  parser.add_argument('-m', '--manager', action='store_true')
   parser.add_argument('-w', '--workinput')
   parser.add_argument('-i', '--init', action='store_true')
   args = parser.parse_args()
 
   #  USER DEFINED THReAD AND DATA -- DDL/SCHEMA
 
+  sample_jc = 1
+
   sampleSimJobCandidate = dict(
     psf     = DEFAULT.PSF_FILE,
-    pdb     = DEFAULT.PDB_FILE,
+    pdb     = DEFAULT.getJCFIleName(sample_jc),
     forcefield = DEFAULT.FFIELD,
-    runtime = 2000)
+    runtime = 200000)
 
-  initParams = {'simmd:0001':sampleSimJobCandidate}
+  initParams = {DEFAULT.getJCKey(sample_jc):sampleSimJobCandidate}
 
   schema = dict(  
         JCQueue = list(initParams.keys()),
@@ -178,12 +178,12 @@ if __name__ == '__main__':
   # TODO: common registry for threads
   # Implementation options:  Separate files for each macrothread OR
   #    dispatch macrothread via command line arg
-  mt = threads[args.name]
+  mt = threads['simmd']
   mt.setCatalog(registry)
 
   # mt.setCatalog(registry)
 
-  if args.manager:
-    mt.manager(fork=True)
-  elif args.workinput:
+  if args.workinput:
     mt.worker(args.workinput)
+  else:
+    mt.manager(fork=True)
