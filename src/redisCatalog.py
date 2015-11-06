@@ -94,14 +94,14 @@ class dataStore(catalog, redis.StrictRedis):
 
     pipe = self.pipeline()
     for key, value in data.items():
-      if key == 'JCQueue':
-        print (key, type(key), value, type(value))
+      # if key == 'JCQueue':
+      #   print (key, type(key), value, type(value))
       if isinstance(value, list):
         tp = 'LIST'
         pipe.delete(key)
         if len(value) > 0:
-          if key == 'JCQueue':
-            print ("     SETTING:", value, type(value), len(value))
+          # if key == 'JCQueue':
+          #   print ("     SETTING:", value, type(value), len(value))
           pipe.rpush(key, *(tuple(value)))
 
       elif isinstance(value, dict):
