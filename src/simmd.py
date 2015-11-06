@@ -1,9 +1,10 @@
 import argparse
 import os
 import sys
+import shutil
 
 import redisCatalog
-from common import DEFAULT, executecmd
+from common import *
 from macrothread import macrothread
 from slurm import slurm
 
@@ -12,7 +13,7 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
 #  TODO:  Move this to abstract and est. 'dispatcher' method
-def initialize(catalog, threadlist, schema):
+def initialize(catalog, threadnames, schema):
 
   logging.debug("Getting the registry...")
   catalog.conn()
@@ -20,7 +21,7 @@ def initialize(catalog, threadlist, schema):
 
   catalog.clear()
   # Job ID Management
-  ids = {'id_' + name : 0 for name in threadlist.keys()}
+  ids = {'id_' + name : 0 for name in threadnames}
 
   catalog.save(ids)
   catalog.save(schema)
@@ -38,13 +39,13 @@ class simulationJob(macrothread):
     # State Data for Simulation MacroThread -- organized by state
     self.setInput('JCQueue')
     self.setTerm('JCComplete', 'JCTotal')
-    self.setExec('dcdFileList')
+    self.setExec('dcdFileList')    # 'pendingjobs' <-- todo
     self.setSplit('simSplitParam')
 
     # Static Data common across all simulationJobs (for now) 
-    self.psf = os.path.join(DEFAULT.WORKDIR, DEFAULT.PSF_FILE)
-    self.pdb = os.path.join(DEFAULT.WORKDIR, DEFAULT.PDB_FILE)  # ?? Is this generated from input
-    self.forcefield = os.path.join(DEFAULT.WORKDIR, DEFAULT.FFIELD)
+    self.psf = DEFAULT.PSF_FILE
+    self.pdb = DEFAULT.PDB_FILE
+    self.forcefield = DEFAULT.FFIELD
 
     # Local Data to this running instance
     self.cpu = DEFAULT.CPU_PER_NODE
@@ -73,13 +74,13 @@ class simulationJob(macrothread):
     logging.debug("WORKER Input received: " + str(i))
 
     # Prepare 
-    with open('src/sim_template.conf', 'r') as template:
+    with open(DEFAULT.SIM_CONF_TEMPLATE, 'r') as template:
       source = template.read()
       logging.info("SOURCE LOADED:")
 
     # TODO: Better Job ID Mgmt
     # uid = common.getUID()
-    jobnum = i.replace(':', '_')
+    jobnum = getJC_UID(i)
 
     # Load parameters from catalog & source to config file
     inputs = self.catalog.hgetall(i)
@@ -102,8 +103,7 @@ class simulationJob(macrothread):
       config.write(source % params)
       logging.info("Config written to: " + conFile)
 
-    # Run Simulation
-
+    # Schedule Simulation from within execute function. This will be unsupervised
     stdout = slurm.sbatch(jobid=str(jobnum),
       workdir = workdir, 
       options = self.slurmParams,
@@ -114,6 +114,9 @@ class simulationJob(macrothread):
     logging.info(stdout)
     
     # Update Local State
+    # TODO:  Change this to append to pending jobs and add check in either
+    #     this MT or downstream to check for completed pending jobs....
+    #     requires key-val match between jcUID and the slurm jobid
     self.data['dcdFileList'].append(dcdFile)
     # self.data['JCComplete'] = int(self.data['JCComplete']) + 1
 
@@ -129,45 +132,17 @@ if __name__ == '__main__':
   parser.add_argument('-i', '--init', action='store_true')
   args = parser.parse_args()
 
-  #  USER DEFINED THReAD AND DATA -- DDL/SCHEMA
-
-  sample_jc = 1
-
-  sampleSimJobCandidate = dict(
-    psf     = DEFAULT.PSF_FILE,
-    pdb     = DEFAULT.getJCFIleName(sample_jc),
-    forcefield = DEFAULT.FFIELD,
-    runtime = 200000)
-
-  initParams = {DEFAULT.getJCKey(sample_jc):sampleSimJobCandidate}
-
-  schema = dict(  
-        JCQueue = list(initParams.keys()),
-        JCComplete = 0,
-        JCTotal = len(initParams),
-        simSplitParam =  1, 
-        dcdFileList =  [], 
-        processed =  0,
-        anlSplitParam =  1,
-        omega =  [0, 0, 0, 0],
-        omegaMask = [False, False, False, False],
-        converge =  0.)
-
-  threads = {'simmd': simulationJob(schema, __file__)}
-
-             # 'anl': anlThread(__file__, schema),
-             # 'ctl': ctlThread(__file__, schema)}
-
   # Determine type of registry to use
-  registry = redisCatalog.dataStore('redis.lock')  
+  registry = redisCatalog.dataStore('catalog')  
 
 
   if args.init:
     logging.debug("Loading Schema.....")
-    initialize(registry, threads, schema)
+    initialize(registry, threadnames, schema)
     logging.debug("Loading initial parameters.....")
     registry.save(initParams)
     logging.info("Initialization Complete. Exiting")
+    registry.stop()
     sys.exit(0)
 
     # Make DDC app class to hide __main__ details; 
@@ -178,7 +153,7 @@ if __name__ == '__main__':
   # TODO: common registry for threads
   # Implementation options:  Separate files for each macrothread OR
   #    dispatch macrothread via command line arg
-  mt = threads['simmd']
+  mt = simulationJob(schema, __file__)
   mt.setCatalog(registry)
 
   # mt.setCatalog(registry)

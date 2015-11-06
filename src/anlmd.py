@@ -11,7 +11,7 @@ from nearpy.storage.storage_redis import RedisStorage
 from nearpy.hashes import RandomBinaryProjections
 
 import redisCatalog
-from common import DEFAULT, executecmd
+from common import *
 from macrothread import macrothread
 from slurm import slurm
 
@@ -82,6 +82,9 @@ def eigenDecomB(traj):
 
 def initialize(archive):
 
+  if os.path.exists('catalog.lock'):
+    os.remove('catalog.lock')
+
   # ref: https://github.com/pixelogik/NearPy
   # Create redis storage adapter
   redis_storage = RedisStorage(archive)
@@ -92,6 +95,30 @@ def initialize(archive):
   # Store hash configuration in redis for later use
   redis_storage.store_hash_configuration(lshash)
 
+  
+  indexSize = 284   
+  engine = nearpy.Engine(indexSize, lshashes=[lshash])
+  numLoadedFile = 0
+  numIndices = 0
+  indexdir = os.path.join(os.getenv('HOME'), 'scratch')
+  for idxnum in range(2000):
+    srcFile = os.path.join(indexdir, 'index_%04d.npy' % idxnum)
+    if os.path.exists(srcFile):
+      numLoadedFile += 1
+      source = np.load(srcFile)
+      for seqnum, window in enumerate(source):
+        eigen = window.reshape(5, 3, 284)
+        idx = eigen[0][0]
+        engine.store_vector(idx, encodeLabel(idxnum, seqnum))
+        numIndices += 1
+
+  logging.debug("Loaded Deshaw data: %d files loaded, total of %d indices", numLoadedFile, numIndices)
+
+  archive.stop
+
+  # LOAD DEShaw data from saved index files
+
+
 
 
 class analysisJob(macrothread):
@@ -100,9 +127,14 @@ class analysisJob(macrothread):
       # State Data for Simulation MacroThread -- organized by state
       self.setInput('dcdFileList')
       self.setTerm('JCComplete', 'processed')
-      self.setExec()
+      self.setExec('LDIndexList')
       self.setSplit('anlSplitParam')
-      self.buildArchive = True
+      self.buildArchive = False
+
+      self.modules.extend(['redis'])
+
+      self.indexSize = 284
+
 
     def term(self):
       # For now
@@ -116,6 +148,8 @@ class analysisJob(macrothread):
 
     def execute(self, i):
 
+      logging.debug('ANL MT. Input = ' + i)
+
       # TODO: Better Job ID Mgmt, for now hack the filename
       i.replace(':', '_').replace('-', '_')
       jobnum = os.path.basename(i).split('.')[0].split('_')[-1]
@@ -127,7 +161,7 @@ class analysisJob(macrothread):
       filterMin  = traj.top.select_atom_indices(selection='minimal')
       traj.atom_slice(filterMin, inplace=True)
 
-      test = []
+      logging.debug('Trajectory Loaded')
       result = {}
       indexSize = 0
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
@@ -142,17 +176,19 @@ class analysisJob(macrothread):
           np.copyto(index[pc], ev[pc] * eg[pc])
         # 3. store index
         key = jobnum + ':' + '%03d' % win
+        logging.debug('Saving Index: %s', key)
         result[key] = index.flatten()
-        test.append(result[key])
         if not indexSize:
           indexSize = len(result[key])
+          logging.debug('Index Size = %d' % indexSize)
 
-      archive = redisCatalog.dataStore(DEFAULT.INDEX_LOCKFILE)
+      logging.debug("All Indices calculated. Beginning Probing")
+      archive = redisCatalog.dataStore(**archiveConfig)
       redis_storage = RedisStorage(archive)
 
       config = redis_storage.load_hash_configuration('rbphash')
       if not config:
-        logging.ERROR("LSHash not configured")
+        logging.error("LSHash not configured")
         #TODO: Gracefully exit
   
       # Create empty lshash and load stored hash
@@ -171,6 +207,7 @@ class analysisJob(macrothread):
       # OPTION B:  Index for downstream retrieval
       else:
         self.catalog.save({jobnum: result})
+        self.data['LDIndexList'].append(jobnum)
 
 
 
@@ -182,51 +219,32 @@ class analysisJob(macrothread):
 if __name__ == '__main__':
 
   parser = argparse.ArgumentParser()
+  parser.add_argument('-m', '--manager')
   parser.add_argument('-w', '--workinput')
   parser.add_argument('-i', '--init', action='store_true')
-  parser.add_argument('-a', '--archive')
+  parser.add_argument('-d', '--debug')
   args = parser.parse_args()
 
 
-  sampleSimJobCandidate = dict(
-    psf     = DEFAULT.PSF_FILE,
-    pdb     = DEFAULT.PDB_FILE,
-    forcefield = DEFAULT.FFIELD,
-    runtime = 2000)
-
-  initParams = {'simmd:0001':sampleSimJobCandidate}
-
-  schema = dict(  
-        JCQueue = list(initParams.keys()),
-        JCComplete = 0,
-        JCTotal = len(initParams),
-        simSplitParam =  1, 
-        dcdFileList =  [], 
-        processed =  0,
-        anlSplitParam =  1,
-        omega =  [0, 0, 0, 0],
-        omegaMask = [False, False, False, False],
-        converge =  0.)
-
-  threads = {'anlmd': analysisJob(schema, __file__)}
-
-
-  registry = redisCatalog.dataStore('redis.lock')
-
-
-  mt = analysisJob(schema, __file__)
-  mt.setCatalog(redisCatalog.dataStore('redis.lock'))
-
-  archive = redisCatalog.dataStore(DEFAULT.INDEX_LOCKFILE)
+  archive = redisCatalog.dataStore(**archiveConfig)
 
   if args.init:
     logging.debug("Initializing the archive.....")
     initialize(archive)
     sys.exit(0)
 
+  registry = redisCatalog.dataStore('catalog')
+  mt = analysisJob(schema, __file__)
+  mt.setCatalog(registry)
 
-  if args.archive:
-    logging.info("Running Analysis on " + args.archive)
-    mt.execute(args.archive)
 
-  # mt.manager(fork=True)
+  if args.debug:
+    logging.info("Running Single Execution (debugging) Probe on %s", args.debug)
+    mt.execute(args.debug)
+    sys.exit(0)
+
+
+  if args.manager:
+    mt.manager(fork=False)
+  else:
+    mt.worker(args.workinput)

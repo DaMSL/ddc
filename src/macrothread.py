@@ -173,8 +173,11 @@ class macrothread(object):
               workdir = os.getcwd(), 
               options = self.slurmParams,
               modules = self.modules,
-              cmd = "python3 %s %s -w %s" % (self.fname, self.name, str(i)))
+              cmd = "python3 %s -w %s" % (self.fname, self.name, str(i)))
 
+
+          # OPTION C --> est a "prepare" routine which is invoked to pre-process input
+          #   files and returns the sbatch job
 
         # slurm.sbatch(self.name + '%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, str(i)), name=self.name + '-W')
         jobid += 1

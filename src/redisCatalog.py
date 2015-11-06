@@ -5,22 +5,36 @@ import os
 import subprocess as proc
 import abc
 
-import common
+from common import *
 from catalog import catalog
 
 import logging
-logger = common.setLogger()
+logger = setLogger()
 
 
 class dataStore(catalog, redis.StrictRedis):
-  def __init__(self, lockfile, host='localhost', port=6379, db=0):
+  def __init__(self, name, host='localhost', port=6379, db=0):
 
     redis.StrictRedis.__init__(self)
 
-    self.lockfile = lockfile
+    self.lockfile = name + '.lock'
+    self.config = name + '.conf'
     self.host = host
     self.port = port
     self.database = db
+    self.name = name
+
+    # Prepare 
+    with open(DEFAULT.REDIS_CONF_TEMPLATE, 'r') as template:
+      source = template.read()
+      logging.info("SOURCE LOADED:")
+
+
+    params = dict(localdir=DEFAULT.WORKDIR, port=self.port, name=self.name)
+
+    with open(self.config, 'w') as config:
+      config.write(source % params)
+      logging.info("Data Store %s Config written to  %s", self.name, self.config)
 
     self.conn()
 
@@ -75,14 +89,14 @@ class dataStore(catalog, redis.StrictRedis):
       connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
 
     # Start redis via suprocess
-    err = proc.call(['redis-server', 'redis.conf'])
+    err = proc.call(['redis-server', self.config])
     if err:
       logger.error("ERROR starting local redis service on %s", self.host)    
     logger.debug('Started redis locally on ' + self.host)
 
   # TODO: Graceful shutdown and hand off -- will need to notify all clients
   def stop(self):
-    self.save()
+    # self.save()
     self.shutdown()
     if os.path.exists(self.lockfile):
       os.remove(self.lockfile)
