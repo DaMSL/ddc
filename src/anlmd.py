@@ -21,6 +21,7 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 WINSIZE = 100
 
+HASH_NAME = 'lshash'
 
 def eigenDecomA(traj):
   '''
@@ -90,9 +91,10 @@ def initialize(archive):
   redis_storage = RedisStorage(archive)
 
   # Create Hash
-  lshash = RandomBinaryProjections('rbphash', 10)
+  lshash = RandomBinaryProjections(HASH_NAME, 10)
 
   # Store hash configuration in redis for later use
+  logging.debug('Storing Hash in Archive')
   redis_storage.store_hash_configuration(lshash)
 
   
@@ -114,7 +116,7 @@ def initialize(archive):
 
   logging.debug("Loaded Deshaw data: %d files loaded, total of %d indices", numLoadedFile, numIndices)
 
-  archive.stop
+  archive.stop()
 
   # LOAD DEShaw data from saved index files
 
@@ -183,10 +185,20 @@ class analysisJob(macrothread):
           logging.debug('Index Size = %d' % indexSize)
 
       logging.debug("All Indices calculated. Beginning Probing")
+
+      # import redis
+      # archive = redis.StrictRedis(port=6380)
       archive = redisCatalog.dataStore(**archiveConfig)
+
+      logging.debug('Archive Client Created, arch class= %s', str(archive.__class__))
+      archive.conn()
+      keys = archive.keys()
+      logging.debug('keys loaded')
+      for k in keys:
+        logging.debug("  key: %s", k)
       redis_storage = RedisStorage(archive)
 
-      config = redis_storage.load_hash_configuration('rbphash')
+      config = redis_storage.load_hash_configuration(HASH_NAME)
       if not config:
         logging.error("LSHash not configured")
         #TODO: Gracefully exit
@@ -201,11 +213,17 @@ class analysisJob(macrothread):
 
       # OPTION A:  Build Archive online
       if self.buildArchive:
+        logging.debug('Build Archive!  Index stored directly')
         for key, index in result.items():
           engine.store_vector(index, key)
 
       # OPTION B:  Index for downstream retrieval
       else:
+        logging.debug('Saving Index in catalog')
+
+        # ********     PACK / UNPACK
+
+        # TODO:  Pack result for storage!!!!
         self.catalog.save({jobnum: result})
         self.data['LDIndexList'].append(jobnum)
 
@@ -240,7 +258,7 @@ if __name__ == '__main__':
 
   if args.debug:
     logging.info("Running Single Execution (debugging) Probe on %s", args.debug)
-    mt.execute(args.debug)
+    mt.worker(args.debug)
     sys.exit(0)
 
 

@@ -12,10 +12,10 @@ import logging
 logger = setLogger()
 
 
-class dataStore(catalog, redis.StrictRedis):
+class dataStore(redis.StrictRedis, catalog):
   def __init__(self, name, host='localhost', port=6379, db=0):
 
-    redis.StrictRedis.__init__(self)
+    redis.StrictRedis.__init__(self, host=host, port=port)
 
     self.lockfile = name + '.lock'
     self.config = name + '.conf'
@@ -24,26 +24,14 @@ class dataStore(catalog, redis.StrictRedis):
     self.database = db
     self.name = name
 
-    # Prepare 
-    with open(DEFAULT.REDIS_CONF_TEMPLATE, 'r') as template:
-      source = template.read()
-      logging.info("SOURCE LOADED:")
-
-
-    params = dict(localdir=DEFAULT.WORKDIR, port=self.port, name=self.name)
-
-    with open(self.config, 'w') as config:
-      config.write(source % params)
-      logging.info("Data Store %s Config written to  %s", self.name, self.config)
-
     self.conn()
 
 
   def conn (self, host='localhost'):
 
-    # # Check if it's already started and connected
-    
+    # # Check if it's already started and connected    
     if self.exists():
+      logging.debug('Data Store, `%s` already connected', self.name)
       return
 
     # If already started by another node, get connection info
@@ -53,8 +41,13 @@ class dataStore(catalog, redis.StrictRedis):
         self.host = h
         self.port = int(p)
         self.database = int(d)
+        logging.debug('Data Store, `%s` running on %s, port=%s', self.name, self.host, self.port)
 
-      logger.debug("Service already running on " + h)
+      # Check connection string -- F/T in case connection dies, using loaded params & self as hostname
+      if not self.ping():
+        logger.warn("WARNING: Redis Server locked, but not running. Running it locally at %s:%d", self.host, self.port)
+        os.remove(self.lockfile)
+        self.start()
 
     # Otherwise, start it locally as a daemon server process
     else:
@@ -84,6 +77,18 @@ class dataStore(catalog, redis.StrictRedis):
 
 
   def start(self):
+
+    # Prepare 
+    with open(DEFAULT.REDIS_CONF_TEMPLATE, 'r') as template:
+      source = template.read()
+      logging.info("SOURCE LOADED:")
+
+    params = dict(localdir=DEFAULT.WORKDIR, port=self.port, name=self.name)
+
+    with open(self.config, 'w') as config:
+      config.write(source % params)
+      logging.info("Data Store `%s` written to  %s", self.name, self.config)
+
     self.host = socket.gethostname()
     with open(self.lockfile, 'w') as connectFile:
       connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
@@ -111,7 +116,6 @@ class dataStore(catalog, redis.StrictRedis):
       # if key == 'JCQueue':
       #   print (key, type(key), value, type(value))
       if isinstance(value, list):
-        tp = 'LIST'
         pipe.delete(key)
         if len(value) > 0:
           # if key == 'JCQueue':
@@ -119,15 +123,10 @@ class dataStore(catalog, redis.StrictRedis):
           pipe.rpush(key, *(tuple(value)))
 
       elif isinstance(value, dict):
-        print ("     SETTING a dict for :" + key)
-        for k, v in value.items():
-          print("    ", k, v)
         pipe.hmset(key, value)
-        tp = 'DICT'
       else:
         pipe.set(key, value)
-        tp = 'VAL'
-      logger.debug("Saving data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
+      logger.debug("Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
 
       # TODO:  handle other datatypes beside list
 

@@ -88,7 +88,7 @@ class controlJob(macrothread):
       logging.debug('CTL MT. Input = ' + i)
 
       # Fetch all indices
-      ld_index = self.catalog.hgetall(i)
+      ld_index = {k.decode():v.decode() for k, v in self.catalog.hgetall(i).items()}
 
       archive = redisCatalog.dataStore(**archiveConfig)
       redis_storage = RedisStorage(archive)
@@ -106,7 +106,14 @@ class controlJob(macrothread):
             lshashes=[lshash], 
             storage=redis_storage)
 
-      for key, value in ld_index.items():
+      for key, v in ld_index.items():
+
+        # *************  HERE  PACK/UNPACK data !!!!!!
+        value = np.array(v)
+        logging.debug("VAL-> %s" % type(v))
+
+        logging.info('  VALUE:   Shape=%s,  Type=%s', str(value.shape), str(value.dtype))
+
         neigh = engine.neighbours(value)
         if len(neigh) == 0:
           logging.info ("Found no near neighbors for %s", key)
@@ -152,7 +159,7 @@ if __name__ == '__main__':
 
   if args.debug:
     logging.info("Running Analysis on " + args.debug)
-    mt.execute(args.debug)
+    mt.worker(args.debug)
     sys.exit(0)
 
   if args.manager:
