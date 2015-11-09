@@ -20,6 +20,46 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
 
+def psfgen(params):
+  return '''psfgen << ENDMOL
+
+# 1. Read topology file
+topology %(topo)s
+
+# 2. Build protein segment
+segment BPTI {pdb %(bpti_prot)s}
+
+# 3. Patch protein segment
+patch DISU BPTI:5 BPTI:55
+patch DISU BPTI:14 BPTI:38
+patch DISU BPTI:30 BPTI:51
+
+# 4. Read protein coordinates from PDB file
+pdbalias atom ILE CD1 CD ; 
+coordpdb %(coord)s BPTI
+
+# 5. Build water segment
+pdbalias residue HOH TIP3 ; 
+segment SOLV {
+auto none
+pdb %(bpti_water)s
+}
+
+# 6. Read water coordinaes from PDB file
+pdbalias atom HOH O OH2 ; 
+coordpdb %(bpti_water)s SOLV
+
+# 7. Guess missing coordinates
+guesscoord
+
+# 8. Write structure and coordinate files
+writepsf %(psf)s
+writepdb %(pdb)s
+
+ENDMOL''' % params
+
+
+
 def initialize():
 
   pass
@@ -27,30 +67,63 @@ def initialize():
 
 def generateNewJC(rawfile, frame=-1):
 
+    logging.debug("Generating new coords from:  %s", rawfile)
 
     # Get a new uid
     jcuid = getUID()
 
     # Write out coords (TODO: should this go to catalog or to file?)
+    tmpCoord = os.path.join(DEFAULT.COORD_FILE_DIR, '%s_tmp.pdb' % jcuid)
     newCoordFile = os.path.join(DEFAULT.COORD_FILE_DIR, '%s.pdb' % jcuid)
+    newPsfFile = os.path.join(DEFAULT.COORD_FILE_DIR, '%s.psf' % jcuid)
+
+    logging.debug("Files to use: %s, %s, %s", tmpCoord, newCoordFile, newPsfFile)
 
     # Retrieve referenced file from storage
     #   TODO: Set up historical archive for retrieval (this may need to be imported)
     traj  = md.load(rawfile, top=DEFAULT.PDB_FILE)
-
+    filt = traj.top.select_atom_indices('all')    
+    # traj.atom_slice(filt, inplace=True)
+    
     #  If no frame ref is provided, grab the middle frame
     #  TODO:  ID specific window reference point
     if frame < 0:
       frame = traj.n_fames // 2
     coord = traj.slice(frame)
-    coord.save_pdb(newCoordFile)
 
-    newsimJob = dict(
-        psf     = DEFAULT.PSF_FILE,
+    logging.debug("Working source traj: %s", str(traj))
+
+    # Save this as a temp file to set up simulation input file
+    coord.save_pdb(tmpCoord)
+
+    logging.debug("Coord file saved. Params to use:")
+
+    newsimJob = dict(DEFAULT.NEWSIM_PARAM,
+        coord   = tmpCoord,
+        psf     = newPsfFile,
         pdb     = newCoordFile,
-        forcefield = DEFAULT.FFIELD,
         runtime = 100000)
 
+    for k, v in newsimJob.items():
+      logging.debug("   %s:  %s", str(k), str(v))
+
+    cmd = psfgen(newsimJob)
+
+    with open('psfgen.tcl', 'w') as out:
+      out.write(cmd)
+
+    logging.debug(" PSFGen SCRIPT: \n" + cmd)
+
+    stdout = executecmd(psfgen(newsimJob))
+
+
+    logging.debug(" PSFGen COMPLETE!!\n" + stdout)
+
+    # os.remove(tmpCoord)
+
+    # with open(self.config, 'w') as config:
+    #   config.write(psfgen_template(newsimJob))
+    #   logging.info("PSFGen Script written to  %s", config)
 
 
     return jcuid, newsimJob
@@ -107,7 +180,6 @@ class controlJob(macrothread):
 
       for key, v in ld_index.items():
 
-        # *************  HERE  PACK/UNPACK data !!!!!!
         value = np.array(v)
         logging.debug("VAL-> %s" % type(v))
 
@@ -136,6 +208,7 @@ class controlJob(macrothread):
 
           self.data['JCQueue'].append(jcID)
           self.catalog.save({jcID: jcConfig})
+          return
 
 
 

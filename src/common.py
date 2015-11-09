@@ -33,6 +33,17 @@ class DEFAULT:
 
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
+
+
+  TOPO   = '/home-1/bring4@jhu.edu/bpti/toppar/top_all22_prot.inp'
+  SRC_PROT   = '/home-1/bring4@jhu.edu/bpti/BPTI_protein.pdb'
+  SRC_WATER   = '/home-1/bring4@jhu.edu/bpti/BPTI_water.pdb'
+
+  NEWSIM_PARAM = dict(topo=TOPO, bpti_prot=SRC_PROT, bpti_water=SRC_WATER,
+    forcefield=FFIELD)
+
+
+
   # NUM_NEIGH = 1000
   # MDS_DIM = 250
   # NUM_NEIGH = 100
