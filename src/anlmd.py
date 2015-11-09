@@ -20,38 +20,64 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
 WINSIZE = 100
-
-HASH_NAME = 'lshash'
+SLIDE = 500
 
 def eigenDecomA(traj):
   '''
   Method A : Pairwise correlation based on each pair of atoms' 
   distance to respective mean
-  Modified to only correlate along likewise cartesian axes
   '''
   n_frames = traj.shape[0]
-  n_atoms = traj.shape[1]
+  N = traj.shape[1]*3
+  T = traj.reshape(n_frames, N)
   # t1 = traj.reshape(n_frames, n_atoms_pos)
-  mean = np.mean(traj, axis=0)
-  cov = np.zeros(shape = (n_atoms*3, n_atoms*3))
-  for A in range(n_atoms):
+  mean = np.mean(T, axis=0)
+  cov = np.zeros(shape = (N, N))
+  for A in range(N):
     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
     if A % 10 == 0:
       logging.info("Atom # %d" % A)
-    for B in range(A, n_atoms):
-      s = np.zeros(shape=(3))
+    for B in range(A, N):
+      S = 0
       for i in range(n_frames):
-        s += (traj[i][A] - mean[A]) * (traj[i][B] - mean[B])
-      cov[A][B] = s[0] / n_frames
-      cov[B][A] = s[0] / n_frames
-      cov[A+n_atoms][B+n_atoms] = s[1] / n_frames
-      cov[B+n_atoms][A+n_atoms] = s[1] / n_frames
-      cov[A+2*n_atoms][B+2*n_atoms] = s[1] / n_frames
-      cov[B+2*n_atoms][A+2*n_atoms] = s[1] / n_frames
+        S += (T[i][A] - mean[A]) * (T[i][B] - mean[B])
+      cov[A][B] = S / N
+      cov[B][A] = S / N
   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
   logging.info("Calculating Eigen")
   # print(str(dt.datetime.now()), "  Calculating Eigen")
-  return LA.eig(cov)
+  return LA.eigh(cov)
+
+
+# def eigenDecomA_2(traj):
+#   '''
+#   Method A : Pairwise correlation based on each pair of atoms' 
+#   distance to respective mean
+#   '''
+#   n_frames = traj.shape[0]
+#   N = traj.shape[1]*3
+#   T = traj.reshape(n_frames, N)
+#   # t1 = traj.reshape(n_frames, n_atoms_pos)
+#   mean = np.mean(N, axis=0)
+#   cov = np.zeros(shape = (N, N))
+#   for A in range(N):
+#     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
+#     if A % 10 == 0:
+#       logging.info("Atom # %d" % A)
+#     for B in range(A, N):
+#       s = np.zeros(shape=(3))
+#       for i in range(n_frames):
+#         s += (traj[i][A] - mean[A]) * (traj[i][B] - mean[B])
+#       cov[A][B] = s[0] / n_frames
+#       cov[B][A] = s[0] / n_frames
+#       cov[A+n_atoms][B+n_atoms] = s[1] / n_frames
+#       cov[B+n_atoms][A+n_atoms] = s[1] / n_frames
+#       cov[A+2*n_atoms][B+2*n_atoms] = s[2] / n_frames
+#       cov[B+2*n_atoms][A+2*n_atoms] = s[2] / n_frames
+#   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
+#   logging.info("Calculating Eigen")
+#   # print(str(dt.datetime.now()), "  Calculating Eigen")
+#   return LA.eigh(cov)
 
 
 def eigenDecomB(traj):
@@ -65,7 +91,7 @@ def eigenDecomB(traj):
   # n_atoms_pos = traj.shape[1] * 3
   # t1 = traj.reshape(n_frames, n_atoms_pos)
   mean = np.mean(traj, axis=0)
-  dist = np.zeros(shape = (n_atoms, n_atoms))
+  dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float64)
   for A in range(n_atoms):
     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
     if A % 10 == 0:
@@ -77,7 +103,7 @@ def eigenDecomB(traj):
   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
   logging.info("Calculating Eigen")
   # print(str(dt.datetime.now()), "  Calculating Eigen")
-  return LA.eig(dist)
+  return LA.eigh(dist)
 
 
 
@@ -86,40 +112,38 @@ def initialize(archive):
   if os.path.exists('catalog.lock'):
     os.remove('catalog.lock')
 
+  archive.flushall()
+
   # ref: https://github.com/pixelogik/NearPy
   # Create redis storage adapter
   redis_storage = RedisStorage(archive)
 
   # Create Hash
-  lshash = RandomBinaryProjections(HASH_NAME, 10)
+  lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, 3)
 
   # Store hash configuration in redis for later use
   logging.debug('Storing Hash in Archive')
   redis_storage.store_hash_configuration(lshash)
 
   
-  indexSize = 284   
-  engine = nearpy.Engine(indexSize, lshashes=[lshash])
-  numLoadedFile = 0
-  numIndices = 0
-  indexdir = os.path.join(os.getenv('HOME'), 'scratch')
-  for idxnum in range(2000):
-    srcFile = os.path.join(indexdir, 'index_%04d.npy' % idxnum)
-    if os.path.exists(srcFile):
-      numLoadedFile += 1
-      source = np.load(srcFile)
-      for seqnum, window in enumerate(source):
-        eigen = window.reshape(5, 3, 284)
-        idx = eigen[0][0]
-        engine.store_vector(idx, encodeLabel(idxnum, seqnum))
-        numIndices += 1
+  # indexSize = 284   
+  # engine = nearpy.Engine(indexSize, lshashes=[lshash])
+  # numLoadedFile = 0
+  # numIndices = 0
+  # indexdir = os.path.join(os.getenv('HOME'), 'scratch')
+  # for idxnum in range(2000):
+  #   srcFile = os.path.join(indexdir, 'index_%04d.npy' % idxnum)
+  #   if os.path.exists(srcFile):
+  #     numLoadedFile += 1
+  #     source = np.load(srcFile)
+  #     for seqnum, window in enumerate(source):
+  #       eigen = window.reshape(5, 3, 284)
+  #       idx = eigen[0][0]
+  #       engine.store_vector(idx, encodeLabel(idxnum, seqnum))
+  #       numIndices += 1
 
-  logging.debug("Loaded Deshaw data: %d files loaded, total of %d indices", numLoadedFile, numIndices)
-
+  # logging.debug("Loaded Deshaw data: %d files loaded, total of %d indices", numLoadedFile, numIndices)
   archive.stop()
-
-  # LOAD DEShaw data from saved index files
-
 
 
 
@@ -131,12 +155,12 @@ class analysisJob(macrothread):
       self.setTerm('JCComplete', 'processed')
       self.setExec('LDIndexList')
       self.setSplit('anlSplitParam')
+      self.modules.extend(['redis'])
       self.buildArchive = False
 
-      self.modules.extend(['redis'])
 
-      self.indexSize = 284
-
+    def setBuild(self, build=True):
+      self.buildArchive = build
 
     def term(self):
       # For now
@@ -168,14 +192,14 @@ class analysisJob(macrothread):
       indexSize = 0
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
       #   TODO: Retain provenance
-      for win in range(0, len(traj.xyz) - WINSIZE+1, WINSIZE):
+      for win in range(0, len(traj.xyz) - WINSIZE+1, SLIDE):
         logging.debug("Running on window # " + str(win))
-        eg, ev = eigenDecomB(traj.xyz[win:win+WINSIZE])
+        eg, ev = eigenDecomA(traj.xyz[win:win+WINSIZE])
         eg /= LA.norm(eg)
         ev = np.transpose(ev)   # Transpose eigen vectors
         index = np.zeros(shape=(DEFAULT.NUM_PCOMP, len(ev[0])), dtype=ev.dtype)
         for pc in range(DEFAULT.NUM_PCOMP):
-          np.copyto(index[pc], ev[pc] * eg[pc])
+          np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
         # 3. store index
         key = jobnum + ':' + '%03d' % win
         logging.debug('Saving Index: %s', key)
@@ -184,36 +208,30 @@ class analysisJob(macrothread):
           indexSize = len(result[key])
           logging.debug('Index Size = %d' % indexSize)
 
-      logging.debug("All Indices calculated. Beginning Probing")
-
-      # import redis
-      # archive = redis.StrictRedis(port=6380)
-      archive = redisCatalog.dataStore(**archiveConfig)
-
-      logging.debug('Archive Client Created, arch class= %s', str(archive.__class__))
-      archive.conn()
-      keys = archive.keys()
-      logging.debug('keys loaded')
-      for k in keys:
-        logging.debug("  key: %s", k)
-      redis_storage = RedisStorage(archive)
-
-      config = redis_storage.load_hash_configuration(HASH_NAME)
-      if not config:
-        logging.error("LSHash not configured")
-        #TODO: Gracefully exit
-  
       # Create empty lshash and load stored hash
-      lshash = RandomBinaryProjections(None, None)
-      lshash.apply_config(config)
-
-      engine = nearpy.Engine(indexSize, 
-            lshashes=[lshash], 
-            storage=redis_storage)
-
       # OPTION A:  Build Archive online
       if self.buildArchive:
         logging.debug('Build Archive!  Index stored directly')
+        # import redis
+        # archive = redis.StrictRedis(port=6380)
+        archive = redisCatalog.dataStore(**archiveConfig)
+
+        logging.debug('Archive Client Created, arch class= %s', str(archive.__class__))
+        archive.conn()
+        keys = archive.keys()
+        logging.debug('keys loaded')
+        for k in keys:
+          logging.debug("  key: %s", k)
+        redis_storage = RedisStorage(archive)
+        config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
+        if not config:
+          logging.error("LSHash not configured")
+        #TODO: Gracefully exit
+        lshash = RandomBinaryProjections(None, None)
+        lshash.apply_config(config)
+        engine = nearpy.Engine(indexSize, 
+            lshashes=[lshash], 
+            storage=redis_storage)
         for key, index in result.items():
           engine.store_vector(index, key)
 
@@ -221,10 +239,11 @@ class analysisJob(macrothread):
       else:
         logging.debug('Saving Index in catalog')
 
-        # ********     PACK / UNPACK
-
-        # TODO:  Pack result for storage!!!!
-        self.catalog.save({jobnum: result})
+        # Pack & store data
+        for k, v in result.items():
+          logging.debug(" `%s`:  %s" % (k, str(v.shape)))
+        packed = {k: v.tobytes() for k, v in result.items()}
+        self.catalog.save({jobnum: packed})
         self.data['LDIndexList'].append(jobnum)
 
 
@@ -235,14 +254,20 @@ class analysisJob(macrothread):
 
 
 if __name__ == '__main__':
+  global WINSIZE, SLIDE
 
   parser = argparse.ArgumentParser()
   parser.add_argument('-m', '--manager')
   parser.add_argument('-w', '--workinput')
+  parser.add_argument('-b', '--build')
   parser.add_argument('-i', '--init', action='store_true')
   parser.add_argument('-d', '--debug')
+  parser.add_argument('--winsize', type=int, default=100)
+  parser.add_argument('--slide', type=int, default=50)
   args = parser.parse_args()
 
+  WINSIZE = args.winsize
+  SLIDE   = args.slide
 
   archive = redisCatalog.dataStore(**archiveConfig)
 
@@ -259,6 +284,12 @@ if __name__ == '__main__':
   if args.debug:
     logging.info("Running Single Execution (debugging) Probe on %s", args.debug)
     mt.worker(args.debug)
+    sys.exit(0)
+
+  if args.build:
+    logging.info("Running Single Execution to Build Archive on %s", args.build)
+    mt.setBuild()
+    mt.execute(args.build)
     sys.exit(0)
 
 

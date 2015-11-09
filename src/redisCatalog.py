@@ -41,17 +41,21 @@ class dataStore(redis.StrictRedis, catalog):
         self.host = h
         self.port = int(p)
         self.database = int(d)
-        logging.debug('Data Store, `%s` running on %s, port=%s', self.name, self.host, self.port)
+        logging.debug('Data Store, `%s` DETECTED on %s, port=%s', self.name, self.host, self.port)
 
       # Check connection string -- F/T in case connection dies, using loaded params & self as hostname
-      if not self.ping():
-        logger.warn("WARNING: Redis Server locked, but not running. Running it locally at %s:%d", self.host, self.port)
+      self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
+      logging.debug("CHECKING if Server is up...")
+      if self.exists():
+        logging.debug('Data Store, `%s` ALIVE on %s, port=%s', self.name, self.host, self.port)
+        return
+      else:
+        logger.warning("WARNING: Redis Server locked, but not running. Running it locally at %s:%d", self.host, self.port)
         os.remove(self.lockfile)
         self.start()
 
     # Otherwise, start it locally as a daemon server process
-    else:
-      self.start()
+    self.start()
 
     # Connect to redis as client
     try:
@@ -175,7 +179,7 @@ class dataStore(redis.StrictRedis, catalog):
   # Slice off data in-place. Asssume key stores a list
   def slice(self, key, num):
     data = self.lrange(key, 0, num-1)
-    self.ltrim(key, num-1, -1)
+    self.ltrim(key, num, -1)
     return [d.decode() for d in data]
 
   # Check if key exists in db

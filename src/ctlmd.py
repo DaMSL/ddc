@@ -36,7 +36,7 @@ def generateNewJC(rawfile, frame=-1):
 
     # Retrieve referenced file from storage
     #   TODO: Set up historical archive for retrieval (this may need to be imported)
-    traj  = md.load(rawfile)
+    traj  = md.load(rawfile, top=DEFAULT.PDB_FILE)
 
     #  If no frame ref is provided, grab the middle frame
     #  TODO:  ID specific window reference point
@@ -51,9 +51,9 @@ def generateNewJC(rawfile, frame=-1):
         forcefield = DEFAULT.FFIELD,
         runtime = 100000)
 
-    self.data['JCQueue'].apend(dict(jcuid=newsimJob))
 
-    return jcuid
+
+    return jcuid, newsimJob
 
 
 
@@ -63,7 +63,7 @@ class controlJob(macrothread):
       # State Data for Simulation MacroThread -- organized by state
       self.setInput('LDIndexList')
       self.setTerm('JCComplete', 'processed')
-      self.setExec('indexSize')
+      self.setExec('indexSize', 'JCQueue')
       self.setSplit('anlSplitParam')
       
       # exec incl hash key-name
@@ -88,12 +88,11 @@ class controlJob(macrothread):
       logging.debug('CTL MT. Input = ' + i)
 
       # Fetch all indices
-      ld_index = {k.decode():v.decode() for k, v in self.catalog.hgetall(i).items()}
-
+      ld_index = {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(i).items()}
       archive = redisCatalog.dataStore(**archiveConfig)
       redis_storage = RedisStorage(archive)
 
-      config = redis_storage.load_hash_configuration('rbphash')
+      config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
       if not config:
         logging.error("LSHash not configured")
         #TODO: Gracefully exit
@@ -127,14 +126,16 @@ class controlJob(macrothread):
 
 
           nnkey = neigh[0][1]
-          trajNum, seqNum = decodeLabel(nnkey)
+          trajectory, seqNum = nnkey.split(':')
 
           # Back-project  <--- Move to separate Function tied to decision history
-          archiveFile = os.path.join(DEFAULT.WORK, 'bpti-all-%s.dcd' % trajNum)
-          frameRef = int(seqNum) * DEFAULT.HIST_SLIDE + (DEFAULT.HIST_WINDOW // 2)
-          newJC = generateNewJC(archiveFile, frameRef)
+          archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, '%s.dcd' % trajectory)
+          # frameRef = int(seqNum) * DEFAULT.HIST_SLIDE + (DEFAULT.HIST_WINDOW // 2)
+          frameRef = int(seqNum) + DEFAULT.HIST_WINDOW // 2
+          jcID, jcConfig = generateNewJC(archiveFile, frameRef)
 
-          self.data['JCQueue'].append(newJC)
+          self.data['JCQueue'].append(jcID)
+          self.catalog.save({jcID: jcConfig})
 
 
 

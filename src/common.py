@@ -14,8 +14,9 @@ archiveConfig = dict(name='archive', port=6380)
 class DEFAULT:
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
-  PSF_FILE = os.path.join(WORKDIR, 'bpti', 'bpti.psf')
+  PSF_FILE = os.path.join(WORKDIR, 'bpti.psf')
   PDB_FILE = os.path.join(WORKDIR, 'bpti', 'bpti-all.pdb')
+  RAW_ARCHIVE = os.path.join(WORKDIR, 'bpti')
   FFIELD   = '/home-1/bring4@jhu.edu/bpti/toppar/par_all22_prot.inp'
   HIST_FILE_DIR  = os.path.join(WORKDIR, 'bpti')
   COORD_FILE_DIR = os.path.join(WORKDIR, 'jc')
@@ -27,6 +28,8 @@ class DEFAULT:
 
   HIST_SLIDE  = 50
   HIST_WINDOW = 100
+
+  HASH_NAME = 'lshash'
 
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'

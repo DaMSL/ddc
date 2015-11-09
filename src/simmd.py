@@ -15,6 +15,8 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 #  TODO:  Move this to abstract and est. 'dispatcher' method
 def initialize(catalog, threadnames, schema):
 
+
+
   logging.debug("Getting the registry...")
   catalog.conn()
   logging.debug(" Registry found on %s" % registry.host)
@@ -27,7 +29,6 @@ def initialize(catalog, threadnames, schema):
   catalog.save(schema)
 
   logging.debug("Initialization complete\n")
-
 
 
 
