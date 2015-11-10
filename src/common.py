@@ -14,12 +14,17 @@ archiveConfig = dict(name='archive', port=6380)
 class DEFAULT:
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
-  PSF_FILE = os.path.join(WORKDIR, 'bpti.psf')
+  PSF_FILE = os.path.join(WORKDIR, 'bpti_gen.psf')
   PDB_FILE = os.path.join(WORKDIR, 'bpti', 'bpti-all.pdb')
   RAW_ARCHIVE = os.path.join(WORKDIR, 'bpti')
-  FFIELD   = '/home-1/bring4@jhu.edu/bpti/toppar/par_all22_prot.inp'
+  # FFIELD   = '/home-1/bring4@jhu.edu/namd/toppar/par_all36_prot.rtf'
+
+  TOPO = os.path.join(os.environ['HOME'], 'bpti', 'amber', 'top_all22_prot.inp')
+  PARM = os.path.join(os.environ['HOME'], 'bpti', 'amber', 'par_all22_prot.inp')
+
+  # FFIELD   = '/home-1/bring4@jhu.edu/bpti/toppar/top_all22_prot.prm'
   HIST_FILE_DIR  = os.path.join(WORKDIR, 'bpti')
-  COORD_FILE_DIR = os.path.join(WORKDIR, 'jc')
+  JOB_DIR = os.path.join(WORKDIR, 'jc')
   # INDEX_LOCKFILE = os.path.join(WORKDIR, 'index.lock')
   CONFIG_DIR     = WORKDIR
   NUM_PCOMP = 2
@@ -34,13 +39,8 @@ class DEFAULT:
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
 
-
-  TOPO   = '/home-1/bring4@jhu.edu/bpti/toppar/top_all22_prot.inp'
-  SRC_PROT   = '/home-1/bring4@jhu.edu/bpti/BPTI_protein.pdb'
-  SRC_WATER   = '/home-1/bring4@jhu.edu/bpti/BPTI_water.pdb'
-
-  NEWSIM_PARAM = dict(topo=TOPO, bpti_prot=SRC_PROT, bpti_water=SRC_WATER,
-    forcefield=FFIELD)
+  # NEWSIM_PARAM = dict(topo=TOPO, bpti_prot=SRC_PROT, bpti_water=SRC_WATER,
+  #   forcefield=FFIELD)
 
 
 
@@ -58,8 +58,8 @@ class DEFAULT:
 
   @classmethod
   def envSetup(cls):
-    if not os.path.exists(cls.COORD_FILE_DIR):
-      os.mkdir(cls.COORD_FILE_DIR)
+    if not os.path.exists(cls.JOB_DIR):
+      os.mkdir(cls.JOB_DIR)
 
 
 
@@ -91,10 +91,10 @@ def decodeLabel(label):
   return int(win), int(seq)
 
 def getJC_Key(uid):
-  return "jc_%s" % str(uid)
+  return "jc_%s" % str(uid) if not jckey.startswith('jc_') else uid
 
 def getJC_UID(jckey):
-  return jckey[3:]
+  return jckey[3:] if jckey.startswith('jc_') else jckey
 
 
 
@@ -116,34 +116,85 @@ def executecmd(cmd):
 #  PROGRAM DEFAULTS FOR INITIALIZATION
 #   TODO:  Consolidate & dev config file
 
-jcuid = getUID()
-jcuid = '1ab98866'
-startCoord = jcuid + '.pdb'
-shutil.copyfile('bpti.pdb', startCoord)
-
-
-sampleSimJobCandidate = dict(
-  psf     = DEFAULT.PSF_FILE,
-  pdb     = startCoord,
-  forcefield = DEFAULT.FFIELD,
-  runtime = 200000)
-
-jcKey = getJC_Key(jcuid)
-
-initParams = {jcKey:sampleSimJobCandidate}
-
 schema = dict(  
-      JCQueue = list(initParams.keys()),
-      JCComplete = 0,
-      JCTotal = len(initParams),
-      simSplitParam =  1, 
-      dcdFileList =  [], 
-      processed =  0,
-      anlSplitParam =  1,
-      indexSize = 852*DEFAULT.NUM_PCOMP,
-      LDIndexList = [],
-      omega =  [0, 0, 0, 0],
-      omegaMask = [False, False, False, False],
-      converge =  0.)
+        JCQueue = [],
+        JCComplete = 0,
+        JCTotal = 1,
+        simSplitParam =  1, 
+        anlSplitParam =  1,
+        dcdFileList =  [], 
+        processed =  0,
+        indexSize = 852*DEFAULT.NUM_PCOMP,
+        LDIndexList = [],
+        converge =  0.)
 
-threadnames = ['simmd', 'anlmd', 'ctlmd']
+
+def initialize(catalog, archive, flushArchive=False):
+
+
+  #  Create a "seed" job
+  logging.debug("Loading schema and setting initial job")
+  jcuid = 'SEED'
+
+  seedJobCandidate = dict(
+    psf     = jcuid + '.psf',
+    pdb     = jcuid + '.pdb',
+    parm    = DEFAULT.PARM,
+    name    = jcuid,
+    temp    = 310,
+    runtime = 200000)
+
+  key = getJC_Key(jcuid)
+  initParams = {key:seedJobCandidate}
+
+  # Load schema and insert the start job into the queue
+  startState = dict(schema)
+  startState['JCQueue'] = [key]
+  startState['JCTotal'] = 1
+
+
+  threadnames = ['simmd', 'anlmd', 'ctlmd']
+
+  # TODO:  Job ID Management
+  ids = {'id_' + name : 0 for name in threadnames}
+
+  logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
+  catalog.clear()
+
+  logging.debug("Loading initial state into catalog.")
+  catalog.save(ids)
+  catalog.save(startState)
+  catalog.save(initParams)
+
+
+  logging.debug("Stopping the catalog.")
+  catalog.stop()
+  if os.path.exists('catalog.lock'):
+    os.remove('catalog.lock')
+
+
+
+  logging.debug("Archive found on `%s`. Stopping it.", archive.host)
+
+  if flushArchive:
+    archive.clear()
+
+    # Create redis storage adapter
+    redis_storage = RedisStorage(archive)
+
+    # Create Hash
+    lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, 3)
+
+    # Store hash configuration in redis for later use
+    logging.debug('Storing Hash in Archive')
+    redis_storage.store_hash_configuration(lshash)
+
+    # TODO:  Automate Historical Archive (Re)Loading
+
+
+  archive.stop()
+  if os.path.exists('archive.lock'):
+    os.remove('archive.lock')
+
+
+  logging.debug("Initialization complete\n")

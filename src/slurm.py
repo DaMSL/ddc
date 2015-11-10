@@ -41,6 +41,7 @@ class slurm:
 
     inline += '#SBATCH --output=%s.out\n' % str(jobid)
     inline += '#SBATCH --workdir=%s\n' % str(workdir)
+    inline += '#SBATCH --partition=parallel\n'
 
     for mod in modules:
       inline += 'module load %s\n' % mod

@@ -13,22 +13,6 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
 #  TODO:  Move this to abstract and est. 'dispatcher' method
-def initialize(catalog, threadnames, schema):
-
-
-
-  logging.debug("Getting the registry...")
-  catalog.conn()
-  logging.debug(" Registry found on %s" % registry.host)
-
-  catalog.clear()
-  # Job ID Management
-  ids = {'id_' + name : 0 for name in threadnames}
-
-  catalog.save(ids)
-  catalog.save(schema)
-
-  logging.debug("Initialization complete\n")
 
 
 
@@ -46,7 +30,7 @@ class simulationJob(macrothread):
     # Static Data common across all simulationJobs (for now) 
     self.psf = DEFAULT.PSF_FILE
     self.pdb = DEFAULT.PDB_FILE
-    self.forcefield = DEFAULT.FFIELD
+    # self.forcefield = DEFAULT.FFIELD
 
     # Local Data to this running instance
     self.cpu = DEFAULT.CPU_PER_NODE
@@ -83,26 +67,25 @@ class simulationJob(macrothread):
     # uid = common.getUID()
     jobnum = getJC_UID(i)
 
+
     # Load parameters from catalog & source to config file
-    inputs = self.catalog.hgetall(i)
+    inputs = self.catalog.hgetall(getJC_Key(i))
     params = {k.decode():v.decode() for k,v in inputs.items()}
-    params['outname'] = jobnum
     logging.debug("Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
 
     # Prepare working directory, input/output files
-    workdir = os.path.join(DEFAULT.WORKDIR, str(jobnum))
+    workdir = os.path.join(DEFAULT.JOB_DIR, str(jobnum))
     conFile = os.path.join(workdir, str(jobnum) + '.conf')
     logFile = os.path.join(workdir, str(jobnum) + '.log')
     dcdFile = os.path.join(workdir, str(jobnum) + '.dcd')
 
-    if not os.path.exists(workdir):
-      os.mkdir(workdir)
-
     with open(conFile, 'w') as config:
       config.write(source % params)
       logging.info("Config written to: " + conFile)
+
+    # self.slurmParams['partition'] = 'parallel'
 
     # Schedule Simulation from within execute function. This will be unsupervised
     stdout = slurm.sbatch(jobid=str(jobnum),
@@ -133,17 +116,12 @@ if __name__ == '__main__':
   parser.add_argument('-i', '--init', action='store_true')
   args = parser.parse_args()
 
-  # Determine type of registry to use
-  registry = redisCatalog.dataStore('catalog')  
+  catalog = redisCatalog.dataStore('catalog')
+  archive = redisCatalog.dataStore(**archiveConfig)
 
 
   if args.init:
-    logging.debug("Loading Schema.....")
-    initialize(registry, threadnames, schema)
-    logging.debug("Loading initial parameters.....")
-    registry.save(initParams)
-    logging.info("Initialization Complete. Exiting")
-    registry.stop()
+    initialize(catalog, archive)
     sys.exit(0)
 
     # Make DDC app class to hide __main__ details; 
@@ -155,7 +133,7 @@ if __name__ == '__main__':
   # Implementation options:  Separate files for each macrothread OR
   #    dispatch macrothread via command line arg
   mt = simulationJob(schema, __file__)
-  mt.setCatalog(registry)
+  mt.setCatalog(catalog)
 
   # mt.setCatalog(registry)
 

@@ -107,46 +107,6 @@ def eigenDecomB(traj):
 
 
 
-def initialize(archive):
-
-  if os.path.exists('catalog.lock'):
-    os.remove('catalog.lock')
-
-  archive.flushall()
-
-  # ref: https://github.com/pixelogik/NearPy
-  # Create redis storage adapter
-  redis_storage = RedisStorage(archive)
-
-  # Create Hash
-  lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, 3)
-
-  # Store hash configuration in redis for later use
-  logging.debug('Storing Hash in Archive')
-  redis_storage.store_hash_configuration(lshash)
-
-  
-  # indexSize = 284   
-  # engine = nearpy.Engine(indexSize, lshashes=[lshash])
-  # numLoadedFile = 0
-  # numIndices = 0
-  # indexdir = os.path.join(os.getenv('HOME'), 'scratch')
-  # for idxnum in range(2000):
-  #   srcFile = os.path.join(indexdir, 'index_%04d.npy' % idxnum)
-  #   if os.path.exists(srcFile):
-  #     numLoadedFile += 1
-  #     source = np.load(srcFile)
-  #     for seqnum, window in enumerate(source):
-  #       eigen = window.reshape(5, 3, 284)
-  #       idx = eigen[0][0]
-  #       engine.store_vector(idx, encodeLabel(idxnum, seqnum))
-  #       numIndices += 1
-
-  # logging.debug("Loaded Deshaw data: %d files loaded, total of %d indices", numLoadedFile, numIndices)
-  archive.stop()
-
-
-
 class analysisJob(macrothread):
     def __init__(self, schema, fname):
       macrothread.__init__(self, schema, fname, 'simmd')
@@ -180,10 +140,12 @@ class analysisJob(macrothread):
       i.replace(':', '_').replace('-', '_')
       jobnum = os.path.basename(i).split('.')[0].split('_')[-1]
       logging.debug("jobnum = " + jobnum)
-      
+
+      dcd = os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.dcd" % jobnum)
+      pdb = os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.pdb" % jobnum)
 
       # 1. Load raw data from trajectory file
-      traj = md.load(i, top=DEFAULT.PDB_FILE)
+      traj = md.load(dcd, top=pdb)
       filterMin  = traj.top.select_atom_indices(selection='minimal')
       traj.atom_slice(filterMin, inplace=True)
 
@@ -273,7 +235,7 @@ if __name__ == '__main__':
 
   if args.init:
     logging.debug("Initializing the archive.....")
-    initialize(archive)
+    initialize(flushArchive=True)
     sys.exit(0)
 
   registry = redisCatalog.dataStore('catalog')

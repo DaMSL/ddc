@@ -23,11 +23,11 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 def psfgen(params):
   return '''psfgen << ENDMOL
 
-# 1. Read topology file
+# 1. Load Topology File
 topology %(topo)s
 
-# 2. Build protein segment
-segment BPTI {pdb %(bpti_prot)s}
+# 2. Load Protein
+segment BPTI {pdb %(coord)s}
 
 # 3. Patch protein segment
 patch DISU BPTI:5 BPTI:55
@@ -38,31 +38,14 @@ patch DISU BPTI:30 BPTI:51
 pdbalias atom ILE CD1 CD ; 
 coordpdb %(coord)s BPTI
 
-# 5. Build water segment
-pdbalias residue HOH TIP3 ; 
-segment SOLV {
-auto none
-pdb %(bpti_water)s
-}
-
-# 6. Read water coordinaes from PDB file
-pdbalias atom HOH O OH2 ; 
-coordpdb %(bpti_water)s SOLV
-
-# 7. Guess missing coordinates
 guesscoord
 
-# 8. Write structure and coordinate files
 writepsf %(psf)s
 writepdb %(pdb)s
 
 ENDMOL''' % params
 
 
-
-def initialize():
-
-  pass
 
 
 def generateNewJC(rawfile, frame=-1):
@@ -71,19 +54,28 @@ def generateNewJC(rawfile, frame=-1):
 
     # Get a new uid
     jcuid = getUID()
+    jcuid = 'DEBUG'
 
     # Write out coords (TODO: should this go to catalog or to file?)
-    tmpCoord = os.path.join(DEFAULT.COORD_FILE_DIR, '%s_tmp.pdb' % jcuid)
-    newCoordFile = os.path.join(DEFAULT.COORD_FILE_DIR, '%s.pdb' % jcuid)
-    newPsfFile = os.path.join(DEFAULT.COORD_FILE_DIR, '%s.psf' % jcuid)
+    # tmpCoord = os.path.join(DEFAULT.COORD_FILE_DIR, '%s_tmp.pdb' % jcuid)
+    jobdir = os.path.join(DEFAULT.JOB_DIR,  jcuid)
+    coordFile  = os.path.join(jobdir, '%s_coord.pdb' % jcuid)
+    newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
+    newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
 
-    logging.debug("Files to use: %s, %s, %s", tmpCoord, newCoordFile, newPsfFile)
+    logging.debug("Files to use: %s, %s", coordFile, newPsfFile)
+
+
+    if not os.path.exists(jobdir):
+      os.makedirs(jobdir)
 
     # Retrieve referenced file from storage
     #   TODO: Set up historical archive for retrieval (this may need to be imported)
+    
+    #  Load in Historical Referenced trajectory file, filter out proteins & slice
     traj  = md.load(rawfile, top=DEFAULT.PDB_FILE)
-    filt = traj.top.select_atom_indices('all')    
-    # traj.atom_slice(filt, inplace=True)
+    filt = traj.top.select('protein')    
+    traj.atom_slice(filt, inplace=True)
     
     #  If no frame ref is provided, grab the middle frame
     #  TODO:  ID specific window reference point
@@ -91,39 +83,26 @@ def generateNewJC(rawfile, frame=-1):
       frame = traj.n_fames // 2
     coord = traj.slice(frame)
 
-    logging.debug("Working source traj: %s", str(traj))
+    logging.debug("Working source traj: %s", str(coord))
 
     # Save this as a temp file to set up simulation input file
-    coord.save_pdb(tmpCoord)
+    coord.save_pdb(coordFile)
 
-    logging.debug("Coord file saved. Params to use:")
+    logging.debug("Coord file saved.")
 
-    newsimJob = dict(DEFAULT.NEWSIM_PARAM,
-        coord   = tmpCoord,
+    newsimJob = dict(coord = coordFile,
+        pdb     = newPdbFile,
         psf     = newPsfFile,
-        pdb     = newCoordFile,
-        runtime = 100000)
-
-    for k, v in newsimJob.items():
-      logging.debug("   %s:  %s", str(k), str(v))
+        topo    = DEFAULT.TOPO,
+        parm    = DEFAULT.PARM)
 
     cmd = psfgen(newsimJob)
 
-    with open('psfgen.tcl', 'w') as out:
-      out.write(cmd)
+    logging.debug("  PSFGen new simulation:\n " + cmd)
 
-    logging.debug(" PSFGen SCRIPT: \n" + cmd)
+    stdout = executecmd(cmd)
 
-    stdout = executecmd(psfgen(newsimJob))
-
-
-    logging.debug(" PSFGen COMPLETE!!\n" + stdout)
-
-    # os.remove(tmpCoord)
-
-    # with open(self.config, 'w') as config:
-    #   config.write(psfgen_template(newsimJob))
-    #   logging.info("PSFGen Script written to  %s", config)
+    logging.debug("  PSFGen COMPLETE!!\n" + stdout)
 
 
     return jcuid, newsimJob
@@ -204,10 +183,21 @@ class controlJob(macrothread):
           archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, '%s.dcd' % trajectory)
           # frameRef = int(seqNum) * DEFAULT.HIST_SLIDE + (DEFAULT.HIST_WINDOW // 2)
           frameRef = int(seqNum) + DEFAULT.HIST_WINDOW // 2
-          jcID, jcConfig = generateNewJC(archiveFile, frameRef)
+          jcID, params = generateNewJC(archiveFile, frameRef)
+
+
+          # NOTE: Update Additional JC Params, as needed
+          jcConfig = dict(params,
+              name    = jcID,
+              runtime = 100000,
+              temp    = 310)
+
+
 
           self.data['JCQueue'].append(jcID)
           self.catalog.save({jcID: jcConfig})
+
+          logging.info("New JC Complete:  %s" % jcID)
           return
 
 
@@ -225,10 +215,6 @@ if __name__ == '__main__':
 
   mt = controlJob(schema, __file__)
   mt.setCatalog(registry)
-
-  if args.init:
-    logging("Nothing to intialize for control")
-    sys.exit(0)
 
 
   if args.debug:
