@@ -19,7 +19,7 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 class simulationJob(macrothread):
   def __init__(self, schema, fname, jobnum = None):
-    macrothread.__init__(self, schema, fname, 'simmd')
+    macrothread.__init__(self, schema, fname, 'sim')
 
     # State Data for Simulation MacroThread -- organized by state
     self.setInput('JCQueue')
@@ -55,46 +55,36 @@ class simulationJob(macrothread):
     immed = catalog.slice('JCQueue', split)
     return immed
 
+
   def execute(self, i):
     logging.debug("WORKER Input received: " + str(i))
 
+    logging.info("Preparing Simulation: " + i)
     # Prepare 
     with open(DEFAULT.SIM_CONF_TEMPLATE, 'r') as template:
       source = template.read()
-      logging.info("SOURCE LOADED:")
-
-    # TODO: Better Job ID Mgmt
-    # uid = common.getUID()
-    jobnum = getJC_UID(i)
-
 
     # Load parameters from catalog & source to config file
+    logging.debug("Pulling Params from: %s", self.catalog.host)
     inputs = self.catalog.hgetall(getJC_Key(i))
     params = {k.decode():v.decode() for k,v in inputs.items()}
-    logging.debug("Job Candidate Params:")
+    logging.debug(" Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
 
     # Prepare working directory, input/output files
-    workdir = os.path.join(DEFAULT.JOB_DIR, str(jobnum))
-    conFile = os.path.join(workdir, str(jobnum) + '.conf')
-    logFile = os.path.join(workdir, str(jobnum) + '.log')
-    dcdFile = os.path.join(workdir, str(jobnum) + '.dcd')
+    conFile = os.path.join(params['workdir'], str(getJC_UID(i)) + '.conf')
+    logFile = conFile.replace('conf', 'log')      # log in same place as config file
+    dcdFile = conFile.replace('conf', 'dcd')      # log in same place as config file
 
     with open(conFile, 'w') as config:
       config.write(source % params)
-      logging.info("Config written to: " + conFile)
+      logging.info(" Config written to: " + conFile)
 
-    self.slurmParams['job-name'] = 'sim-W-' + str(jobnum)
+    logging.debug("Executing Simulation.")
+    stdout = executecmd('charmrun +p%d namd2 %s > %s' % (DEFAULT.CPU_PER_NODE, conFile, logFile))
 
-    # Schedule Simulation from within execute function. This will be unsupervised
-    stdout = slurm.sbatch(jobid=str(jobnum),
-      workdir = workdir, 
-      options = self.slurmParams,
-      modules = self.modules,
-      cmd = 'charmrun +p%d namd2 %s > %s' % (DEFAULT.CPU_PER_NODE, conFile, logFile))
-
-    logging.info("SIMULATION Submitted! STDOUT/ERR Follows:")
+    logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     logging.info(stdout)
     
     # Update Local State

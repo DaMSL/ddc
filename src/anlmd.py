@@ -106,7 +106,7 @@ def eigenDecomB(traj):
 
 class analysisJob(macrothread):
     def __init__(self, schema, fname):
-      macrothread.__init__(self, schema, fname, 'simmd')
+      macrothread.__init__(self, schema, fname, 'anl')
       # State Data for Simulation MacroThread -- organized by state
       self.setInput('dcdFileList')
       self.setTerm('JCComplete', 'processed')

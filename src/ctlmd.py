@@ -90,7 +90,8 @@ def generateNewJC(rawfile, frame=-1):
 
     logging.debug("Coord file saved.")
 
-    newsimJob = dict(coord = coordFile,
+    newsimJob = dict(workdir=jobdir,
+        coord = coordFile,
         pdb     = newPdbFile,
         psf     = newPsfFile,
         topo    = DEFAULT.TOPO,
@@ -111,7 +112,7 @@ def generateNewJC(rawfile, frame=-1):
 
 class controlJob(macrothread):
     def __init__(self, schema, fname):
-      macrothread.__init__(self, schema, fname, 'ctlmd')
+      macrothread.__init__(self, schema, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
       self.setInput('LDIndexList')
       self.setTerm('JCComplete', 'processed')

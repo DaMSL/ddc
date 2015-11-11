@@ -17,6 +17,7 @@ class DEFAULT:
 
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
+  LOG_DIR  = os.path.join(WORKDIR, 'log')
   PSF_FILE = os.path.join(WORKDIR, 'bpti_gen.psf')
   PDB_FILE = os.path.join(WORKDIR, 'bpti', 'bpti-all.pdb')
   RAW_ARCHIVE = os.path.join(WORKDIR, 'bpti')
@@ -42,28 +43,15 @@ class DEFAULT:
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
 
-  # NEWSIM_PARAM = dict(topo=TOPO, bpti_prot=SRC_PROT, bpti_water=SRC_WATER,
-  #   forcefield=FFIELD)
-
-
-
-  # NUM_NEIGH = 1000
-  # MDS_DIM = 250
-  # NUM_NEIGH = 100
-  # MDS_DIM = 500
-  # MDS_START = 50
-  # MDS_STEP = 25
-  # Noise Params
-  # NOISE_CUT_START = 0.0
-  # NOISE_CUT_STEP  = 0.01
-  # NOISE_CUT_NUM   = 9
 
 
   @classmethod
   def envSetup(cls):
     if not os.path.exists(cls.JOB_DIR):
-      os.mkdir(cls.JOB_DIR)
+      os.makedirs(cls.JOB_DIR)
 
+    if not os.path.exists(cls.LOG_DIR):
+      os.mkdir(cls.LOG_DIR)
 
 
 
@@ -140,12 +128,14 @@ def initialize(catalog, archive, flushArchive=False):
   jcuid = 'SEED'
 
   seedJobCandidate = dict(
+    workdir = str(os.path.join(DEFAULT.JOB_DIR,  jcuid)),
     psf     = jcuid + '.psf',
     pdb     = jcuid + '.pdb',
     parm    = DEFAULT.PARM,
     name    = jcuid,
     temp    = 310,
-    runtime = 200000)
+    runtime = 25000)
+
 
   key = getJC_Key(jcuid)
   initParams = {key:seedJobCandidate}
@@ -157,10 +147,8 @@ def initialize(catalog, archive, flushArchive=False):
 
   executecmd("shopt -s extglob | rm !(SEED.p*)")
 
-  threadnames = ['simmd', 'anlmd', 'ctlmd']
-
   # TODO:  Job ID Management
-  ids = {'id_' + name : 0 for name in threadnames}
+  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl']}
 
   logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
   catalog.clear()
@@ -170,6 +158,9 @@ def initialize(catalog, archive, flushArchive=False):
   catalog.save(startState)
   catalog.save(initParams)
 
+  for k, v in initParams.items():
+      logging.debug("    %s: %s" % (k, v))
+  
 
   logging.debug("Stopping the catalog.")
   catalog.stop()

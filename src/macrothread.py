@@ -8,7 +8,7 @@ import abc
 import redis
 # from retrying import retry
 
-from common import DEFAULT, setLogger, archiveConfig
+from common import * 
 import catalog
 from slurm import slurm
 
@@ -43,11 +43,17 @@ class macrothread(object):
 
     self.catalog = None
 
-    # RUNTIME Parameters
-    #  These vary from mt to mt (and among workers), but are passed to SLURM manager
+    # Runtime Modules to load 
     self.modules = []
-    self.slurmParams = {'time':'6:0:0', 'nodes':1, 'cpus-per-task':24, 'job-name':self.name}
 
+    # Default Runtime parameters to pass to slurm manager
+    #  These vary from mt to mt (and among workers) and can be updated
+    #  through the prepare method
+    self.slurmParams = {'time':'6:0:0', 
+              'nodes':1, 
+              'cpus-per-task':24, 
+              'job-name':self.name,
+              'workdir' : os.getcwd()}
 
   # For now retain 2 copies -- to enable reverting of data
   #   Eventually this may change to a flag based data structure for inp/exec/term, etc...
@@ -120,7 +126,7 @@ class macrothread(object):
 
   def manager(self, fork=False):
 
-    logger.debug("\n==========================\n  %s  -- MANAGER", self.name)
+    logger.debug("\n==========================\n  MANAGER:  %s", self.name)
 
     # Catalog Service Check here
     self.catalog.conn()
@@ -143,73 +149,43 @@ class macrothread(object):
 
     #  TODO:  Det if manager should load entire input data set, make this abstract, or
     #     push into UDF portion
-    immed = self.split()
-    jobid = self.data['id_%s' % self.name]
+    immed  = self.split()
+    jobid  = self.data['id_%s' % self.name]
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
       delay = DEFAULT.MANAGER_RERUN_DELAY
-
-      logger.debug("%s-MANAGER: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
-      # slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), delay=delay, name=self.name + '-M')
-
+      logger.debug("MANAGER %s: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
       self.slurmParams['begin'] = 'now+%d' % delay
 
     # Dispatch Workers
     else:
       for i in immed:
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
-
-
-        if self.fork:
-          # OPTION B:  Fork worker thread as a separate unsupervised (e.g. daemonized) process
-          logger.debug("Forking Worker: " + str(i))
-          self.execute(i)        
-
-        else:
-          # OPTION A:  Make worker child thread within python worker process
-          slurm.sbatch(jobid='%04d' % jobid,
-              workdir = os.getcwd(), 
-              options = self.slurmParams,
-              modules = self.modules,
-              cmd = "python3 %s -w %s" % (self.fname, str(i)))
-
-
-          # OPTION C --> est a "prepare" routine which is invoked to pre-process input
-          #   files and returns the sbatch job
-
-        # slurm.sbatch(self.name + '%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, str(i)), name=self.name + '-W')
+        self.slurmParams['job-name'] = "%sW-%05d" % (self.name, jobid)
+        slurm.sbatch(taskid=self.slurmParams['job-name'],
+            options = self.slurmParams,
+            modules = self.modules,
+            cmd = "python3 %s -w %s" % (self.fname, str(i)))
         jobid += 1
 
-    self.slurmParams['job-name'] += self.name + '-M-' + str(jobid)
-    slurm.sbatch(jobid='%04d' % jobid,
-              workdir = os.getcwd(), 
-              options = self.slurmParams,
-              modules = self.modules,
+
+    # Reschedule Next Manager:
+    # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
+    self.slurmParams['job-name'] = "%sM-%05d" % (self.name, jobid)
+    slurm.sbatch(taskid =self.slurmParams['job-name'],
+              options   = self.slurmParams,
+              modules   = self.modules,
               cmd = "python3 %s" % self.fname)
-
-
-      # Reschedule Next Manager:
-
-      # METHOD 1.  Schedule self after scheduling ALL workers
-            # workdir = '~/bpti/manager', 
-
-        # slurm.sbatch(jobid='%s%04d' % (self.name, jobid),
-        #     workdir = os.getcwd(), 
-        #     options = self.slurmParams,
-        #     modules = self.modules,
-        #     cmd = "python3 %s %s -m" % (self.fname, self.name))
-
-      # slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), name=self.name + '-M')
     jobid += 1
 
-      # METHOD 2.  After.... use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
+    # METHOD 2.  Trigger Based
+    #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
 
     self.data['id_%s' % self.name] = jobid
 
     self.save(self._split)
     self.save(self._exec)
-    # catalog.save('id_' + self.name, jobid)
     logger.debug("==========================")
 
     return 1
@@ -225,13 +201,10 @@ class macrothread(object):
     # TODO: Optimization Notifications
     #  catalog.notify(i, "active")
 
-    # Call user-defined execution function
-
     #  CHECK CATALOG STATUS
 
     self.load(self._exec)
     self.load(self._term)
-
 
     logger.debug("Starting Worker Execution")
     result = self.execute(jobInput)
@@ -279,16 +252,17 @@ class macrothread(object):
       logging.debug("DEBUGGING: %s", self.name)
       sys.exit(0)
 
-    if args.init:
-      initialize(catalog, archive)
-      sys.exit(0)
-
     # TODO:  Abstract The Catalog/Archive to enable mutliple
     #   and dynamic Storage type    
     #   FOR NOW:  Use a Redis Implmentation
 
     catalog = redisCatalog.dataStore('catalog')
     archive = redisCatalog.dataStore(**archiveConfig)
+
+    if args.init:
+      initialize(catalog, archive)
+      sys.exit(0)
+
 
     self.setCatalog(catalog)
 

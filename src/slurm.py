@@ -31,18 +31,17 @@ class slurm:
     return [slurmJob(*(job.split())) for job in joblist]
 
   @classmethod
-  def sbatch(cls, jobid, workdir, options, modules, cmd):
+  def sbatch(cls, taskid, options, modules, cmd):
 
-    logging.info("Sbatch Job submitted for " + str(jobid))
+    logging.info("Slurm sbatch Job submitted for " + str(taskid))
 
     inline = '#!/bin/bash -l\n\n#SBATCH\n'
 
     for k, v in options.items():
       inline += '#SBATCH --%s=%s\n' % (k, str(v))
 
-    inline += '#SBATCH --time=720\n'
-    inline += '#SBATCH --output=%s.out\n' % str(jobid)
-    inline += '#SBATCH --workdir=%s\n' % str(workdir)
+    joboutput = "%s/%s.out" % (DEFAULT.LOG_DIR, str(taskid))
+    inline += '#SBATCH --output=%s\n' % joboutput
     inline += '#SBATCH --partition=parallel\n'
 
     for mod in modules:
@@ -51,15 +50,16 @@ class slurm:
     inline += '\n%s\n' % cmd
 
 
-    logging.info("Inline SBATCH: ")
+    logging.info("Inline SBATCH:------------->>")
     logging.info(inline)
+    logging.info("<<-------  Batch Complete")
 
     # Launch job
     job = proc.Popen('sbatch <<EOF\n%sEOF' % inline,
       shell=True, stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
     stdout, stderr = job.communicate()
 
-    logging.info("SBAtch Submitted. Output follows:")
+    logging.info("Slurm Batch Job Submitted. Output follows:")
     logging.info(stdout.decode())
     return stdout.decode()
 
