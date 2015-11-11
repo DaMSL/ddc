@@ -43,6 +43,7 @@ class DEFAULT:
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
 
+  PARTITION = 'parallel'
 
 
   @classmethod
@@ -87,6 +88,11 @@ def getJC_Key(uid):
 def getJC_UID(jckey):
   return jckey[3:] if jckey.startswith('jc_') else jckey
 
+def wrapKey(prefix, key):
+  return "%s_%s" % (prefix, key) if not key.startswith('%s_' % prefix) else key
+
+def unwrapKey(key):
+  return key[key.find('_')+1:] if '_' in key else key
 
 
 def chmodX(path):

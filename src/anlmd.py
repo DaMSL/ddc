@@ -150,7 +150,7 @@ class analysisJob(macrothread):
       filterMin  = traj.top.select_atom_indices(selection='minimal')
       traj.atom_slice(filterMin, inplace=True)
 
-      logging.debug('Trajectory Loaded')
+      logging.debug('Trajectory Loaded: %s', str(traj))
       result = {}
       indexSize = 0
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
@@ -165,7 +165,7 @@ class analysisJob(macrothread):
           np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
         # 3. store index
         key = jobnum + ':' + '%03d' % win
-        logging.debug('Saving Index: %s', key)
+        logging.debug('Cachine Index locally: %s', key)
         result[key] = index.flatten()
         if not indexSize:
           indexSize = len(result[key])
@@ -206,8 +206,15 @@ class analysisJob(macrothread):
         for k, v in result.items():
           logging.debug(" `%s`:  %s" % (k, str(v.shape)))
         packed = {k: v.tobytes() for k, v in result.items()}
-        self.catalog.save({jobnum: packed})
-        self.data['LDIndexList'].append(jobnum)
+        
+        # Index Key : If/When to update job ID management for downstream data
+        index_key = wrapKey('idx', jobnum)
+        self.catalog.save({index_key: packed})
+        self.data['LDIndexList'].append(index_key)
+        logging.debug("DEBUG indexlist follows")
+        for l in self.data['LDIndexList']:
+          logging.debug(" INDEX: " + l)
+        return index_key
 
 
 

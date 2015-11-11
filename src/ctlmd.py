@@ -103,8 +103,9 @@ def generateNewJC(rawfile, frame=-1):
 
     stdout = executecmd(cmd)
 
-    logging.debug("  PSFGen COMPLETE!!\n" + stdout)
+    logging.debug("  PSFGen COMPLETE!!  Cleaning up\n" + stdout)
 
+    os.remove(coordFile)
 
     return jcuid, newsimJob
 
@@ -144,7 +145,7 @@ class controlJob(macrothread):
       logging.debug('CTL MT. Input = ' + i)
 
       # Fetch all indices
-      ld_index = {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(i).items()}
+      ld_index = {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(wrapKey('idx', i)).items()}
       archive = redisCatalog.dataStore(**archiveConfig)
       redis_storage = RedisStorage(archive)
 
@@ -196,10 +197,14 @@ class controlJob(macrothread):
               runtime = 100000,
               temp    = 310)
 
+          logging.info("New Simulation Job Created: %s", jcID)
+          for k, v in jcConfig.items():
+            logging.debug("   %s:  %s", k, str(v))
 
+          jckey = wrapKey('jc', jcID)
 
           self.data['JCQueue'].append(jcID)
-          self.catalog.save({jcID: jcConfig})
+          self.catalog.save({jckey: jcConfig})
 
           logging.info("New JC Complete:  %s" % jcID)
           

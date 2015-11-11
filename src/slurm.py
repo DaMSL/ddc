@@ -42,7 +42,8 @@ class slurm:
 
     joboutput = "%s/%s.out" % (DEFAULT.LOG_DIR, str(taskid))
     inline += '#SBATCH --output=%s\n' % joboutput
-    inline += '#SBATCH --partition=parallel\n'
+    if DEFAULT.PARTITION:
+      inline += '#SBATCH --partition=%s\n' % DEFAULT.PARTITION
 
     for mod in modules:
       inline += 'module load %s\n' % mod

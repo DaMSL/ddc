@@ -66,14 +66,14 @@ class simulationJob(macrothread):
 
     # Load parameters from catalog & source to config file
     logging.debug("Pulling Params from: %s", self.catalog.host)
-    inputs = self.catalog.hgetall(getJC_Key(i))
+    inputs = self.catalog.hgetall(wrapKey('jc', i))
     params = {k.decode():v.decode() for k,v in inputs.items()}
     logging.debug(" Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
 
     # Prepare working directory, input/output files
-    conFile = os.path.join(params['workdir'], str(getJC_UID(i)) + '.conf')
+    conFile = os.path.join(params['workdir'], unwrapKey(i) + '.conf')
     logFile = conFile.replace('conf', 'log')      # log in same place as config file
     dcdFile = conFile.replace('conf', 'dcd')      # log in same place as config file
 
@@ -81,8 +81,10 @@ class simulationJob(macrothread):
       config.write(source % params)
       logging.info(" Config written to: " + conFile)
 
-    logging.debug("Executing Simulation.")
-    stdout = executecmd('charmrun +p%d namd2 %s > %s' % (DEFAULT.CPU_PER_NODE, conFile, logFile))
+    cmd = 'mpiexec -n %d namd2 %s > %s' % (DEFAULT.CPU_PER_NODE, conFile, logFile)
+    logging.debug("Executing Simulation:\n   %s\n", cmd)
+
+    stdout = executecmd(cmd)
 
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     logging.info(stdout)

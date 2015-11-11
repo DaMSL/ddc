@@ -117,20 +117,20 @@ class dataStore(redis.StrictRedis, catalog):
 
     pipe = self.pipeline()
     for key, value in data.items():
-      # if key == 'JCQueue':
-      #   print (key, type(key), value, type(value))
+      if key == 'JCQueue':
+        print (key, type(key), value, type(value))
       if isinstance(value, list):
-        pipe.delete(key)
+        #pipe.delete(key)
         if len(value) > 0:
-          # if key == 'JCQueue':
-          #   print ("     SETTING:", value, type(value), len(value))
+          if key == 'JCQueue':
+            print ("     SETTING:", value, type(value), len(value))
           pipe.rpush(key, *(tuple(value)))
 
       elif isinstance(value, dict):
         pipe.hmset(key, value)
       else:
         pipe.set(key, value)
-      logger.debug("Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
+      logger.debug("  Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
 
       # TODO:  handle other datatypes beside list
 

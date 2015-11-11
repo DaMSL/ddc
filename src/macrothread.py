@@ -115,10 +115,8 @@ class macrothread(object):
     """
     Save state to remote catalog
     """
-    logger.debug(" --> call for mt.save")    
     # TODO: Check for catalog here (????)
     for key, value in state.items():
-      logger.debug("    --> saving: " + key)    
       state[key]      = self.data[key]
     self.catalog.save(state)
 
@@ -172,6 +170,10 @@ class macrothread(object):
 
     # Reschedule Next Manager:
     # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
+    #      FOR NOW, back off delay  (for debug/demo/testing)
+    delay = DEFAULT.MANAGER_RERUN_DELAY // 2  
+    self.slurmParams['begin'] = 'now+%d' % delay
+
     self.slurmParams['job-name'] = "%sM-%05d" % (self.name, jobid)
     slurm.sbatch(taskid =self.slurmParams['job-name'],
               options   = self.slurmParams,
@@ -192,7 +194,7 @@ class macrothread(object):
 
 
   def worker(self, i):
-    logger.debug("\n--------------------------\n  %s  -- WORKER", self.name)
+    logger.debug("\n--------------------------\n   WORKER:  %s", self.name)
 
     # TODO:  Does the worker need to fetch input data? (ergo: should this be abstracted)
     # jobInput = self.fetch(i)
@@ -203,18 +205,24 @@ class macrothread(object):
 
     #  CHECK CATALOG STATUS
 
+    logger.info("Loading Thread State for `S_exec` from catalog:")
     self.load(self._exec)
+
+    logger.info("Loading Thread State for `S_term` from catalog:")
     self.load(self._term)
 
-    logger.debug("Starting Worker Execution")
+    logger.debug("Starting Worker Execution  ---->>")
     result = self.execute(jobInput)
-    logger.debug("Worker Execution Complete")
+    logger.debug("<<----  Worker Execution Complete")
     # Ensure returned results are a list
     if type(result) != list:
       result = [result]
 
     #  CHECK CATALOG STATUS
+    logger.info("Saving Thread State for S_exec to catlog:")
     self.save(self._exec)
+
+    logger.info("Saving Thread State for S_term to catlog:")
     self.save(self._term)
 
     #  catalog.notify(i, "complete")
