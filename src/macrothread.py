@@ -8,19 +8,18 @@ import abc
 import redis
 # from retrying import retry
 
-import common
+from common import DEFAULT, setLogger, archiveConfig
 import catalog
 from slurm import slurm
 
 from collections import namedtuple
 ddl = namedtuple('key', 'value, type')
 
-
-# FOR PI DEMO ONLY
-import picalc as pi
+# For now: use redis catalog
+import redisCatalog
 
 import logging, logging.handlers
-logger = common.setLogger()
+logger = setLogger()
 
 
 class macrothread(object):
@@ -47,7 +46,7 @@ class macrothread(object):
     # RUNTIME Parameters
     #  These vary from mt to mt (and among workers), but are passed to SLURM manager
     self.modules = []
-    self.slurmParams = {'time':'0:10:0', 'nodes':1, 'cpus-per-task':24, 'job-name':self.name}
+    self.slurmParams = {'time':'6:0:0', 'nodes':1, 'cpus-per-task':24, 'job-name':self.name}
 
 
   # For now retain 2 copies -- to enable reverting of data
@@ -121,8 +120,6 @@ class macrothread(object):
 
   def manager(self, fork=False):
 
-    home = os.getenv('HOME')
-
     logger.debug("\n==========================\n  %s  -- MANAGER", self.name)
 
     # Catalog Service Check here
@@ -151,10 +148,12 @@ class macrothread(object):
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
-      delay = 30
+      delay = DEFAULT.MANAGER_RERUN_DELAY
+
       logger.debug("%s-MANAGER: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
-      slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), delay=delay, name=self.name + '-M')
-      jobid += 1
+      # slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), delay=delay, name=self.name + '-M')
+
+      self.slurmParams['begin'] = 'now+%d' % delay
 
     # Dispatch Workers
     else:
@@ -162,7 +161,7 @@ class macrothread(object):
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
 
 
-        if fork:
+        if self.fork:
           # OPTION B:  Fork worker thread as a separate unsupervised (e.g. daemonized) process
           logger.debug("Forking Worker: " + str(i))
           self.execute(i)        
@@ -173,7 +172,7 @@ class macrothread(object):
               workdir = os.getcwd(), 
               options = self.slurmParams,
               modules = self.modules,
-              cmd = "python3 %s -w %s" % (self.fname, self.name, str(i)))
+              cmd = "python3 %s -w %s" % (self.fname, str(i)))
 
 
           # OPTION C --> est a "prepare" routine which is invoked to pre-process input
@@ -181,6 +180,14 @@ class macrothread(object):
 
         # slurm.sbatch(self.name + '%04d' % jobid, "python3 %s %s -w %s" % (self.fname, self.name, str(i)), name=self.name + '-W')
         jobid += 1
+
+    self.slurmParams['job-name'] += self.name + '-M-' + str(jobid)
+    slurm.sbatch(jobid='%04d' % jobid,
+              workdir = os.getcwd(), 
+              options = self.slurmParams,
+              modules = self.modules,
+              cmd = "python3 %s" % self.fname)
+
 
       # Reschedule Next Manager:
 
@@ -194,7 +201,7 @@ class macrothread(object):
         #     cmd = "python3 %s %s -m" % (self.fname, self.name))
 
       # slurm.schedule('%04d' % jobid, "python3 %s %s -m" % (self.fname, self.name), name=self.name + '-M')
-      jobid += 1
+    jobid += 1
 
       # METHOD 2.  After.... use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
 
@@ -256,3 +263,36 @@ class macrothread(object):
       print ("  output: ", r)  
     logger.debug("--------------------------")
 
+
+  def addArgs(self):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-w', '--workinput')
+    parser.add_argument('-i', '--init', action='store_true')
+    parser.add_argument('-d', '--debug', action='store_true')
+    return parser
+
+
+  def run(self):
+    args = self.addArgs().parse_args()
+
+    if args.debug:
+      logging.debug("DEBUGGING: %s", self.name)
+      sys.exit(0)
+
+    if args.init:
+      initialize(catalog, archive)
+      sys.exit(0)
+
+    # TODO:  Abstract The Catalog/Archive to enable mutliple
+    #   and dynamic Storage type    
+    #   FOR NOW:  Use a Redis Implmentation
+
+    catalog = redisCatalog.dataStore('catalog')
+    archive = redisCatalog.dataStore(**archiveConfig)
+
+    self.setCatalog(catalog)
+
+    if args.workinput:
+      self.worker(args.workinput)
+    else:
+      self.manager()

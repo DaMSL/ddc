@@ -36,9 +36,11 @@ class slurm:
     logging.info("Sbatch Job submitted for " + str(jobid))
 
     inline = '#!/bin/bash -l\n\n#SBATCH\n'
+
     for k, v in options.items():
       inline += '#SBATCH --%s=%s\n' % (k, str(v))
 
+    inline += '#SBATCH --time=720\n'
     inline += '#SBATCH --output=%s.out\n' % str(jobid)
     inline += '#SBATCH --workdir=%s\n' % str(workdir)
     inline += '#SBATCH --partition=parallel\n'

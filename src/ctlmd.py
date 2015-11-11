@@ -54,7 +54,7 @@ def generateNewJC(rawfile, frame=-1):
 
     # Get a new uid
     jcuid = getUID()
-    jcuid = 'DEBUG'
+    # jcuid = 'DEBUG'
 
     # Write out coords (TODO: should this go to catalog or to file?)
     # tmpCoord = os.path.join(DEFAULT.COORD_FILE_DIR, '%s_tmp.pdb' % jcuid)
@@ -111,7 +111,7 @@ def generateNewJC(rawfile, frame=-1):
 
 class controlJob(macrothread):
     def __init__(self, schema, fname):
-      macrothread.__init__(self, schema, fname, 'simmd')
+      macrothread.__init__(self, schema, fname, 'ctlmd')
       # State Data for Simulation MacroThread -- organized by state
       self.setInput('LDIndexList')
       self.setTerm('JCComplete', 'processed')
@@ -121,7 +121,10 @@ class controlJob(macrothread):
       # exec incl hash key-name
       # TODO: wildcard loading of data
 
-      self.modules.extend(['redis'])
+      self.modules.extend(['namd', 'redis'])
+
+      #  This thread's execution will run "supervised"
+      self.fork = False
 
 
     def term(self):
@@ -198,31 +201,34 @@ class controlJob(macrothread):
           self.catalog.save({jcID: jcConfig})
 
           logging.info("New JC Complete:  %s" % jcID)
-          return
+          
+          break
 
 
 
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser()
-  parser.add_argument('-w', '--workinput')
-  parser.add_argument('-i', '--init', action='store_true')
-  parser.add_argument('-d', '--debug')
-  args = parser.parse_args()
-
-  registry = redisCatalog.dataStore('catalog')
-  archive = redisCatalog.dataStore(**archiveConfig)
-
   mt = controlJob(schema, __file__)
-  mt.setCatalog(registry)
+  mt.run()
 
 
-  if args.debug:
-    logging.info("Running Analysis on " + args.debug)
-    mt.worker(args.debug)
-    sys.exit(0)
+  # parser = argparse.ArgumentParser()
+  # parser.add_argument('-w', '--workinput')
+  # parser.add_argument('-i', '--init', action='store_true')
+  # parser.add_argument('-d', '--debug')
+  # args = parser.parse_args()
 
-  if args.manager:
-    mt.manager(fork=False)
-  else:
-    mt.worker(args.workinput)
+  # registry = redisCatalog.dataStore('catalog')
+  # archive = redisCatalog.dataStore(**archiveConfig)
+
+  # mt = controlJob(schema, __file__)
+  # mt.setCatalog(registry)
+
+
+  # if args.workinput:
+  #   mt.worker(args.workinput)
+  # else:
+  #   mt.manager(fork=False)
+
+
+

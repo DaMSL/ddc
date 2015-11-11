@@ -19,9 +19,6 @@ import logging
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
-WINSIZE = 100
-SLIDE = 500
-
 def eigenDecomA(traj):
   '''
   Method A : Pairwise correlation based on each pair of atoms' 
@@ -119,6 +116,10 @@ class analysisJob(macrothread):
       self.buildArchive = False
 
 
+      # TODO: Move to Catalog
+      self.winsize = 100
+      self.slide   =  50
+
     def setBuild(self, build=True):
       self.buildArchive = build
 
@@ -154,9 +155,9 @@ class analysisJob(macrothread):
       indexSize = 0
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
       #   TODO: Retain provenance
-      for win in range(0, len(traj.xyz) - WINSIZE+1, SLIDE):
+      for win in range(0, len(traj.xyz) - self.winsize+1, self.slide):
         logging.debug("Running on window # " + str(win))
-        eg, ev = eigenDecomA(traj.xyz[win:win+WINSIZE])
+        eg, ev = eigenDecomA(traj.xyz[win:win+self.winsize])
         eg /= LA.norm(eg)
         ev = np.transpose(ev)   # Transpose eigen vectors
         index = np.zeros(shape=(DEFAULT.NUM_PCOMP, len(ev[0])), dtype=ev.dtype)
@@ -210,43 +211,27 @@ class analysisJob(macrothread):
 
 
 
-
+    def addArgs(self):
+      parser = macrothread.addArgs(self)
+      parser.add_argument('-b', '--build')
+      parser.add_argument('--winsize', type=int)
+      parser.add_argument('--slide', type=int)
+      return parser
 
 
 
 
 if __name__ == '__main__':
-  global WINSIZE, SLIDE
-
-  parser = argparse.ArgumentParser()
-  parser.add_argument('-m', '--manager')
-  parser.add_argument('-w', '--workinput')
-  parser.add_argument('-b', '--build')
-  parser.add_argument('-i', '--init', action='store_true')
-  parser.add_argument('-d', '--debug')
-  parser.add_argument('--winsize', type=int, default=100)
-  parser.add_argument('--slide', type=int, default=50)
-  args = parser.parse_args()
-
-  WINSIZE = args.winsize
-  SLIDE   = args.slide
-
-  archive = redisCatalog.dataStore(**archiveConfig)
-
-  if args.init:
-    logging.debug("Initializing the archive.....")
-    initialize(flushArchive=True)
-    sys.exit(0)
-
-  registry = redisCatalog.dataStore('catalog')
   mt = analysisJob(schema, __file__)
-  mt.setCatalog(registry)
 
+  #  For archiving
+  args = mt.addArgs().parse_args()
 
-  if args.debug:
-    logging.info("Running Single Execution (debugging) Probe on %s", args.debug)
-    mt.worker(args.debug)
-    sys.exit(0)
+  if args.winsize:
+    mt.winsize = args.winsize
+
+  if args.slide:
+    mt.slide   = args.slide
 
   if args.build:
     logging.info("Running Single Execution to Build Archive on %s", args.build)
@@ -254,8 +239,5 @@ if __name__ == '__main__':
     mt.execute(args.build)
     sys.exit(0)
 
+  mt.run()
 
-  if args.manager:
-    mt.manager(fork=False)
-  else:
-    mt.worker(args.workinput)

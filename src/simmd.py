@@ -85,7 +85,7 @@ class simulationJob(macrothread):
       config.write(source % params)
       logging.info("Config written to: " + conFile)
 
-    # self.slurmParams['partition'] = 'parallel'
+    self.slurmParams['job-name'] = 'sim-W-' + str(jobnum)
 
     # Schedule Simulation from within execute function. This will be unsupervised
     stdout = slurm.sbatch(jobid=str(jobnum),
@@ -111,33 +111,39 @@ class simulationJob(macrothread):
 
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser()
-  parser.add_argument('-w', '--workinput')
-  parser.add_argument('-i', '--init', action='store_true')
-  args = parser.parse_args()
-
-  catalog = redisCatalog.dataStore('catalog')
-  archive = redisCatalog.dataStore(**archiveConfig)
+  mt = simulationJob(schema, __file__)
+  mt.run()
 
 
-  if args.init:
-    initialize(catalog, archive)
-    sys.exit(0)
+
+  # parser = argparse.ArgumentParser()
+  # parser.add_argument('-w', '--workinput')
+  # parser.add_argument('-i', '--init', action='store_true')
+  # args = parser.parse_args()
+
+  # catalog = redisCatalog.dataStore('catalog')
+  # archive = redisCatalog.dataStore(**archiveConfig)
+
+
+  # if args.init:
+  #   initialize(catalog, archive)
+  #   sys.exit(0)
+
+  # # TODO: common registry for threads
+  # # Implementation options:  Separate files for each macrothread OR
+  # #    dispatch macrothread via command line arg
+  # mt = simulationJob(schema, __file__)
+  # mt.setCatalog(catalog)
+
+  # # mt.setCatalog(registry)
+
+  # if args.workinput:
+  #   mt.worker(args.workinput)
+  # else:
+  #   mt.manager(fork=True)
+
 
     # Make DDC app class to hide __main__ details; 
     #  e.g. add macrothread.... ref: front end for gui app
     #  pick registry
     #  add args as needed
-
-  # TODO: common registry for threads
-  # Implementation options:  Separate files for each macrothread OR
-  #    dispatch macrothread via command line arg
-  mt = simulationJob(schema, __file__)
-  mt.setCatalog(catalog)
-
-  # mt.setCatalog(registry)
-
-  if args.workinput:
-    mt.worker(args.workinput)
-  else:
-    mt.manager(fork=True)

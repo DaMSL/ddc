@@ -12,6 +12,9 @@ archiveConfig = dict(name='archive', port=6380)
 
 
 class DEFAULT:
+
+  MANAGER_RERUN_DELAY = 60
+
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
   PSF_FILE = os.path.join(WORKDIR, 'bpti_gen.psf')
@@ -91,7 +94,7 @@ def decodeLabel(label):
   return int(win), int(seq)
 
 def getJC_Key(uid):
-  return "jc_%s" % str(uid) if not jckey.startswith('jc_') else uid
+  return "jc_%s" % str(uid) if not uid.startswith('jc_') else uid
 
 def getJC_UID(jckey):
   return jckey[3:] if jckey.startswith('jc_') else jckey
@@ -152,6 +155,7 @@ def initialize(catalog, archive, flushArchive=False):
   startState['JCQueue'] = [key]
   startState['JCTotal'] = 1
 
+  executecmd("shopt -s extglob | rm !(SEED.p*)")
 
   threadnames = ['simmd', 'anlmd', 'ctlmd']
 
