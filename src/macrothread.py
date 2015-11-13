@@ -258,7 +258,6 @@ class macrothread(object):
 
     if args.debug:
       logging.debug("DEBUGGING: %s", self.name)
-      sys.exit(0)
 
     # TODO:  Abstract The Catalog/Archive to enable mutliple
     #   and dynamic Storage type    
@@ -271,10 +270,10 @@ class macrothread(object):
       initialize(catalog, archive)
       sys.exit(0)
 
-
     self.setCatalog(catalog)
 
     if args.workinput:
+      logger.debug("Running worker.")
       self.worker(args.workinput)
     else:
       self.manager()

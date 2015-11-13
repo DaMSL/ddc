@@ -34,12 +34,63 @@ patch DISU BPTI:5 BPTI:55
 patch DISU BPTI:14 BPTI:38
 patch DISU BPTI:30 BPTI:51
 
-# 4. Read protein coordinates from PDB file
-pdbalias atom ILE CD1 CD ; 
-coordpdb %(coord)s BPTI
+# 4. Define aliases
+pdbalias atom ILE CD1 CD ;
+pdbalias atom ALA H HN ;
+#pdbalias atom ALA OXT O ;
+pdbalias atom ARG H HN ;
+#pdbalias atom ARG H2 HN;
+#pdbalias atom ARG H3 HN;
+pdbalias atom ARG HB3 HB1 ;
+pdbalias atom ARG HD3 HD1 ;
+pdbalias atom ARG HG3 HG1 ;
+pdbalias atom ASN H HN ;
+pdbalias atom ASN HB3 HB1 ;
+pdbalias atom ASP H HN ;
+pdbalias atom ASP HB3 HB1 ;
+pdbalias atom CYS H HN ;
+pdbalias atom CYS HB3 HB1 ;
+pdbalias atom GLN H HN ;
+pdbalias atom GLN HB3 HB1 ;
+pdbalias atom GLN HG3 HG1 ;
+pdbalias atom GLU H HN ;
+pdbalias atom GLU HB3 HB1 ;
+pdbalias atom GLU HG3 HG1 ;
+pdbalias atom GLY H HN ;
+pdbalias atom GLY HA3 HA1 ;
+pdbalias atom ILE H HN ;
+pdbalias atom ILE HD11 HD1 ;
+pdbalias atom ILE HD12 HD2 ;
+pdbalias atom ILE HD13 HD3 ;
+pdbalias atom ILE HG13 HG11 ;
+pdbalias atom LEU H HN ;
+pdbalias atom LEU HB3 HB1 ;
+pdbalias atom LYS H HN ;
+pdbalias atom LYS HB3 HB1 ;
+pdbalias atom LYS HD3 HD1 ;
+pdbalias atom LYS HE3 HE1 ;
+pdbalias atom LYS HG3 HG1 ;
+pdbalias atom MET H HN ;
+pdbalias atom MET HB3 HB1 ;
+pdbalias atom MET HG3 HG1 ;
+pdbalias atom PHE H HN ;
+pdbalias atom PHE HB3 HB1 ;
+pdbalias atom PRO HB3 HB1 ;
+pdbalias atom PRO HD3 HD1 ;
+pdbalias atom PRO HG3 HG1 ;
+pdbalias atom SER H HN ;
+pdbalias atom SER HB3 HB1 ;
+pdbalias atom SER HG HG1 ;
+pdbalias atom THR H HN ;
+pdbalias atom TYR H HN ;
+pdbalias atom TYR HB3 HB1 ;
+pdbalias atom VAL H HN ;
 
+# 5. Read protein coordinates from PDB file & set coords
+coordpdb %(coord)s BPTI
 guesscoord
 
+# 6. Output psf/pdb files
 writepsf %(psf)s
 writepdb %(pdb)s
 

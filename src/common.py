@@ -9,6 +9,7 @@ logger = 0
 
 
 archiveConfig = dict(name='archive', port=6380)
+#archiveConfig = dict(name='testarch', port=6381)
 
 
 class DEFAULT:

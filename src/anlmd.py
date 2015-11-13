@@ -38,8 +38,7 @@ def eigenDecomA(traj):
       S = 0
       for i in range(n_frames):
         S += (T[i][A] - mean[A]) * (T[i][B] - mean[B])
-      cov[A][B] = S / N
-      cov[B][A] = S / N
+      cov[A][B] = cov[B][A] = S / N
   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
   logging.info("Calculating Eigen")
   # print(str(dt.datetime.now()), "  Calculating Eigen")
@@ -114,6 +113,7 @@ class analysisJob(macrothread):
       self.setSplit('anlSplitParam')
       self.modules.extend(['redis'])
       self.buildArchive = False
+      self.manual = False
 
 
       # TODO: Move to Catalog
@@ -142,8 +142,10 @@ class analysisJob(macrothread):
       jobnum = os.path.basename(i).split('.')[0].split('_')[-1]
       logging.debug("jobnum = " + jobnum)
 
-      dcd = os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.dcd" % jobnum)
-      pdb = os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.pdb" % jobnum)
+      if self.manual:
+        dcd, pdb = tuple(map(lambda x: os.path.join(os.path.dirname(i), "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
+      else:
+        dcd, pdb = tuple(map(lambda x: os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
 
       # 1. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
@@ -239,6 +241,11 @@ if __name__ == '__main__':
 
   if args.slide:
     mt.slide   = args.slide
+
+  if args.debug:
+    mt.manual   = True
+
+
 
   if args.build:
     logging.info("Running Single Execution to Build Archive on %s", args.build)
