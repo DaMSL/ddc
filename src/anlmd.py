@@ -28,11 +28,11 @@ def eigenDecomA(traj):
   N = traj.shape[1]*3
   T = traj.reshape(n_frames, N)
   # t1 = traj.reshape(n_frames, n_atoms_pos)
-  mean = np.mean(T, axis=0)
+  mean = np.mean(T, axis=00)
   cov = np.zeros(shape = (N, N))
   for A in range(N):
     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
-    if A % 10 == 0:
+    if A % 100 == 0:
       logging.info("Atom # %d" % A)
     for B in range(A, N):
       S = 0
@@ -90,7 +90,7 @@ def eigenDecomB(traj):
   dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float64)
   for A in range(n_atoms):
     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
-    if A % 10 == 0:
+    if A % 100 == 0:
       logging.info("Atom # %d" % A)
     for B in range(A, n_atoms):
       delta = LA.norm(mean[A] - mean[B])
@@ -135,30 +135,33 @@ class analysisJob(macrothread):
 
     def execute(self, i):
 
-      logging.debug('ANL MT. Input = ' + i)
+      # logging.debug('ANL MT. Input = ' + i)
 
       # TODO: Better Job ID Mgmt, for now hack the filename
       i.replace(':', '_').replace('-', '_')
       jobnum = os.path.basename(i).split('.')[0].split('_')[-1]
-      logging.debug("jobnum = " + jobnum)
+      # logging.debug("jobnum = " + jobnum)
 
       if self.manual:
         dcd, pdb = tuple(map(lambda x: os.path.join(os.path.dirname(i), "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
       else:
         dcd, pdb = tuple(map(lambda x: os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
 
+      # TEMP
+      pdb = DEFAULT.PDB_FILE
+
       # 1. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
       filterMin  = traj.top.select_atom_indices(selection='minimal')
       traj.atom_slice(filterMin, inplace=True)
 
-      logging.debug('Trajectory Loaded: %s', str(traj))
+      logging.debug('Trajectory Loaded: %s - %s', jobnum, str(traj))
       result = {}
       indexSize = 0
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
       #   TODO: Retain provenance
       for win in range(0, len(traj.xyz) - self.winsize+1, self.slide):
-        logging.debug("Running on window # " + str(win))
+        logging.debug("Processing window %s - %s # " % (jobnum, str(win)))
         eg, ev = eigenDecomA(traj.xyz[win:win+self.winsize])
         eg /= LA.norm(eg)
         ev = np.transpose(ev)   # Transpose eigen vectors
@@ -166,27 +169,30 @@ class analysisJob(macrothread):
         for pc in range(DEFAULT.NUM_PCOMP):
           np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
         # 3. store index
-        key = jobnum + ':' + '%03d' % win
+        if win < 1000:
+          key = jobnum + ':' + '%03d' % win
+        else:
+          key = jobnum + ':' + '%04d' % win
         logging.debug('Cachine Index locally: %s', key)
         result[key] = index.flatten()
         if not indexSize:
           indexSize = len(result[key])
-          logging.debug('Index Size = %d' % indexSize)
+          # logging.debug('Index Size = %d' % indexSize)
 
       # Create empty lshash and load stored hash
       # OPTION A:  Build Archive online
       if self.buildArchive:
-        logging.debug('Build Archive!  Index stored directly')
+        # logging.debug('Build Archive!  Index stored directly')
         # import redis
         # archive = redis.StrictRedis(port=6380)
         archive = redisCatalog.dataStore(**archiveConfig)
 
-        logging.debug('Archive Client Created, arch class= %s', str(archive.__class__))
+        # logging.debug('Archive Client Created, arch class= %s', str(archive.__class__))
         archive.conn()
         keys = archive.keys()
-        logging.debug('keys loaded')
-        for k in keys:
-          logging.debug("  key: %s", k)
+        # logging.debug('keys loaded')
+        # for k in keys:
+          # logging.debug("  key: %s", k)
         redis_storage = RedisStorage(archive)
         config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
         if not config:
@@ -232,7 +238,6 @@ class analysisJob(macrothread):
 
 if __name__ == '__main__':
   mt = analysisJob(schema, __file__)
-
   #  For archiving
   args = mt.addArgs().parse_args()
 
