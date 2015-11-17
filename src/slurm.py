@@ -38,7 +38,10 @@ class slurm:
     inline = '#!/bin/bash -l\n\n#SBATCH\n'
 
     for k, v in options.items():
-      inline += '#SBATCH --%s=%s\n' % (k, str(v))
+      if v == None:
+        inline += '#SBATCH --%s\n' % k
+      else:  
+        inline += '#SBATCH --%s=%s\n' % (k, str(v))
 
     joboutput = "%s/%s.out" % (DEFAULT.LOG_DIR, str(taskid))
     inline += '#SBATCH --output=%s\n' % joboutput

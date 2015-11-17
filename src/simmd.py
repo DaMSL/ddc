@@ -33,11 +33,13 @@ class simulationJob(macrothread):
     # self.forcefield = DEFAULT.FFIELD
 
     # Local Data to this running instance
-    self.cpu = DEFAULT.CPU_PER_NODE
+    self.cpu = 1
     self.numnodes = 1
 
     #  Update Runtime Parameters
-    self.modules.extend(['namd', 'redis'])
+    self.modules.add('namd')
+    self.modules.add('redis')
+    self.slurmParams['share'] = None
 
 
 

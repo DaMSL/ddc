@@ -174,7 +174,7 @@ class controlJob(macrothread):
       # exec incl hash key-name
       # TODO: wildcard loading of data
 
-      self.modules.extend(['namd', 'redis'])
+      self.modules.add('namd')
 
       #  This thread's execution will run "supervised"
       self.fork = False

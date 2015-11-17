@@ -115,6 +115,10 @@ class analysisJob(macrothread):
       self.buildArchive = False
       self.manual = False
 
+      # Update Base Slurm Params
+      self.slurmParams['cpus-per-task'] = DEFAULT.CPU_PER_NODE
+
+
 
       # TODO: Move to Catalog
       self.winsize = 100

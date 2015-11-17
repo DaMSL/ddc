@@ -1,19 +1,25 @@
 import redis
 import socket
 import sys
+import time
 import os
 import subprocess as proc
 import abc
 
 from common import *
 from catalog import catalog
+from threading import Thread, Event
 
 import logging
 logger = setLogger()
 
 
+terminationFlag = Event()
+
+
+
 class dataStore(redis.StrictRedis, catalog):
-  def __init__(self, name, host='localhost', port=6379, db=0):
+  def __init__(self, name, host='localhost', port=6379, db=0, persist=True, connect=True):
 
     redis.StrictRedis.__init__(self, host=host, port=port)
 
@@ -23,16 +29,24 @@ class dataStore(redis.StrictRedis, catalog):
     self.port = port
     self.database = db
     self.name = name
+    self.persist = persist
 
-    self.conn()
+    self.terminationFlag = Event()
+
+    if connect:
+      self.conn()
+
 
 
   def conn (self, host='localhost'):
 
+    # Set up service object thread to return, in case this client dual-acts as a service
+    serviceThread = None
+
     # # Check if it's already started and connected    
     if self.exists():
-      logging.debug('Data Store, `%s` already connected', self.name)
-      return
+      logging.debug('Data Store, `%s` already connected on `%s`', self.name, self.host)
+      return serviceThread
 
     # If already started by another node, get connection info
     if os.path.exists(self.lockfile):
@@ -41,31 +55,37 @@ class dataStore(redis.StrictRedis, catalog):
         self.host = h
         self.port = int(p)
         self.database = int(d)
-        logging.debug('Data Store, `%s` DETECTED on %s, port=%s', self.name, self.host, self.port)
+        logging.debug('Data Store Lock File, `%s` DETECTED on %s, port=%s', self.name, self.host, self.port)
 
       # Check connection string -- F/T in case connection dies, using loaded params & self as hostname
       self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
-      logging.debug("CHECKING if Server is up...")
       if self.exists():
         logging.debug('Data Store, `%s` ALIVE on %s, port=%s', self.name, self.host, self.port)
-        return
+        return serviceThread
       else:
-        logger.warning("WARNING: Redis Server locked, but not running. Running it locally at %s:%d", self.host, self.port)
+        logger.warning("WARNING: Redis Server locked, but not running. Removing file and running it locally")
         os.remove(self.lockfile)
-        self.start()
+    else:
+      logging.debug("No Lock file found. Assuming Data Store is not alive")
 
     # Otherwise, start it locally as a daemon server process
-    self.start()
+    serviceThread = self.start()
 
     # Connect to redis as client
     try:
-      pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
-      self.connection_pool = pool        
+      logging.debug("\nSetting new connection_pool for client: %s, %d, %d", self.host, self.port, self.database)
+      self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
+      logging.debug("     ...Connection Updated... Trying to Ping!")
 
-      if not self.ping():
-        logger.error("ERROR connecting to redis service on %s", self.host)
+      if self.ping():
+        logging.debug(" I can ping the server. It's up")
+      else:
+        logger.error("FAILED to connect to redis service on %s", self.host)
     except redis.ConnectionError as ex:
-      logger.error("ERROR connecting to redis service on %s", self.host)
+      logger.error("ERROR Raised connecting to redis service on %s", self.host)
+      return None
+
+    return serviceThread
 
 
 
@@ -80,6 +100,63 @@ class dataStore(redis.StrictRedis, catalog):
     self.flushdb()
 
 
+
+
+  def redisServerMonitor(self, termEvent):
+
+    # Start redis via suprocess  -- Threaded
+    logger.debug('\n[Catalog Monitor]  Initiated')
+
+    #  Connect a monitoring client (for now: check idle status)
+    # TODO: here is where we can work migration support and monitoring for other things
+    monitor = redis.StrictRedis()
+
+    alive = False
+    timeout = time.time() + DEFAULT.CATALOG_STARTUP_DELAY
+    while not alive:
+      if time.time() > timeout:
+        logger.debug("[Catalog Monitor]  Timed Out waiting on the server")
+        break
+      try:
+        alive = monitor.ping()
+        logger.debug("[Catalog Monitor]  Redis Server is ALIVE locally on %s", str(socket.gethostname()))
+      except redis.ConnectionError as ex:
+        alive = False
+        time.sleep(1)
+
+    if not alive:
+      logger.debug("[Catalog Monitor]  Redis Server Failed to Start/Connect. Exitting the monitor thread")
+      return
+
+    monitor.client_setname("monitor")
+
+    while not termEvent.wait(DEFAULT.MONITOR_WAIT_DELAY):
+      try:
+        logger.debug('[Catalog Monitor]  On')
+        idle = True
+
+        for client in monitor.client_list():
+          if client['name'] == 'monitor':
+            continue
+          if int(client['idle']) < DEFAULT.CATALOG_IDLE_THETA:
+            idle = True
+            break
+        if idle:
+          logger.debug('[Catalog Monitor]  Service was idle for more than %d seconds. Stopping.', DEFAULT.CATALOG_IDLE_THETA)
+          self.stop()
+  
+      except redis.ConnectionError as ex:
+        termEvent.set()
+        logger.debug('[Catalog Monitor]  Connection error to the server. Terminating monitor')
+  
+
+    # Post-termination logic
+    logger.debug('[Catalog Monitor]  Redis Service was shutdown. Exiting monitor thread.')
+
+
+
+
+
   def start(self):
 
     # Prepare 
@@ -89,23 +166,56 @@ class dataStore(redis.StrictRedis, catalog):
 
     params = dict(localdir=DEFAULT.WORKDIR, port=self.port, name=self.name)
 
+    self.host = socket.gethostname()
+
+    # Write lock file for persistent server; otherwise, write to local configfile
+    if self.persist:
+      with open(self.lockfile, 'w') as connectFile:
+        connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
+    else:
+      self.config = self.name + '-' + self.host + ".conf"
+
     with open(self.config, 'w') as config:
       config.write(source % params)
-      logging.info("Data Store `%s` written to  %s", self.name, self.config)
+      logging.info("Data Store Config `%s` written to  %s", self.name, self.config)
 
-    self.host = socket.gethostname()
-    with open(self.lockfile, 'w') as connectFile:
-      connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
-
-    # Start redis via suprocess
     err = proc.call(['redis-server', self.config])
     if err:
       logger.error("ERROR starting local redis service on %s", self.host)    
+      # Exit or Return ???
+      sys.exit(0)
+
+    pong = False
+    timeout = time.time() + DEFAULT.CATALOG_STARTUP_DELAY
+
+    while not pong:
+      if time.time() > timeout:
+        logger.debug("[Catalog Monitor]  Timed Out waiting on the server")
+        break
+
+      time.sleep(1)
+      check = executecmd('redis-cli ping').strip()
+      logger.debug("Ping from local redis server:  %s", check)
+      pong = (check == 'PONG')
+
+
     logger.debug('Started redis locally on ' + self.host)
+
+
+    logging.debug("Starting the Redis Server Monitor Thread")
+    t = Thread(target=self.redisServerMonitor, args=(self.terminationFlag,))
+    t.start()
+
+    logging.debug("Monitor Daemon Started.")
+
+    return t
+
+
 
   # TODO: Graceful shutdown and hand off -- will need to notify all clients
   def stop(self):
     # self.save()
+    self.terminationFlag.set()
     self.shutdown()
     if os.path.exists(self.lockfile):
       os.remove(self.lockfile)

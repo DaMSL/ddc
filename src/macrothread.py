@@ -43,15 +43,18 @@ class macrothread(object):
 
     self.catalog = None
 
-    # Runtime Modules to load 
-    self.modules = []
+    # Catalog support status (bool for now, may need to be state-based)
+    self.catalogPersistanceState = False
+
+    # Runtime Modules to load   -- Assumes Redis as baseline catalog (for now)
+    self.modules = set(['redis'])
 
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
     self.slurmParams = {'time':'6:0:0', 
               'nodes':1, 
-              'cpus-per-task':24, 
+              'cpus-per-task':1, 
               'job-name':self.name,
               'workdir' : os.getcwd()}
 
@@ -127,7 +130,8 @@ class macrothread(object):
     logger.debug("\n==========================\n  MANAGER:  %s", self.name)
 
     # Catalog Service Check here
-    self.catalog.conn()
+    self.catalog = redisCatalog.dataStore('catalog')
+    localservice = self.catalog.conn()
 
     # Check for termination  
     self.load(self._term)
@@ -135,19 +139,37 @@ class macrothread(object):
       logger.info('TERMINATION condition for ' + self.name)
       sys.exit(0)
 
-    # TODO: what if catalog stops here
+    # TODO: what if catalog stops here <-- may need to read in entire state
 
     # Split input data set
     self.load(self._split)
     self.load(self._input)
 
-    # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
-    # jobid = int(catalog.load('id_' + self.name))
-    # logger.debug("Loaded ID = %d" % jobid)
+
+    # Note: Manager can become a service daemon. Thus, we allow the manager
+    #  to run along with the monitor process and assume the manager overhead
+    #  is small enough to not interfere. Eventually, this will be threaded
+    #  differently by preventing the local service (within this object's
+    #  context) from running while the manager performs its split() function
+    #  worker dispatching. The worker (below) starts a local service
+    #  for reading, reads in the state, stops it, performs its work, and then
+    #  starts it for writing and remain alive to monitor......
+    #  Hence, we'll eventually change this next line to False or some other
+    #  state value or we'll just let this manager become the monitor and
+    #  provide the service which means it will need to immediate re-schedule
+    #  itself
+    self.catalogPersistanceState = True
+    if localservice and not self.catalogPersistanceState:
+      self.catalog.stop()
+
 
     #  TODO:  Det if manager should load entire input data set, make this abstract, or
     #     push into UDF portion
     immed  = self.split()
+
+    # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
+    # jobid = int(catalog.load('id_' + self.name))
+    # logger.debug("Loaded ID = %d" % jobid)
     jobid  = self.data['id_%s' % self.name]
 
     # No Jobs to run.... Delay and then rerun later
@@ -183,13 +205,22 @@ class macrothread(object):
 
     # METHOD 2.  Trigger Based
     #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
-
     self.data['id_%s' % self.name] = jobid
+
+
+    # Ensure the catalog is available. If not, start it for persistance and check
+    # if the thread is running before exit
+    localservice = self.catalog.conn()
+    self.catalogPersistanceState = True
 
     self.save(self._split)
     self.save(self._exec)
-    logger.debug("==========================")
+    
+    if localservice and self.catalogPersistanceState:
+      logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
+      localservice.join()
 
+    logger.debug("==========================")
     return 1
 
 
@@ -203,13 +234,18 @@ class macrothread(object):
     # TODO: Optimization Notifications
     #  catalog.notify(i, "active")
 
-    #  CHECK CATALOG STATUS
+    # Catalog Service Check here
+    localservice = self.catalog.conn()
 
-    logger.info("Loading Thread State for `S_exec` from catalog:")
+
+    logger.info("Loading Thread State for `S_exec`, `S_term` from catalog:")
     self.load(self._exec)
-
-    logger.info("Loading Thread State for `S_term` from catalog:")
     self.load(self._term)
+
+    # In case this worker spun up a service, ensure it is stopped locally
+    if localservice and not self.catalogPersistanceState:
+      self.catalog.stop()
+
 
     logger.debug("Starting Worker Execution  ---->>")
     result = self.execute(jobInput)
@@ -219,10 +255,11 @@ class macrothread(object):
       result = [result]
 
     #  CHECK CATALOG STATUS
-    logger.info("Saving Thread State for S_exec to catlog:")
-    self.save(self._exec)
+    localservice = self.catalog.conn()
 
-    logger.info("Saving Thread State for S_term to catlog:")
+
+    logger.info("Saving Thread State for `S_exec`, `S_term` from catalog:")
+    self.save(self._exec)
     self.save(self._term)
 
     #  catalog.notify(i, "complete")
@@ -242,6 +279,11 @@ class macrothread(object):
       #     trigger flow bet streams is tuning action (e.g. assume 1:1 to start)
 
       print ("  output: ", r)  
+
+    if localservice and self.catalogPersistanceState:
+      logger.debug("This Worker is running the catalog. Waiting on local service to terminate...")
+      localservice.join()
+
     logger.debug("--------------------------")
 
 
@@ -259,18 +301,18 @@ class macrothread(object):
     if args.debug:
       logging.debug("DEBUGGING: %s", self.name)
 
-    # TODO:  Abstract The Catalog/Archive to enable mutliple
-    #   and dynamic Storage type    
-    #   FOR NOW:  Use a Redis Implmentation
-
-    catalog = redisCatalog.dataStore('catalog')
-    archive = redisCatalog.dataStore(**archiveConfig)
 
     if args.init:
+      # TODO:  Abstract The Catalog/Archive to enable mutliple
+      #   and dynamic Storage type    
+      #   FOR NOW:  Use a Redis Implmentation
+      catalog = redisCatalog.dataStore('catalog')
+      archive = redisCatalog.dataStore(**archiveConfig)
+
       initialize(catalog, archive)
       sys.exit(0)
 
-    self.setCatalog(catalog)
+    # self.setCatalog(catalog)
 
     if args.workinput:
       logger.debug("Running worker.")
