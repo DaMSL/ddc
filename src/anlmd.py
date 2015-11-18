@@ -111,7 +111,7 @@ class analysisJob(macrothread):
       self.setTerm('JCComplete', 'processed')
       self.setExec('LDIndexList')
       self.setSplit('anlSplitParam')
-      self.modules.extend(['redis'])
+      self.modules.add('redis')
       self.buildArchive = False
       self.manual = False
 
@@ -136,6 +136,8 @@ class analysisJob(macrothread):
       catalog = self.getCatalog()
       immed = catalog.slice('dcdFileList', split)
       return immed
+
+
 
     def execute(self, i):
 

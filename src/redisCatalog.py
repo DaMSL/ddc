@@ -139,7 +139,7 @@ class dataStore(redis.StrictRedis, catalog):
           if client['name'] == 'monitor':
             continue
           if int(client['idle']) < DEFAULT.CATALOG_IDLE_THETA:
-            idle = True
+            idle = False
             break
         if idle:
           logger.debug('[Catalog Monitor]  Service was idle for more than %d seconds. Stopping.', DEFAULT.CATALOG_IDLE_THETA)

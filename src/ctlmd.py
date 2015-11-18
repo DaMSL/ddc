@@ -192,11 +192,16 @@ class controlJob(macrothread):
       immed = catalog.slice('LDIndexList', split)
       return immed
 
-    def execute(self, i):
-      logging.debug('CTL MT. Input = ' + i)
+    def fetch(self, i):
+      return {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(wrapKey('idx', i)).items()}
+      
+
+    def execute(self, ld_index):
+      logging.debug('CTL MT')
 
       # Fetch all indices
-      ld_index = {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(wrapKey('idx', i)).items()}
+
+      # TODO:  Treat Archive as an overlay service. For now, wrap inside
       archive = redisCatalog.dataStore(**archiveConfig)
       redis_storage = RedisStorage(archive)
 
@@ -212,6 +217,8 @@ class controlJob(macrothread):
       engine = nearpy.Engine(self.data['indexSize'], 
             lshashes=[lshash], 
             storage=redis_storage)
+
+      newJobCandidate = {}
 
       for key, v in ld_index.items():
 
@@ -245,47 +252,33 @@ class controlJob(macrothread):
           # NOTE: Update Additional JC Params, as needed
           jcConfig = dict(params,
               name    = jcID,
-              runtime = 100000,
+              runtime = 51000,
               temp    = 310)
 
           logging.info("New Simulation Job Created: %s", jcID)
           for k, v in jcConfig.items():
             logging.debug("   %s:  %s", k, str(v))
 
-          jckey = wrapKey('jc', jcID)
-
-          self.data['JCQueue'].append(jcID)
-          self.catalog.save({jckey: jcConfig})
+          newJobCandidate[jcID] = jcConfig
 
           logging.info("New JC Complete:  %s" % jcID)
           
-          break
 
+
+      # Control Thread requires the catalog to be accessible. Hence it starts it:
+      self.catalogPersistanceState = True
+      self.localcatalogserver = self.catalog.conn()
+
+      for jcid, config in newJobCandidate.items():
+        jckey = wrapKey('jc', jcid)
+        self.data['JCQueue'].append(jcid)
+        # self.data[jckey] = config
+        self.catalog.save({jckey: jcConfig})
+
+      return newJobCandidate.keys()
 
 
 
 if __name__ == '__main__':
   mt = controlJob(schema, __file__)
   mt.run()
-
-
-  # parser = argparse.ArgumentParser()
-  # parser.add_argument('-w', '--workinput')
-  # parser.add_argument('-i', '--init', action='store_true')
-  # parser.add_argument('-d', '--debug')
-  # args = parser.parse_args()
-
-  # registry = redisCatalog.dataStore('catalog')
-  # archive = redisCatalog.dataStore(**archiveConfig)
-
-  # mt = controlJob(schema, __file__)
-  # mt.setCatalog(registry)
-
-
-  # if args.workinput:
-  #   mt.worker(args.workinput)
-  # else:
-  #   mt.manager(fork=False)
-
-
-

@@ -39,7 +39,7 @@ class simulationJob(macrothread):
     #  Update Runtime Parameters
     self.modules.add('namd')
     self.modules.add('redis')
-    self.slurmParams['share'] = None
+    # self.slurmParams['share'] = None
 
 
 
@@ -83,7 +83,7 @@ class simulationJob(macrothread):
       config.write(source % params)
       logging.info(" Config written to: " + conFile)
 
-    cmd = 'mpiexec -n %d namd2 %s > %s' % (DEFAULT.CPU_PER_NODE, conFile, logFile)
+    cmd = 'namd2 %s > %s' % (conFile, logFile)
     logging.debug("Executing Simulation:\n   %s\n", cmd)
 
     stdout = executecmd(cmd)
@@ -107,37 +107,3 @@ class simulationJob(macrothread):
 if __name__ == '__main__':
   mt = simulationJob(schema, __file__)
   mt.run()
-
-
-
-  # parser = argparse.ArgumentParser()
-  # parser.add_argument('-w', '--workinput')
-  # parser.add_argument('-i', '--init', action='store_true')
-  # args = parser.parse_args()
-
-  # catalog = redisCatalog.dataStore('catalog')
-  # archive = redisCatalog.dataStore(**archiveConfig)
-
-
-  # if args.init:
-  #   initialize(catalog, archive)
-  #   sys.exit(0)
-
-  # # TODO: common registry for threads
-  # # Implementation options:  Separate files for each macrothread OR
-  # #    dispatch macrothread via command line arg
-  # mt = simulationJob(schema, __file__)
-  # mt.setCatalog(catalog)
-
-  # # mt.setCatalog(registry)
-
-  # if args.workinput:
-  #   mt.worker(args.workinput)
-  # else:
-  #   mt.manager(fork=True)
-
-
-    # Make DDC app class to hide __main__ details; 
-    #  e.g. add macrothread.... ref: front end for gui app
-    #  pick registry
-    #  add args as needed

@@ -14,7 +14,7 @@ archiveConfig = dict(name='archive', port=6380)
 
 class DEFAULT:
 
-  MANAGER_RERUN_DELAY = 20
+  MANAGER_RERUN_DELAY = 30
 
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
@@ -48,7 +48,7 @@ class DEFAULT:
 
   # Catalog Params
   MONITOR_WAIT_DELAY = 30
-  CATALOG_IDLE_THETA = 30
+  CATALOG_IDLE_THETA = 300
   CATALOG_STARTUP_DELAY = 10
 
 

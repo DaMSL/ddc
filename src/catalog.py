@@ -10,7 +10,7 @@ class catalog(object):
   @abc.abstractmethod
   def conn(self, host='localhost'):
     """
-    Method to connect to redis server on given host
+    Method to connect to server on given host
     """
     pass
 
@@ -18,14 +18,14 @@ class catalog(object):
   @abc.abstractmethod
   def start(self):
     """
-    Method to start up redis service locally
+    Method to start up service
     """
     pass
 
   @abc.abstractmethod
   def stop(self):
     """
-    Method to stop redis service locally
+    Method to stop service
     """
     pass
 

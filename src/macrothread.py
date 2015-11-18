@@ -29,6 +29,9 @@ class macrothread(object):
     self.name = name
     self.fname = fname
 
+    #  TODO: See if this can be Simplied by combining all "state" items into one 
+    #     big set of state fields dict
+
     self._input = {}
     self._term  = {}
     self._split = {}
@@ -42,6 +45,7 @@ class macrothread(object):
     self.downStream = None
 
     self.catalog = None
+    self.localCatalogServer = None
 
     # Catalog support status (bool for now, may need to be state-based)
     self.catalogPersistanceState = False
@@ -100,6 +104,12 @@ class macrothread(object):
     raise NotImplementedError("This method has not been implemented.")
 
 
+  def fetch(self, item):
+    """
+    Retrieve data element associated with given item reference (defaults to returning item ref)
+    """
+    return item
+
   def retry_redisConn(ex):
     return isinstance(ex, redis.ConnectionError)
 
@@ -130,8 +140,9 @@ class macrothread(object):
     logger.debug("\n==========================\n  MANAGER:  %s", self.name)
 
     # Catalog Service Check here
-    self.catalog = redisCatalog.dataStore('catalog')
-    localservice = self.catalog.conn()
+    if not self.catalog:
+      self.catalog = redisCatalog.dataStore('catalog')
+    self.localcatalogserver = self.catalog.conn()
 
     # Check for termination  
     self.load(self._term)
@@ -159,9 +170,9 @@ class macrothread(object):
     #  provide the service which means it will need to immediate re-schedule
     #  itself
     self.catalogPersistanceState = True
-    if localservice and not self.catalogPersistanceState:
+    if self.localcatalogserver and not self.catalogPersistanceState:
       self.catalog.stop()
-
+      self.localcatalogserver = None
 
     #  TODO:  Det if manager should load entire input data set, make this abstract, or
     #     push into UDF portion
@@ -189,7 +200,6 @@ class macrothread(object):
             cmd = "python3 %s -w %s" % (self.fname, str(i)))
         jobid += 1
 
-
     # Reschedule Next Manager:
     # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
     #      FOR NOW, back off delay  (for debug/demo/testing)
@@ -210,15 +220,16 @@ class macrothread(object):
 
     # Ensure the catalog is available. If not, start it for persistance and check
     # if the thread is running before exit
-    localservice = self.catalog.conn()
+    self.localcatalogserver = self.catalog.conn()
     self.catalogPersistanceState = True
 
     self.save(self._split)
     self.save(self._exec)
     
-    if localservice and self.catalogPersistanceState:
+    if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
-      localservice.join()
+      self.localcatalogserver.join()
+      self.localcatalogserver = None
 
     logger.debug("==========================")
     return 1
@@ -229,23 +240,24 @@ class macrothread(object):
 
     # TODO:  Does the worker need to fetch input data? (ergo: should this be abstracted)
     # jobInput = self.fetch(i)
-    jobInput = i      # TODO: Manage job Input w/multiple input items, for now just pass it
 
     # TODO: Optimization Notifications
     #  catalog.notify(i, "active")
 
-    # Catalog Service Check here
-    localservice = self.catalog.conn()
-
+    # Catalog Service Check here. Ensure catalog is available and then retrieve all data up front
+    if not self.catalog:
+      self.catalog = redisCatalog.dataStore('catalog')
+    self.localcatalogserver = self.catalog.conn()
 
     logger.info("Loading Thread State for `S_exec`, `S_term` from catalog:")
     self.load(self._exec)
     self.load(self._term)
+    jobInput = self.fetch(i)      # TODO: Manage job Input w/multiple input items, for now just pass it
 
     # In case this worker spun up a service, ensure it is stopped locally
-    if localservice and not self.catalogPersistanceState:
+    if self.localcatalogserver and not self.catalogPersistanceState:
       self.catalog.stop()
-
+      self.localcatalogserver = None
 
     logger.debug("Starting Worker Execution  ---->>")
     result = self.execute(jobInput)
@@ -254,8 +266,8 @@ class macrothread(object):
     if type(result) != list:
       result = [result]
 
-    #  CHECK CATALOG STATUS
-    localservice = self.catalog.conn()
+    #  CHECK CATALOG STATUS for saving data
+    self.localcatalogserver = self.catalog.conn()
 
 
     logger.info("Saving Thread State for `S_exec`, `S_term` from catalog:")
@@ -280,9 +292,10 @@ class macrothread(object):
 
       print ("  output: ", r)  
 
-    if localservice and self.catalogPersistanceState:
+    if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Worker is running the catalog. Waiting on local service to terminate...")
-      localservice.join()
+      self.localcatalogserver.join()
+      self.localcatalogserver = None
 
     logger.debug("--------------------------")
 
