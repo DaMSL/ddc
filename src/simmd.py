@@ -77,7 +77,7 @@ class simulationJob(macrothread):
     # Prepare working directory, input/output files
     conFile = os.path.join(params['workdir'], unwrapKey(i) + '.conf')
     logFile = conFile.replace('conf', 'log')      # log in same place as config file
-    dcdFile = conFile.replace('conf', 'dcd')      # log in same place as config file
+    dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
 
     with open(conFile, 'w') as config:
       config.write(source % params)

@@ -43,13 +43,13 @@ class dataStore(redis.StrictRedis, catalog):
     # Set up service object thread to return, in case this client dual-acts as a service
     serviceThread = None
 
-    # # Check if it's already started and connected    
+    # # Check if already connected to service
     if self.exists():
       logging.debug('Data Store, `%s` already connected on `%s`', self.name, self.host)
       return serviceThread
 
-    # If already started by another node, get connection info
-    if os.path.exists(self.lockfile):
+      # If already started by another node, get connection info
+    try:
       with open(self.lockfile, 'r') as connectFile:
         h, p, d = connectFile.read().split(',')
         self.host = h
@@ -61,11 +61,12 @@ class dataStore(redis.StrictRedis, catalog):
       self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
       if self.exists():
         logging.debug('Data Store, `%s` ALIVE on %s, port=%s', self.name, self.host, self.port)
+        serviceAlive = True
         return serviceThread
       else:
         logger.warning("WARNING: Redis Server locked, but not running. Removing file and running it locally")
         os.remove(self.lockfile)
-    else:
+    except FileNotFoundError as ex:
       logging.debug("No Lock file found. Assuming Data Store is not alive")
 
     # Otherwise, start it locally as a daemon server process
@@ -98,8 +99,6 @@ class dataStore(redis.StrictRedis, catalog):
 
   def clear(self):
     self.flushdb()
-
-
 
 
   def redisServerMonitor(self, termEvent):
@@ -154,9 +153,6 @@ class dataStore(redis.StrictRedis, catalog):
     logger.debug('[Catalog Monitor]  Redis Service was shutdown. Exiting monitor thread.')
 
 
-
-
-
   def start(self):
 
     # Prepare 
@@ -170,8 +166,24 @@ class dataStore(redis.StrictRedis, catalog):
 
     # Write lock file for persistent server; otherwise, write to local configfile
     if self.persist:
-      with open(self.lockfile, 'w') as connectFile:
-        connectFile.write('%s,%d,%d' % (self.host, self.port, self.database))
+
+      # Check to ensure lock is not already acquired
+      try:
+        lock = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(lock, bytes('%s,%d,%d' % (self.host, self.port, self.database), 'UTF-8'))
+        os.close(lock)
+      except FileExistsError as ex:
+        logging.debug("Lock File exists (someone else has acquired it). Backing off 10 seconds and connecting....")
+        time.sleep(10)
+        with open(self.lockfile, 'r') as connectFile:
+          h, p, d = connectFile.read().split(',')
+          self.host = h
+          self.port = int(p)
+          self.database = int(d)
+          logging.debug('Data Store Lock File, `%s` DETECTED on %s, port=%s', self.name, self.host, self.port)
+        return None
+
+
     else:
       self.config = self.name + '-' + self.host + ".conf"
 

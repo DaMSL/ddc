@@ -153,9 +153,6 @@ class analysisJob(macrothread):
       else:
         dcd, pdb = tuple(map(lambda x: os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
 
-      # TEMP
-      pdb = DEFAULT.PDB_FILE
-
       # 1. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
       filterMin  = traj.top.select_atom_indices(selection='minimal')
