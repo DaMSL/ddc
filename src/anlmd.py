@@ -8,7 +8,7 @@ import numpy as np
 from numpy import linalg as LA
 import nearpy
 from nearpy.storage.storage_redis import RedisStorage
-from nearpy.hashes import RandomBinaryProjections
+from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections
 
 import redisCatalog
 from common import *
@@ -95,11 +95,39 @@ def eigenDecomB(traj):
     for B in range(A, n_atoms):
       delta = LA.norm(mean[A] - mean[B])
       dist[A][B] = delta
-      dist[B][A] = -delta
+      dist[B][A] = delta
   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
   logging.info("Calculating Eigen")
   # print(str(dt.datetime.now()), "  Calculating Eigen")
   return LA.eigh(dist)
+
+
+
+def pclist2vector(eg, ev, numpc):
+  """
+  Convert set of principal components into a single vectors
+  """
+  index = np.zeros(shape=(numpc, len(ev[0])), dtype=ev.dtype)
+  for pc in range(numpc):
+    np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
+  return index.flatten()
+
+# Split windows & process eigens:
+def geteig(num, traj, win, winsize=50):
+  logging.info("Window %s - %04d" % (str(num), win))
+  eg, ev = eigenDecomB(traj.xyz[win:win+winsize])
+  eg /= LA.norm(eg)
+  ev = np.transpose(ev)   # Transpose eigen vectors
+  return pclist2vector(eg, ev, 3)
+
+
+def geteigens(num, traj, winsize=50, slide=25):
+  result = {}
+  for win in range(0, len(traj.xyz) - winsize+1, slide):
+    ev = geteig(num, traj, win, winsize=winsize)
+    key = '%04d' % num + ':' + '%04d' % win
+    result[key] = ev
+  return result
 
 
 
@@ -121,8 +149,8 @@ class analysisJob(macrothread):
 
 
       # TODO: Move to Catalog
-      self.winsize = 100
-      self.slide   =  50
+      self.winsize = 50
+      self.slide   = 25
 
     def setBuild(self, build=True):
       self.buildArchive = build
@@ -155,8 +183,8 @@ class analysisJob(macrothread):
 
       # 1. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
-      filterMin  = traj.top.select_atom_indices(selection='minimal')
-      traj.atom_slice(filterMin, inplace=True)
+      filterHeavy  = traj.top.select_atom_indices(selection='heavy')
+      traj.atom_slice(filterHeavy, inplace=True)
 
       logging.debug('Trajectory Loaded: %s - %s', jobnum, str(traj))
       result = {}
@@ -164,20 +192,10 @@ class analysisJob(macrothread):
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
       #   TODO: Retain provenance
       for win in range(0, len(traj.xyz) - self.winsize+1, self.slide):
-        logging.debug("Processing window %s - %s # " % (jobnum, str(win)))
-        eg, ev = eigenDecomA(traj.xyz[win:win+self.winsize])
-        eg /= LA.norm(eg)
-        ev = np.transpose(ev)   # Transpose eigen vectors
-        index = np.zeros(shape=(DEFAULT.NUM_PCOMP, len(ev[0])), dtype=ev.dtype)
-        for pc in range(DEFAULT.NUM_PCOMP):
-          np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
-        # 3. store index
-        if win < 1000:
-          key = jobnum + ':' + '%03d' % win
-        else:
-          key = jobnum + ':' + '%04d' % win
+        index = geteig(jobnum, traj, win, winsize=self.winsize)
+        key = jobnum + ':' + '%04d' % win
         logging.debug('Cachine Index locally: %s', key)
-        result[key] = index.flatten()
+        result[key] = index
         if not indexSize:
           indexSize = len(result[key])
           # logging.debug('Index Size = %d' % indexSize)
@@ -185,29 +203,21 @@ class analysisJob(macrothread):
       # Create empty lshash and load stored hash
       # OPTION A:  Build Archive online
       if self.buildArchive:
-        # logging.debug('Build Archive!  Index stored directly')
-        # import redis
-        # archive = redis.StrictRedis(port=6380)
         archive = redisCatalog.dataStore(**archiveConfig)
-
-        # logging.debug('Archive Client Created, arch class= %s', str(archive.__class__))
-        archive.conn()
-        keys = archive.keys()
-        # logging.debug('keys loaded')
-        # for k in keys:
-          # logging.debug("  key: %s", k)
         redis_storage = RedisStorage(archive)
         config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
         if not config:
           logging.error("LSHash not configured")
+
         #TODO: Gracefully exit
-        lshash = RandomBinaryProjections(None, None)
+        # lshash = RandomBinaryProjections(None, None)
+        lshash = PCABinaryProjections(None, None, None)
         lshash.apply_config(config)
         engine = nearpy.Engine(indexSize, 
             lshashes=[lshash], 
             storage=redis_storage)
-        for key, index in result.items():
-          engine.store_vector(index, key)
+        for key, idx in result.items():
+          engine.store_vector(idx, key)
 
       # OPTION B:  Index for downstream retrieval
       else:

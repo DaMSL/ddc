@@ -14,7 +14,7 @@ archiveConfig = dict(name='archive', port=6380)
 
 class DEFAULT:
 
-  MANAGER_RERUN_DELAY = 30
+  MANAGER_RERUN_DELAY = 60
 
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
@@ -30,6 +30,7 @@ class DEFAULT:
   # FFIELD   = '/home-1/bring4@jhu.edu/bpti/toppar/top_all22_prot.prm'
   HIST_FILE_DIR  = os.path.join(WORKDIR, 'bpti')
   JOB_DIR = os.path.join(WORKDIR, 'jc')
+
   # INDEX_LOCKFILE = os.path.join(WORKDIR, 'index.lock')
   CONFIG_DIR     = WORKDIR
   NUM_PCOMP = 2
@@ -39,17 +40,22 @@ class DEFAULT:
   HIST_SLIDE  = 50
   HIST_WINDOW = 100
 
-  HASH_NAME = 'lshash'
+  HASH_NAME = 'pcahash'
 
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
 
-  PARTITION = 'parallel'
+  PARTITION = 'shared'
 
   # Catalog Params
   MONITOR_WAIT_DELAY = 30
   CATALOG_IDLE_THETA = 300
   CATALOG_STARTUP_DELAY = 10
+
+  # TODO: Move this from a file to the archive!
+  DATA_LABEL_FILE = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
+
+  MAX_NUM_NEW_JC = 5
 
 
   @classmethod
@@ -190,7 +196,16 @@ def initialize(catalog, archive, flushArchive=False):
     redis_storage = RedisStorage(archive)
 
     # Create Hash
-    lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, 3)
+    # lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, 3)
+
+    # Assume vects is 
+    # pcahash = PCABinaryProjections('pcahash', 10, [v[0] for v in vects])
+    # redis_storage.store_hash_configuration(pcahash)
+    # eng2 = Engine(454, lshashes=[pcahash], storage=redis_storage)
+    # for v in vects:
+    #   eng2.store_vector(v[0], v[1])
+
+
 
     # Store hash configuration in redis for later use
     logging.debug('Storing Hash in Archive')
