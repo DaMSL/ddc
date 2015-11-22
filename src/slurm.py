@@ -51,12 +51,14 @@ class slurm:
     for mod in modules:
       inline += 'module load %s\n' % mod
 
+    inline += 'echo ================================\n'
+    inline += 'echo JOB NAME:  %s\n' % options['job-name']
     inline += '\n%s\n' % cmd
 
 
-    logging.info("Inline SBATCH:------------->>")
-    logging.info(inline)
-    logging.info("<<-------  Batch Complete")
+    # logging.info("Inline SBATCH:------------->>")
+    # logging.info(inline)
+    # logging.info("<<-------  Batch Complete")
 
     # Launch job
     job = proc.Popen('sbatch <<EOF\n%sEOF' % inline,

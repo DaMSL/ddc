@@ -246,8 +246,8 @@ class dataStore(redis.StrictRedis, catalog):
         if len(value) > 0:
           if key == 'JCQueue':
             print ("     SETTING:", value, type(value), len(value))
-          pipe.rpush(key, *(tuple(value)))
-
+          for i, val in enumerate(value):
+            pipe.lset(key, i, val)
       elif isinstance(value, dict):
         pipe.hmset(key, value)
       else:
@@ -280,14 +280,23 @@ class dataStore(redis.StrictRedis, catalog):
         tp = 'VAL'
       logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
 
-      # TODO:  handle other datatypes beside list
+    # TODO:  Better handling of dynamic dispatching for datatypes
 
     vals = pipe.execute()
+
+    #  Data Conversion
 
     for i, key in enumerate(keys):
       logger.debug('Caching:  ' + key)
       if isinstance(data[key], list):
-        data[key] = [val.decode() for val in vals[i]]
+        tmp = [val.decode() for val in vals[i]]
+        if tmp[0].isdigit():
+          data[key] = [int(val) for val in tmp]
+        else:
+          try:
+            data[key] = [float(val) for val in tmp]
+          except ValueError as ex:
+            data[key] = tmp
       elif isinstance(data[key], dict):
         data[key] = {k.decode():v.decode() for k,v in vals[i].items()}
       elif isinstance(data[key], int):

@@ -19,7 +19,7 @@ ddl = namedtuple('key', 'value, type')
 import redisCatalog
 
 import logging, logging.handlers
-logger = setLogger()
+logger = setLogger("MT")
 
 
 class macrothread(object):

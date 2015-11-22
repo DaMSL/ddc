@@ -69,14 +69,14 @@ class DEFAULT:
 
 
 
-def setLogger():
+def setLogger(name=""):
   global logger
   if not logger:
-    # logging.Formatter(fmt='[%(asctime)s %(levelname)-5s %(name)s] %(message)s',datefmt='%H:%M:%S')
-    logging.Formatter(fmt='[%(asctime)s %(levelname)-5s %(name)s] %(message)s',datefmt='%H:%M:%S')
+    # log_fmt = logging.Formatter(fmt='[%(asctime)s %(levelname)-5s %(name)s] %(message)s',datefmt='%H:%M:%S')
+    log_fmt = logging.Formatter(fmt= '[%(module)s] %(message)s',datefmt='%H:%M:%S')
     logger = logging.getLogger("")
     log_console = logging.StreamHandler()
-    # log_console.setFormatter(log_fmt)
+    log_console.setFormatter(log_fmt)
     logger.setLevel(logging.DEBUG)
     logger.addHandler(log_console)
   return logger
@@ -122,6 +122,8 @@ def executecmd(cmd):
 
 
 
+
+
 #  PROGRAM DEFAULTS FOR INITIALIZATION
 #   TODO:  Consolidate & dev config file
 
@@ -135,7 +137,8 @@ schema = dict(
         processed =  0,
         indexSize = 852*DEFAULT.NUM_PCOMP,
         LDIndexList = [],
-        converge =  0.)
+        converge =  0.,
+        observation_counts = [])
 
 
 def initialize(catalog, archive, flushArchive=False):
@@ -179,6 +182,13 @@ def initialize(catalog, archive, flushArchive=False):
   for k, v in initParams.items():
       logging.debug("    %s: %s" % (k, v))
   
+
+  # Load DEShaw data
+  histo = np.load('histogram.npy')
+
+  # TO INIT FATIGUE VALS:
+  
+
 
   logging.debug("Stopping the catalog.")
   catalog.stop()
