@@ -231,10 +231,7 @@ class analysisJob(macrothread):
         # Index Key : If/When to update job ID management for downstream data
         index_key = wrapKey('idx', jobnum)
         self.catalog.save({index_key: packed})
-        self.data['LDIndexList'].append(index_key)
-        logging.debug("DEBUG indexlist follows")
-        for l in self.data['LDIndexList']:
-          logging.debug(" INDEX: " + l)
+        self.data['LDIndexList'].append(jobnum)
         return index_key
 
 

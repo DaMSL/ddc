@@ -234,20 +234,22 @@ class dataStore(redis.StrictRedis, catalog):
 
 
 
+      # TODO:  Implementation of list vs queue (append vs update)
 
   def save(self, data):
-
     pipe = self.pipeline()
     for key, value in data.items():
       if key == 'JCQueue':
         print (key, type(key), value, type(value))
       if isinstance(value, list):
-        #pipe.delete(key)
-        if len(value) > 0:
-          if key == 'JCQueue':
-            print ("     SETTING:", value, type(value), len(value))
-          for i, val in enumerate(value):
-            pipe.lset(key, i, val)
+        # pipe.delete(key)
+        for val in value:
+          pipe.rpush(key, val)
+        # if len(value) > 0:
+        #   if key == 'JCQueue':
+        #     print ("     SETTING:", value, type(value), len(value))
+        #   for i, val in enumerate(value):
+        #     pipe.lset(key, i, val)
       elif isinstance(value, dict):
         pipe.hmset(key, value)
       else:
@@ -257,6 +259,8 @@ class dataStore(redis.StrictRedis, catalog):
       # TODO:  handle other datatypes beside list
 
     pipe.execute()
+
+
 
 
   # Retrieve data stored for each key in data & store into data 
@@ -290,7 +294,9 @@ class dataStore(redis.StrictRedis, catalog):
       logger.debug('Caching:  ' + key)
       if isinstance(data[key], list):
         tmp = [val.decode() for val in vals[i]]
-        if tmp[0].isdigit():
+        if len(tmp) == 0:
+          data[key] = []
+        elif tmp[0].isdigit():
           data[key] = [int(val) for val in tmp]
         else:
           try:

@@ -14,7 +14,7 @@ archiveConfig = dict(name='archive', port=6380)
 
 class DEFAULT:
 
-  MANAGER_RERUN_DELAY = 60
+  MANAGER_RERUN_DELAY = 240
 
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
@@ -45,7 +45,7 @@ class DEFAULT:
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
 
-  PARTITION = 'shared'
+  PARTITION = 'parallel'
 
   # Catalog Params
   MONITOR_WAIT_DELAY = 30
@@ -55,7 +55,7 @@ class DEFAULT:
   # TODO: Move this from a file to the archive!
   DATA_LABEL_FILE = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
 
-  MAX_NUM_NEW_JC = 5
+  MAX_NUM_NEW_JC = 4
 
 
   @classmethod
@@ -187,7 +187,7 @@ def initialize(catalog, archive, flushArchive=False):
   histo = np.load('histogram.npy')
 
   # TO INIT FATIGUE VALS:
-  
+
 
 
   logging.debug("Stopping the catalog.")

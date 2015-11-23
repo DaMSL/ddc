@@ -287,7 +287,7 @@ class kv2DArray:
       logging.warning("Will not displace 2D list Array")
       return
     mat = self.getAll()
-    fmt = '%4d' if self.datatype == int else '%0.2f'
+    fmt = '%8d' if self.datatype == int else '%8.2f'
     for row in mat:
       logging.info('   ' + " ".join([fmt%x for x in row]))
       
@@ -299,7 +299,7 @@ class controlJob(macrothread):
       # State Data for Simulation MacroThread -- organized by state
       self.setInput('LDIndexList')
       self.setTerm('JCComplete', 'processed')
-      self.setExec('indexSize', 'JCQueue', "observation_counts")
+      self.setExec('indexSize', 'JCQueue')
       self.setSplit('anlSplitParam')
       
       # exec incl hash key-name
@@ -319,7 +319,7 @@ class controlJob(macrothread):
       catalog = self.getCatalog()
 
       # TODO:  Back Trace
-      split = 1  #int(self.data['simSplitParam'])
+      split = 20  #int(self.data['simSplitParam'])
       immed = catalog.slice('LDIndexList', split)
       return immed
 
@@ -341,7 +341,8 @@ class controlJob(macrothread):
       lshash = PCABinaryProjections(None, None, None)
       lshash.apply_config(config)
 
-      # TODO: Dynamically check for PC #
+
+      logging.debug("INDEX SIZE = %d:  ", self.data['indexSize'])
       engine = nearpy.Engine(454*3, 
             lshashes=[lshash], 
             storage=redis_storage)
@@ -444,7 +445,7 @@ class controlJob(macrothread):
       tmat.display()
 
       #  Theta is calculated as the probability of staying in 1 state (from observed data)
-      theta = self.data['observation_counts'][1] / sum(self.data['observation_counts'])
+      theta = .6  #self.data['observation_counts'][1] / sum(self.data['observation_counts'])
       logging.debug("  THETA  = %0.3f", theta)
 
 
@@ -464,12 +465,13 @@ class controlJob(macrothread):
         if max(dist) > theta: 
           logging.debug(" Trajectory `%s`  classified as staying in state :  %d", srckey, stateA)
           transitionBins.add(stateA, stateA, srckey)
+          stateB = stateA
 
         # Observation showed some trandition 
         else:
           dist[stateA] = 0        
           stateB = np.argmax(dist)
-          logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", srckey, stateA, StateB)
+          logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", srckey, stateA, stateB)
           transitionBins.add(stateA, stateB, srckey)
 
 
@@ -500,12 +502,15 @@ class controlJob(macrothread):
       for x in range(numLabels):
         for y in range(numLabels):
           wght_mat[x][y] = alpha * probability[x][y] + beta * fatigue[x][y]
-          logging.debug("Setting Weight (%d, %d):  %0.2f     Prob= %0.2f,  Fatig= %0.2f", x, y, wght_mat[x][y], probability[x][y], fatigue[x][y])
+          logging.debug("Setting Weight (%d, %d):  %0.3f     Prob= %0.3f,  Fatig= %0.3f", x, y, wght_mat[x][y], probability[x][y], fatigue[x][y])
 
       # 6. SORT WEIGHTS  -- MIN is PREFERABLE
+      #   TODO:  Selection Process for deterining the next job candidates
+      #    INitial approach:  sort weights & choose the top N-bins
+      #       Question: Should we select 1 per bin or weighted # per bin??)
+      #    For exploration:  May want to examine more detailed stats to ID new regions of interest 
       weights = sorted([((x, y), wght_mat[x][y]) for x in range(numLabels) for y in range(numLabels)], key=lambda x: x[1])
 
-      # Job Candidate Selection (TODO: Should we select 1 per bin or weighted # per bin??)
       tbin = transitionBins.getAll()
 
       newJobCandidate = {}
@@ -542,7 +547,11 @@ class controlJob(macrothread):
         selectedBins.append((A, B))
 
         # Pick a random trajectory from the bin
-        sourceTraj = choice(targetBin)
+        while True:
+          sourceTraj = choice(targetBin)
+          if sourceTraj.isdigit:
+            break
+          logging.debug("Found a new trajectory, but skipping for now (only drawing new JC from DEShaw data)")
         logging.debug("Selected random DEShaw Trajectory # %s based on state %d", sourceTraj, A)
 
 
@@ -591,16 +600,16 @@ class controlJob(macrothread):
             logging.debug("Setting Fatigue value for (%d,%d) to %f", i, j, fatigue[i][j]*2)
             fmat.set(i, j, min(fatigue[i][j] * 2, 1.))
           else:
-            fmat.set(i, j, max(fatigue[i][j] * 0.5, 0.))
+            fmat.set(i, j, max(fatigue[i][j] * 0.95, 0.))
+
+      # logging.debug(" SIMULATION ONLY ---- NOT SAVING")
+      # #  SIMULATING FOR NOW
+      # sys.exit(0)
 
 
       # Control Thread requires the catalog to be accessible. Hence it starts it:
       self.catalogPersistanceState = True
       self.localcatalogserver = self.catalog.conn()
-
-      logging.debug(" SIMULATION ONLY ---- NOT SAVING")
-      #  SIMULATING FOR NOW
-      sys.exit(0)
 
       for jcid, config in newJobCandidate.items():
         jckey = wrapKey('jc', jcid)
