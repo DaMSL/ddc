@@ -22,15 +22,8 @@ class simulationJob(macrothread):
     macrothread.__init__(self, schema, fname, 'sim')
 
     # State Data for Simulation MacroThread -- organized by state
-    self.setInput('JCQueue')
-    self.setTerm('JCComplete', 'JCTotal')
-    self.setExec('dcdFileList')    # 'pendingjobs' <-- todo
-    self.setSplit('simSplitParam')
-
-    # Static Data common across all simulationJobs (for now) 
-    self.psf = DEFAULT.PSF_FILE
-    self.pdb = DEFAULT.PDB_FILE
-    # self.forcefield = DEFAULT.FFIELD
+    self.setStream('JCQueue', 'dcdFileList')
+    self.setState('JCComplete', 'JCTotal', 'simSplitParam')
 
     # Local Data to this running instance
     self.cpu = 1
@@ -50,32 +43,28 @@ class simulationJob(macrothread):
 
   def split(self):
     split = int(self.data['simSplitParam'])
-
-    # Note how data is sliced within the data base
-    #   User is required to "save back" the deferred input data, if nec'y
-    catalog = self.getCatalog()
-    immed = catalog.slice('JCQueue', split)
-    return immed
+    immed = self.data['JCQueue'][:split]
+    return immed, split
 
 
-  def execute(self, i):
-    logging.debug("WORKER Input received: " + str(i))
-
-    logging.info("Preparing Simulation: " + i)
-    # Prepare 
-    with open(DEFAULT.SIM_CONF_TEMPLATE, 'r') as template:
-      source = template.read()
-
-    # Load parameters from catalog & source to config file
-    logging.debug("Pulling Params from: %s", self.catalog.host)
+  def fetch(self, i):
+    # Load parameters from catalog
     inputs = self.catalog.hgetall(wrapKey('jc', i))
     params = {k.decode():v.decode() for k,v in inputs.items()}
     logging.debug(" Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
+    return params
+
+
+  def execute(self, params):
+
+    # Prepare & source to config file
+    with open(DEFAULT.SIM_CONF_TEMPLATE, 'r') as template:
+      source = template.read()
 
     # Prepare working directory, input/output files
-    conFile = os.path.join(params['workdir'], unwrapKey(i) + '.conf')
+    conFile = os.path.join(params['workdir'], unwrapKey(params['name']) + '.conf')
     logFile = conFile.replace('conf', 'log')      # log in same place as config file
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
 
@@ -95,8 +84,6 @@ class simulationJob(macrothread):
     # TODO:  Change this to append to pending jobs and add check in either
     #     this MT or downstream to check for completed pending jobs....
     #     requires key-val match between jcUID and the slurm jobid
-    self.data['dcdFileList'].append(dcdFile)
-    # self.data['JCComplete'] = int(self.data['JCComplete']) + 1
 
     return [dcdFile]
 

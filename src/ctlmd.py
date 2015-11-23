@@ -16,7 +16,7 @@ import redisCatalog
 from common import *
 from macrothread import macrothread
 from slurm import slurm
-from random import choice
+from random import choice, randint
 
 import logging
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
@@ -115,9 +115,9 @@ def getLabelList(labels):
     labelset.add(lab.state)
   return sorted(list(labelset))
 
-def generateNewJC(rawfile, frame=-1):
+def generateNewJC(rawfile, pdbfile):
 
-    logging.debug("Generating new coords from:  %s", rawfile)
+    logging.debug("Generating new simulation coordinates from:  %s", rawfile)
 
     # Get a new uid
     jcuid = getUID()
@@ -130,8 +130,6 @@ def generateNewJC(rawfile, frame=-1):
     newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
     newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
 
-    logging.debug("Files to use: %s, %s", coordFile, newPsfFile)
-
 
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
@@ -142,22 +140,18 @@ def generateNewJC(rawfile, frame=-1):
     #  TODO:  Use load_frame instead of loading entire trajectory
 
     #  Load in Historical Referenced trajectory file, filter out proteins & slice
-    traj  = md.load(rawfile, top=DEFAULT.PDB_FILE)
-    filt = traj.top.select('protein')    
-    traj.atom_slice(filt, inplace=True)
+    traj  = md.load(rawfile, top=pdbfile)
+    traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
     
-    #  If no frame ref is provided, grab the middle frame
+    #  For now, pick a random frame from this trajectory
     #  TODO:  ID specific window reference point
-    if frame < 0:
-      frame = traj.n_fames // 2
+    frame = randint(0, traj.n_frames)
     coord = traj.slice(frame)
 
-    logging.debug("Working source traj: %s", str(coord))
+    logging.debug("  Source trajectory: %s   (frame # %d)", str(coord), frame)
 
     # Save this as a temp file to set up simulation input file
     coord.save_pdb(coordFile)
-
-    logging.debug("Coord file saved.")
 
     newsimJob = dict(workdir=jobdir,
         coord = coordFile,
@@ -166,8 +160,9 @@ def generateNewJC(rawfile, frame=-1):
         topo    = DEFAULT.TOPO,
         parm    = DEFAULT.PARM)
 
+    logging.info("  Running PSFGen to set up simulation pdf/pdb files.")
     stdout = executecmd(psfgen(newsimJob))
-    logging.debug("  PSFGen COMPLETE!!  Cleaning up\n" + stdout)
+    logging.debug("  PSFGen COMPLETE!!\n")
 
     os.remove(coordFile)
     del newsimJob['coord']
@@ -297,18 +292,10 @@ class controlJob(macrothread):
     def __init__(self, schema, fname):
       macrothread.__init__(self, schema, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
-      self.setInput('LDIndexList')
-      self.setTerm('JCComplete', 'processed')
-      self.setExec('indexSize', 'JCQueue')
-      self.setSplit('anlSplitParam')
-      
-      # exec incl hash key-name
-      # TODO: wildcard loading of data
+      self.setStream('LDIndexList', 'JCQueue')
+      self.setState('indexSize', 'ctlSplitParam')
 
       self.modules.add('namd')
-
-      #  This thread's execution will run "supervised"
-      self.fork = False
 
 
     def term(self):
@@ -316,12 +303,14 @@ class controlJob(macrothread):
       return False
 
     def split(self):
+
       catalog = self.getCatalog()
 
-      # TODO:  Back Trace
-      split = 20  #int(self.data['simSplitParam'])
-      immed = catalog.slice('LDIndexList', split)
-      return immed
+      # TODO:  Provide better organization/sorting of the input queue based on weights
+      # For now: just take the top N
+      split = self.data['ctlSplitParam']
+      immed = self.data['LDIndexList'][:split]
+      return immed,split
 
     def fetch(self, i):
       return {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(wrapKey('idx', i)).items()}
@@ -343,7 +332,7 @@ class controlJob(macrothread):
 
 
       logging.debug("INDEX SIZE = %d:  ", self.data['indexSize'])
-      engine = nearpy.Engine(454*3, 
+      engine = nearpy.Engine(454*DEFAULT.NUM_PCOMP, 
             lshashes=[lshash], 
             storage=redis_storage)
 
@@ -397,7 +386,7 @@ class controlJob(macrothread):
 
           # Note:  Other Decision History is loaded here
 
-        logging.info("Probing `%s`  -- window starting at frame #  %s  in state %s", sourceJC, frame, str(prevState))
+        logging.info("\nProbing `%s` window at frame # %s  (state %s)", sourceJC, frame, str(prevState))
 
         # Probe historical index  -- for now only probing DEShaw index
         #   TODO: Take NN distance into account when calculating stateCounts
@@ -430,7 +419,7 @@ class controlJob(macrothread):
           # Increment the transition matrix
           if prevState == None:
             prevState = state
-          logging.debug("Transition %d  --->  %d    Incrementing transition counter (%d, %d)", prevState, state, prevState, state)
+          logging.debug("  Transition %d  --->  %d    Incrementing transition counter (%d, %d)", prevState, state, prevState, state)
 
           # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
           tmat.incr(prevState, state, 1)
@@ -451,7 +440,7 @@ class controlJob(macrothread):
 
       #  Process output data for each unque input trajectory (as produced by a single simulation)
       for srckey, resultStates in observationDistribution.items():
-        logging.debug("Proecssing Trajectory: %s : %s", srckey, str(resultStates))
+        logging.debug("\nFinal processing for Source Trajectory: %s : %s   (note: injection point here for better classification)", srckey, str(resultStates))
         if sum(resultStates) == 0:
           logging.debug(" No observed data for, %s", srckey)
           continue
@@ -474,6 +463,12 @@ class controlJob(macrothread):
           logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", srckey, stateA, stateB)
           transitionBins.add(stateA, stateB, srckey)
 
+        # if 'targetBin' in sourceHistory[srckey]:
+        #   outputBin = str(stateA, stateB)
+        #   inputBin  = sourceHistory[srcKey]['targetBin']
+        #   logging.info("  Predicted Taget Bin was       :  %s", inputBin) 
+        #   logging.info("  Actual Trajectory classified  :  %s", outputBin) 
+        #   logging.debug("    TODO: ID difference, update weights, etc..... (if desired)")
 
       ####   This is end of processing a single Job Candidate and here begins the cycle of finding next set of JC's
 
@@ -524,20 +519,20 @@ class controlJob(macrothread):
         #       and go withit
         A = w[0][0]
         B = w[0][1] 
-        logging.debug("Targetting transition weight, %s,  %f", str(w[0]), w[1])
+        logging.debug("\n\nCONTROL: Target transition bin:  %s    weight=%f", str(w[0]), w[1])
 
         # Pick a "target bin"
         targetBin = tbin[A][B]
 
         # Ensure there are candidates to pick from
         if len(targetBin) == 0:
-          logging.info("No DEShaw reference for transition, %s  -- going alternate", str(targetBin))
+          logging.info("No DEShaw reference for transition, (%d, %d)  -- checking reverse direction", A, B)
 
           # Flip direction of transition (only good if we're assuming transitions are non-symetric)
           targetBin = tbin[B][A]
 
           if len(targetBin) == 0:
-            logging.info("No DEShaw reference for transition, %s  -- going alternate", str(targetBin))
+            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking all bins starting from state %d", B, A, A)
             targetBin = []
 
             # Finally, pick any start point from the initial state (assume that state had a candidate)
@@ -547,12 +542,8 @@ class controlJob(macrothread):
         selectedBins.append((A, B))
 
         # Pick a random trajectory from the bin
-        while True:
-          sourceTraj = choice(targetBin)
-          if sourceTraj.isdigit:
-            break
-          logging.debug("Found a new trajectory, but skipping for now (only drawing new JC from DEShaw data)")
-        logging.debug("Selected random DEShaw Trajectory # %s based on state %d", sourceTraj, A)
+        sourceTraj = choice(targetBin)
+        logging.debug("Selected DEShaw Trajectory # %s based on state %d", sourceTraj, A)
 
 
         # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
@@ -560,21 +551,23 @@ class controlJob(macrothread):
         # Back-project  <--- Move to separate Function tied to decision history
         # For now:
         if sourceTraj.isdigit():      # It's a DEShaw file
-          fname = 'bpti-all-%03d.dcd' if int(sourceTraj) < 1000 else 'bpti-all-%03d.dcd'
+          fname = 'bpti-all-%03d.dcd' if int(sourceTraj) < 1000 else 'bpti-all-%04d.dcd'
           archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, fname % int(sourceTraj))
-          jcID, params = generateNewJC(archiveFile, 500)
+          pdbfile = DEFAULT.PDB_FILE
         else:
           archiveFile = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.dcd' % sourceTraj)
-          jcID, params = generateNewJC(archiveFile)
+          pdbfile     = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.pdb' % sourceTraj)
 
-        # frameRef = int(seqNum) * DEFAULT.HIST_SLIDE + (DEFAULT.HIST_WINDOW // 2)
+        jcID, params = generateNewJC(archiveFile, pdbfile)
+
 
         # NOTE: Update Additional JC Params and Historical Data, as needed
         jcConfig = dict(params,
             name    = jcID,
             runtime = 51000,
             temp    = 310,
-            state   = A)
+            state   = A,
+            targetBin  = str((A, B)))
 
 
         logging.info("New Simulation Job Created: %s", jcID)
@@ -583,7 +576,7 @@ class controlJob(macrothread):
 
         newJobCandidate[jcID] = jcConfig
 
-        logging.info("New JC Complete:  %s" % jcID)
+        logging.info("New Job Candidate Complete:  %s" % jcID)
           
 
       # Updated the "fatigue" values  -- FOR NOW do it all at once after selection process
@@ -613,11 +606,11 @@ class controlJob(macrothread):
 
       for jcid, config in newJobCandidate.items():
         jckey = wrapKey('jc', jcid)
-        self.data['JCQueue'].append(jcid)
+        # self.data['JCQueue'].append(jcid)
         # self.data[jckey] = config
         self.catalog.save({jckey: config})
 
-      return newJobCandidate.keys()
+      return list(newJobCandidate.keys())
 
 
     def addArgs(self):

@@ -33,7 +33,7 @@ class DEFAULT:
 
   # INDEX_LOCKFILE = os.path.join(WORKDIR, 'index.lock')
   CONFIG_DIR     = WORKDIR
-  NUM_PCOMP = 2
+  NUM_PCOMP = 3
   NODES = 1
   CPU_PER_NODE = 24
 
@@ -57,6 +57,8 @@ class DEFAULT:
 
   MAX_NUM_NEW_JC = 4
 
+  # TODO:  Make this a functional filter ILO string filter
+  ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection='heavy')
 
   @classmethod
   def envSetup(cls):
@@ -133,9 +135,10 @@ schema = dict(
         JCTotal = 1,
         simSplitParam =  1, 
         anlSplitParam =  1,
+        ctlSplitParam =  1,
         dcdFileList =  [], 
         processed =  0,
-        indexSize = 852*DEFAULT.NUM_PCOMP,
+        indexSize = 454*DEFAULT.NUM_PCOMP,
         LDIndexList = [],
         converge =  0.,
         observation_counts = [])

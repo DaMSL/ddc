@@ -51,10 +51,23 @@ class slurm:
     for mod in modules:
       inline += 'module load %s\n' % mod
 
+
+    # For quickly watching last output (good for demo)
+    task = options['job-name'].split('-')[0]
+    inline += "echo 'watch -n 1 tail -80 ~/work/log/%s.out' > watch_%s.sh\n" % (options['job-name'], task)
+    inline += "chmod +x watch_%s.sh\n" % task
+
+    inline += "echo 'less ~/work/log/%s.out' > less_%s.sh\n" % (options['job-name'], task)
+    inline += "chmod +x less_%s.sh\n" % task
+
+
     inline += 'echo ================================\n'
     inline += 'echo JOB NAME:  %s\n' % options['job-name']
     inline += '\n%s\n' % cmd
 
+
+    # logging.debug(" DEBUGGING ---->> RETURNING AND NOT SCHEDULING")
+    # return
 
     # logging.info("Inline SBATCH:------------->>")
     # logging.info(inline)

@@ -32,17 +32,16 @@ class macrothread(object):
     #  TODO: See if this can be Simplied by combining all "state" items into one 
     #     big set of state fields dict
 
-    self._input = {}
-    self._term  = {}
-    self._split = {}
-    self._exec  = {}
+    # self._input = {}
+    # self._term  = {}
+    # self._split = {}
+    # self._exec  = {}
 
+    self._state = {}
     self.data = schema
+    self.upstream = None
+    self.downstream = None
 
-    # TODO: upstream/downstream handling
-    # DO: congestion control
-    self.upStream = None
-    self.downStream = None
 
     self.catalog = None
     self.localCatalogServer = None
@@ -64,24 +63,42 @@ class macrothread(object):
 
   # For now retain 2 copies -- to enable reverting of data
   #   Eventually this may change to a flag based data structure for inp/exec/term, etc...
-  def setInput(self, *arg):
-    for a in arg:
-      self._input[a] = self.data[a]
+  # def setInput(self, *arg):
+  #   for a in arg:
+  #     self._input[a] = self.data[a]
 
-  def setExec(self, *arg):
-    for a in arg:
-      self._exec[a] = self.data[a]
+  # def setExec(self, *arg):
+  #   for a in arg:
+  #     self._exec[a] = self.data[a]
 
-  def setTerm(self, *arg):
-    for a in arg:
-      self._term[a] = self.data[a]
+  # def setTerm(self, *arg):
+  #   for a in arg:
+  #     self._term[a] = self.data[a]
 
-  def setSplit(self, *arg):
-    for a in arg:
-      self._split[a] = self.data[a]
+  # def setSplit(self, *arg):
+  #   for a in arg:
+  #     self._split[a] = self.data[a]
 
-    # TODO: job ID management  
-    self._split['id_' + self.name] = 0
+  #   # TODO: job ID management  
+  #   self._split['id_' + self.name] = 0
+
+
+  # TODO:  Eventually we may want multiple up/down streams
+  def setStream(self, upstream, downstream):
+    if upstream is None or upstream not in self.data.keys():
+      logging.error("Upstream data `%s` not defined in schema", upstream)
+    else:
+      self.upstream = upstream
+
+    if downstream is None or downstream not in self.data.keys():
+      logging.error("Downstream data `%s` not defined in schema", downstream)
+    else:
+      self.downstream = downstream
+
+  def setState(self, *arg):
+    for a in arg:
+      self._state[a] = self.data[a]
+    self._state['id_' + self.name] = 0
 
 
   def setCatalog(self, catalog):
@@ -118,7 +135,6 @@ class macrothread(object):
     """
     Load state from remote catalog to local cache
     """
-    # TODO: Check for catalog here (????)
     # pass expeected data types (interim solution)
     self.catalog.load(state)
     for key, value in state.items():
@@ -128,7 +144,6 @@ class macrothread(object):
     """
     Save state to remote catalog
     """
-    # TODO: Check for catalog here (????)
     for key, value in state.items():
       state[key]      = self.data[key]
     self.catalog.save(state)
@@ -144,17 +159,19 @@ class macrothread(object):
       self.catalog = redisCatalog.dataStore('catalog')
     self.localcatalogserver = self.catalog.conn()
 
+    # Load Data from Thread's State and Upstream thread
+    self.load(self._state)
+    if self.upstream:
+      self.load({self.upstream:[]})
+
     # Check for termination  
-    self.load(self._term)
     if self.term():
       logger.info('TERMINATION condition for ' + self.name)
       sys.exit(0)
 
-    # TODO: what if catalog stops here <-- may need to read in entire state
-
-    # Split input data set
-    self.load(self._split)
-    self.load(self._input)
+    # # Split input data set
+    # self.load(self._split)
+    # self.load(self._input)
 
 
     # Note: Manager can become a service daemon. Thus, we allow the manager
@@ -176,12 +193,13 @@ class macrothread(object):
 
     #  TODO:  Det if manager should load entire input data set, make this abstract, or
     #     push into UDF portion
-    immed  = self.split()
+    immed, defer  = self.split()
 
     # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
     # jobid = int(catalog.load('id_' + self.name))
     # logger.debug("Loaded ID = %d" % jobid)
-    jobid  = self.data['id_%s' % self.name]
+    myid = 'id_%s' % self.name
+    jobid  = self.data[myid]
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
@@ -203,7 +221,7 @@ class macrothread(object):
     # Reschedule Next Manager:
     # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
     #      FOR NOW, back off delay  (for debug/demo/testing)
-    delay = DEFAULT.MANAGER_RERUN_DELAY // 2  
+    delay = DEFAULT.MANAGER_RERUN_DELAY  
     self.slurmParams['begin'] = 'now+%d' % delay
 
     self.slurmParams['job-name'] = "%sM-%05d" % (self.name, jobid)
@@ -215,7 +233,7 @@ class macrothread(object):
 
     # METHOD 2.  Trigger Based
     #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
-    self.data['id_%s' % self.name] = jobid
+    self.data[myid] = jobid
 
 
     # Ensure the catalog is available. If not, start it for persistance and check
@@ -223,8 +241,17 @@ class macrothread(object):
     self.localcatalogserver = self.catalog.conn()
     self.catalogPersistanceState = True
 
-    self.save(self._split)
-    self.save(self._exec)
+
+    # Consume upstream input data (should this happen earlier or now?)
+    #  TODO: Should we just make this only 1 list allowed for upstream data?
+    if isinstance(defer, list) and len(defer) > 0:
+      self.catalog.removeItems(self.upstream, defer)
+    else:
+      self.catalog.slice(self.upstream, defer)
+
+    # Other interal thread state is saved back to catalog
+    #  TODO: For now the manager ONLY updates the job ID
+    self.save({myid: jobid})
     
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
@@ -249,9 +276,11 @@ class macrothread(object):
       self.catalog = redisCatalog.dataStore('catalog')
     self.localcatalogserver = self.catalog.conn()
 
-    logger.info("Loading Thread State for `S_exec`, `S_term` from catalog:")
-    self.load(self._exec)
-    self.load(self._term)
+    logger.info("WORKER Loading Thread State for from catalog:")
+    self.load(self._state)
+    # self.load(self._exec)
+    # self.load(self._term)
+    logger.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
     jobInput = self.fetch(i)      # TODO: Manage job Input w/multiple input items, for now just pass it
 
     # In case this worker spun up a service, ensure it is stopped locally
@@ -259,9 +288,9 @@ class macrothread(object):
       self.catalog.stop()
       self.localcatalogserver = None
 
-    logger.debug("Starting Worker Execution  ---->>")
+    logger.debug("Starting WORKER  Execution  ---->>")
     result = self.execute(jobInput)
-    logger.debug("<<----  Worker Execution Complete")
+    logger.debug("<<----  WORKER Execution Complete")
     # Ensure returned results are a list
     if type(result) != list:
       result = [result]
@@ -269,10 +298,8 @@ class macrothread(object):
     #  CHECK CATALOG STATUS for saving data
     self.localcatalogserver = self.catalog.conn()
 
-
-    logger.info("Saving Thread State for `S_exec`, `S_term` from catalog:")
-    self.save(self._exec)
-    self.save(self._term)
+    logger.info("WORKER Saving Thread State to catalog:")
+    self.save(self._state)
 
     #  catalog.notify(i, "complete")
     for r in result:
@@ -290,7 +317,9 @@ class macrothread(object):
       #   Need feedback to upstreaam to adjust split param
       #     trigger flow bet streams is tuning action (e.g. assume 1:1 to start)
 
-      print ("  output: ", r)  
+      logging.debug ("  WORKER output:   %s", r)  
+    
+    self.catalog.append(self.downstream, result)
 
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Worker is running the catalog. Waiting on local service to terminate...")

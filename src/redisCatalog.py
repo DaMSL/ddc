@@ -241,8 +241,10 @@ class dataStore(redis.StrictRedis, catalog):
     for key, value in data.items():
       if key == 'JCQueue':
         print (key, type(key), value, type(value))
+
+      #  Lists are removed and updated enmasse
       if isinstance(value, list):
-        # pipe.delete(key)
+        pipe.delete(key)
         for val in value:
           pipe.rpush(key, val)
         # if len(value) > 0:
@@ -260,6 +262,28 @@ class dataStore(redis.StrictRedis, catalog):
 
     pipe.execute()
 
+
+
+
+  # def append(self, data):
+  #   """
+  #   Append Only updates to the catalog data
+  #   """
+  #   pipe = self.pipeline()
+  #   for key, value in data.items():
+  #     #  Lists are removed and updated enmasse
+  #     if isinstance(value, list):
+  #       for val in value:
+  #         pipe.rpush(key, val)
+  #     elif isinstance(value, dict):
+  #       pipe.hmset(key, value)
+  #     elif isinstance(value, int):
+  #       pipe.set(key, value)
+  #     logger.debug("  Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
+
+  #     # TODO:  handle other datatypes beside list
+
+  #   pipe.execute()
 
 
 
@@ -318,6 +342,22 @@ class dataStore(redis.StrictRedis, catalog):
     data = self.lrange(key, 0, num-1)
     self.ltrim(key, num, -1)
     return [d.decode() for d in data]
+
+  # Remove specific items from a list
+  #  Given: a list and a set of indices into that list
+  def removeItems(self, key, itemlist):
+    nullvalue = getUID()
+
+    pipe = self.pipeline()
+    for index in itemlist:
+      pipe.lset(key, index, nullvalue)
+
+    pipe.lrem(key, 0, nullvalue)
+    pipe.execute()
+
+
+  def append(self, key, itemlist):
+    self.rpush(key, *tuple(itemlist))
 
   # Check if key exists in db
   def check(self, key):

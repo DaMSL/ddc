@@ -81,23 +81,23 @@ def eigenDecomB(traj):
   Method B : Feature-like identification based on relative mean distance
   over trajectory for each pair-wise set of atoms
   '''
-  logging.debug("CALL: eigenDecomp  ")
   n_frames = traj.shape[0]
   n_atoms  = traj.shape[1]
+  logging.info("  Calculating Distance pairs for all %d atom pairs", n_atoms)
   # n_atoms_pos = traj.shape[1] * 3
   # t1 = traj.reshape(n_frames, n_atoms_pos)
   mean = np.mean(traj, axis=0)
   dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float64)
   for A in range(n_atoms):
     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
-    if A % 100 == 0:
-      logging.info("Atom # %d" % A)
+    # if A % 100 == 0:
+    #   logging.info("Atom # %d" % A)
     for B in range(A, n_atoms):
       delta = LA.norm(mean[A] - mean[B])
       dist[A][B] = delta
       dist[B][A] = delta
   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
-  logging.info("Calculating Eigen")
+  logging.info("  Calculating Eigenvectors")
   # print(str(dt.datetime.now()), "  Calculating Eigen")
   return LA.eigh(dist)
 
@@ -107,6 +107,7 @@ def pclist2vector(eg, ev, numpc):
   """
   Convert set of principal components into a single vectors
   """
+  logging.debug('  Retaining and stacking the top %d principal eigens', numpc)
   index = np.zeros(shape=(numpc, len(ev[0])), dtype=ev.dtype)
   for pc in range(numpc):
     np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
@@ -114,7 +115,7 @@ def pclist2vector(eg, ev, numpc):
 
 # Split windows & process eigens:
 def geteig(num, traj, win, winsize=50):
-  logging.info("Window %s - %04d" % (str(num), win))
+  logging.info(" Data Reduction for Trajectory `%s`   frames  %04d - %04d" % (str(num), win, (win+winsize)))
   eg, ev = eigenDecomB(traj.xyz[win:win+winsize])
   eg /= LA.norm(eg)
   ev = np.transpose(ev)   # Transpose eigen vectors
@@ -135,20 +136,18 @@ class analysisJob(macrothread):
     def __init__(self, schema, fname):
       macrothread.__init__(self, schema, fname, 'anl')
       # State Data for Simulation MacroThread -- organized by state
-      self.setInput('dcdFileList')
-      self.setTerm('JCComplete', 'processed')
-      self.setExec('LDIndexList')
-      self.setSplit('anlSplitParam')
+      self.setStream('dcdFileList', 'LDIndexList')
+      self.setState('JCComplete', 'processed', 'anlSplitParam')
+
       self.modules.add('redis')
+
       self.buildArchive = False
       self.manual = False
 
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = DEFAULT.CPU_PER_NODE
 
-
-
-      # TODO: Move to Catalog
+      # TODO: Move to Catalog or define on a per-task basis
       self.winsize = 50
       self.slide   = 25
 
@@ -161,15 +160,11 @@ class analysisJob(macrothread):
 
     def split(self):
       split = int(self.data['anlSplitParam'])
-      catalog = self.getCatalog()
-      immed = catalog.slice('dcdFileList', split)
-      return immed
-
+      immed = self.data['dcdFileList'][:split]
+      return immed, split
 
 
     def execute(self, i):
-
-      # logging.debug('ANL MT. Input = ' + i)
 
       # TODO: Better Job ID Mgmt, for now hack the filename
       i.replace(':', '_').replace('-', '_')
@@ -183,10 +178,14 @@ class analysisJob(macrothread):
 
       # 1. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
-      filterHeavy  = traj.top.select_atom_indices(selection='heavy')
-      traj.atom_slice(filterHeavy, inplace=True)
+      traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
 
       logging.debug('Trajectory Loaded: %s - %s', jobnum, str(traj))
+
+      # Ensure trajectory actually contains data to analyze:
+      if traj.n_frames < self.winsize:
+        logging.warning("Cannot process Trajectory, %s.  Contains %d frames (which is less than Winsize of %d)", jobnum, traj.n_frames, self.winsize)
+
       result = {}
       indexSize = 0
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
@@ -194,7 +193,6 @@ class analysisJob(macrothread):
       for win in range(0, len(traj.xyz) - self.winsize+1, self.slide):
         index = geteig(jobnum, traj, win, winsize=self.winsize)
         key = jobnum + ':' + '%04d' % win
-        logging.debug('Cachine Index locally: %s', key)
         result[key] = index
         if not indexSize:
           indexSize = len(result[key])
@@ -225,14 +223,14 @@ class analysisJob(macrothread):
 
         # Pack & store data
         for k, v in result.items():
-          logging.debug(" `%s`:  %s" % (k, str(v.shape)))
+          logging.debug(" `%s`:  <vector with dimensions, %s>" % (k, str(v.shape)))
         packed = {k: v.tobytes() for k, v in result.items()}
         
         # Index Key : If/When to update job ID management for downstream data
         index_key = wrapKey('idx', jobnum)
         self.catalog.save({index_key: packed})
-        self.data['LDIndexList'].append(jobnum)
-        return index_key
+
+      return [jobnum]
 
 
 
