@@ -19,117 +19,41 @@ import logging
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
-def eigenDecomA(traj):
-  '''
-  Method A : Pairwise correlation based on each pair of atoms' 
-  distance to respective mean
-  '''
-  n_frames = traj.shape[0]
-  N = traj.shape[1]*3
-  T = traj.reshape(n_frames, N)
-  # t1 = traj.reshape(n_frames, n_atoms_pos)
-  mean = np.mean(T, axis=00)
-  cov = np.zeros(shape = (N, N))
-  for A in range(N):
-    # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
-    if A % 100 == 0:
-      logging.info("Atom # %d" % A)
-    for B in range(A, N):
-      S = 0
-      for i in range(n_frames):
-        S += (T[i][A] - mean[A]) * (T[i][B] - mean[B])
-      cov[A][B] = cov[B][A] = S / N
-  # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
-  logging.info("Calculating Eigen")
-  # print(str(dt.datetime.now()), "  Calculating Eigen")
-  return LA.eigh(cov)
-
-
-# def eigenDecomA_2(traj):
-#   '''
-#   Method A : Pairwise correlation based on each pair of atoms' 
-#   distance to respective mean
-#   '''
-#   n_frames = traj.shape[0]
-#   N = traj.shape[1]*3
-#   T = traj.reshape(n_frames, N)
-#   # t1 = traj.reshape(n_frames, n_atoms_pos)
-#   mean = np.mean(N, axis=0)
-#   cov = np.zeros(shape = (N, N))
-#   for A in range(N):
-#     # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
-#     if A % 10 == 0:
-#       logging.info("Atom # %d" % A)
-#     for B in range(A, N):
-#       s = np.zeros(shape=(3))
-#       for i in range(n_frames):
-#         s += (traj[i][A] - mean[A]) * (traj[i][B] - mean[B])
-#       cov[A][B] = s[0] / n_frames
-#       cov[B][A] = s[0] / n_frames
-#       cov[A+n_atoms][B+n_atoms] = s[1] / n_frames
-#       cov[B+n_atoms][A+n_atoms] = s[1] / n_frames
-#       cov[A+2*n_atoms][B+2*n_atoms] = s[2] / n_frames
-#       cov[B+2*n_atoms][A+2*n_atoms] = s[2] / n_frames
-#   # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
-#   logging.info("Calculating Eigen")
-#   # print(str(dt.datetime.now()), "  Calculating Eigen")
-#   return LA.eigh(cov)
-
-
-def eigenDecomB(traj):
-  '''
-  Method B : Feature-like identification based on relative mean distance
-  over trajectory for each pair-wise set of atoms
-  '''
+def distmatrix(traj):
   n_frames = traj.shape[0]
   n_atoms  = traj.shape[1]
-  logging.info("  Calculating Distance pairs for all %d atom pairs", n_atoms)
-  # n_atoms_pos = traj.shape[1] * 3
-  # t1 = traj.reshape(n_frames, n_atoms_pos)
   mean = np.mean(traj, axis=0)
-  dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float64)
+  dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float32)
   for A in range(n_atoms):
-    # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
-    # if A % 100 == 0:
-    #   logging.info("Atom # %d" % A)
     for B in range(A, n_atoms):
       delta = LA.norm(mean[A] - mean[B])
       dist[A][B] = delta
       dist[B][A] = delta
-  # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
-  logging.info("  Calculating Eigenvectors")
-  # print(str(dt.datetime.now()), "  Calculating Eigen")
-  return LA.eigh(dist)
+  return dist
 
 
-
-def pclist2vector(eg, ev, numpc):
-  """
-  Convert set of principal components into a single vectors
-  """
-  logging.debug('  Retaining and stacking the top %d principal eigens', numpc)
-  index = np.zeros(shape=(numpc, len(ev[0])), dtype=ev.dtype)
-  for pc in range(numpc):
-    np.copyto(index[pc], ev[-pc-1] * eg[-pc-1])
-  return index.flatten()
-
-# Split windows & process eigens:
-def geteig(num, traj, win, winsize=50):
-  logging.info(" Data Reduction for Trajectory `%s`   frames  %04d - %04d" % (str(num), win, (win+winsize)))
-  eg, ev = eigenDecomB(traj.xyz[win:win+winsize])
-  eg /= LA.norm(eg)
-  ev = np.transpose(ev)   # Transpose eigen vectors
-  return pclist2vector(eg, ev, 3)
+def covmatrix(traj):
+  n_frames = traj.shape[0]
+  n_atoms = traj.shape[1]*3
+  A = traj.reshape(n_frames, n_atoms)
+  a = A - np.mean(A, axis=0)
+  cov = np.dot(a.T, a)/n_frames
+  return cov
 
 
-def geteigens(num, traj, winsize=50, slide=25):
-  result = {}
-  for win in range(0, len(traj.xyz) - winsize+1, slide):
-    ev = geteig(num, traj, win, winsize=winsize)
-    key = '%04d' % num + ':' + '%04d' % win
-    result[key] = ev
-  return result
-
+def makeIndex(eg, ev, num_pc=DEFAULT.NUM_PCOMP):
+  num_var = len(eg)
+  index_size = num_var * num_pc
+  index = np.zeros(index_size)
+  eigorder = np.argsort(abs(eg))[::-1]
+  norm = LA.norm(eigorder[:num_pc], ord=1)
+  # np.copyto(index[:num_var], ev[i][:,-1] * eg[i][-1])    # FOr only 1 eigvector
+  for n, eig in enumerate(eigorder[:num_pc]):
+    eig = 0
+    direction = -1 if eg[eig] < 0 else 1
+    # np.copyto(index[n*num_var:n*num_var+num_var], direction * ev[i][:,eig] * abs(eg[i][eig]) / norm)
+    np.copyto(index[n*num_var:n*num_var+num_var], direction * ev[i][:,eig])
+  return index
 
 
 class analysisJob(macrothread):
@@ -185,18 +109,18 @@ class analysisJob(macrothread):
       # Ensure trajectory actually contains data to analyze:
       if traj.n_frames < self.winsize:
         logging.warning("Cannot process Trajectory, %s.  Contains %d frames (which is less than Winsize of %d)", jobnum, traj.n_frames, self.winsize)
+        return []
 
       result = {}
-      indexSize = 0
+      indexSize = DEFAULT.NUM_VAR * DEFAULT.NUM_PCOMP
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
       #   TODO: Retain provenance
-      for win in range(0, len(traj.xyz) - self.winsize+1, self.slide):
-        index = geteig(jobnum, traj, win, winsize=self.winsize)
+      for win in range(0, len(traj.xyz), self.slide):
+        if win + self.winsize > len(traj.xyz):
+          break
+        eg, ev = LA.eigh(distmatrix(traj.xyz[win:win+self.winsize]))
         key = jobnum + ':' + '%04d' % win
-        result[key] = index
-        if not indexSize:
-          indexSize = len(result[key])
-          # logging.debug('Index Size = %d' % indexSize)
+        result[key] = makeIndex(eg, ev)
 
       # Create empty lshash and load stored hash
       # OPTION A:  Build Archive online
@@ -257,8 +181,6 @@ if __name__ == '__main__':
 
   if args.debug:
     mt.manual   = True
-
-
 
   if args.build:
     logging.info("Running Single Execution to Build Archive on %s", args.build)

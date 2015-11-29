@@ -100,6 +100,27 @@ writepdb %(pdb)s
 ENDMOL''' % params
 
 
+
+
+def storeNPArray(arr, store, key):
+  #  Force numpy version 1.0 formatting
+  header = {'shape': arr.shape,
+            'fortran_order': arr.flags['F_CONTIGUOUS'],
+            'dtype': np.lib.format.dtype_to_descr(np.dtype(arr.dtype))}
+  store.hmset(key, {'header': json.dumps(header), 'data': bytes(arr)})
+
+def loadNPArray(store, key):
+  elm = {k.decode(): v for k, v in store.hgetall(key).items()}
+  if elm == {}
+    return None
+  header = json.loads(elm['header'].decode())
+  arr = np.fromstring(elm['data'], dtype=header['dtype'])
+  return arr.reshape(header['shape'])
+
+
+def get2DKeys(key, X, Y):
+  return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
+
 def loadLabels(fn):
   label =namedtuple('window', 'time state')
   win = []
@@ -130,14 +151,12 @@ def generateNewJC(rawfile, pdbfile):
     newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
     newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
 
-
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
 
     # Retrieve referenced file from storage
     #   TODO: Set up historical archive for retrieval (this may need to be imported)
-
-    #  TODO:  Use load_frame instead of loading entire trajectory
+    #   TODO: Use load_frame instead of loading entire trajectory
 
     #  Load in Historical Referenced trajectory file, filter out proteins & slice
     traj  = md.load(rawfile, top=pdbfile)
@@ -171,122 +190,6 @@ def generateNewJC(rawfile, pdbfile):
 
 
 
-def fromByte(dataType, valType):
-  logging.debug("DT= %s,  VT=%s", str(dataType), str(valType))
-  if dataType == int:
-    return lambda x: int(x.decode())
-  if dataType == float:
-    return lambda x: float(x.decode())
-  if dataType == list:
-    if valType == int:
-      return lambda x: [int(y.decode()) for y in x]
-    if valType == float:
-      return lambda x: [float(y.decode()) for y in x]
-    return lambda x: [y.decode() for y in x]
-  return lambda x: x.decode()
-
-class kv1DArray:
-  def __init__(self, redis_db, name, mag=5, dtype=int, init=0):
-    self.db = redis_db
-    self.name = name
-    self.mag = 0
-    self.datatype = dtype
-    self.conv = fromByte(type(init), dtype)
-    self.init = init
-    # Check if the array already exists
-    stored_mag = self.db.get(self.name + '_magnitude')
-    if stored_mag:
-      self.mag = int(stored_mag)
-    else:
-      # Initialize the array
-      self.mag = mag
-      self.db.set(self.name + '_magnitude', mag)
-      if self.datatype != list: 
-        for x in range(mag):
-          for y in range(mag):
-            self.db.set(self.name + '_%d_%d' % (x, y), init)
-  def key (self, x, y):
-    return self.name + '_%d_%d' % (x, y)
-  # Only for scalar values
-  def incr (self, x, y, amt=1):
-    if self.datatype == int:
-      self.db.incr(self.key(x, y), amt)
-    elif self.datatype == float:
-      self.db.incrbyfloat(self.key(x, y), amt)
-    else:
-      logging.error("ERROR!  Trying to set scalar to 2D K-V non-scalar Array")
-  def set (self, x, y, elm):
-    self.db.set(self.key(x, y), elm)
-  def add (self, x, y, elm):
-    if isinstance(self.datatype, list):
-      self.db.rpush(self.key(x, y), elm)
-    else:
-      logging.error("ERROR!  Trying to insert element to scalar 2D K-V list Array")
-  def get (self, x, y):
-    if isinstance(self.datatype, list):
-      return self.conv(self.db.lrange(self.key(x, y), 0, -1))
-    return self.conv(self.db.get(self.key(x, y)))
-
-
-class kv2DArray:
-  def __init__(self, redis_db, name, mag=5, dtype=int, init=0):
-    self.db = redis_db
-    self.name = name
-    self.mag = 0
-    self.datatype = list if isinstance (init, list) else dtype
-    self.conv = fromByte(type(init), dtype)
-    self.init = init
-    # Check if the array already exists
-    stored_mag = self.db.get(self.name + '_magnitude')
-    if stored_mag:
-      self.mag = int(stored_mag)
-    else:
-      # Initialize the array
-      self.mag = mag
-      self.db.set(self.name + '_magnitude', mag)
-      if self.datatype != list: 
-        for x in range(mag):
-          for y in range(mag):
-            self.db.set(self.name + '_%d_%d' % (x, y), init)
-  def key (self, x, y):
-    return self.name + '_%d_%d' % (x, y)
-  # Only for scalar values
-  def incr (self, x, y, amt=1):
-    if self.datatype == int:
-      self.db.incr(self.key(x, y), amt)
-    elif self.datatype == float:
-      self.db.incrbyfloat(self.key(x, y), amt)
-    else:
-      logging.error("ERROR!  Trying to set scalar to 2D K-V non-scalar Array")
-  def set (self, x, y, elm):
-    self.db.set(self.key(x, y), elm)
-  def add (self, x, y, elm):
-    if self.datatype == list:
-      self.db.rpush(self.key(x, y), elm)
-    else:
-      logging.error("ERROR!  Trying to insert element to scalar 2D K-V list Array")
-  def get (self, x, y):
-    if self.datatype == list:
-      return self.conv(self.db.lrange(self.key(x, y), 0, -1))
-    return self.conv(self.db.get(self.key(x, y)))
-  def getAll(self):
-    arr = [[None for x in range(self.mag)] for y in range(self.mag)]
-    for x in range(self.mag):
-      for y in range(self.mag):
-        arr[x][y] = self.get(x, y)
-        if arr[x][y] == None:
-           arr[x][y] = self.init
-    return arr
-  def display(self):
-    if self.datatype == list:
-      logging.warning("Will not displace 2D list Array")
-      return
-    mat = self.getAll()
-    fmt = '%8d' if self.datatype == int else '%8.2f'
-    for row in mat:
-      logging.info('   ' + " ".join([fmt%x for x in row]))
-      
-
 
 class controlJob(macrothread):
     def __init__(self, schema, fname):
@@ -294,7 +197,6 @@ class controlJob(macrothread):
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('LDIndexList', 'JCQueue')
       self.setState('indexSize', 'ctlSplitParam')
-
       self.modules.add('namd')
 
 
@@ -326,28 +228,31 @@ class controlJob(macrothread):
       if not config:
         logging.error("LSHash not configured")
         #TODO: Gracefully exit
+        return []
+
       # Create empty lshash and load stored hash
       lshash = PCABinaryProjections(None, None, None)
       lshash.apply_config(config)
-
-
-      logging.debug("INDEX SIZE = %d:  ", self.data['indexSize'])
+      indexSize = DEFAULT.NUM_VAR * DEFAULT.NUM_PCOMP
+      logging.debug("INDEX SIZE = %d:  ", indexSize)
       engine = nearpy.Engine(454*DEFAULT.NUM_PCOMP, 
             lshashes=[lshash], 
             storage=redis_storage)
 
       # Load current set of known states
       #  TODO:  Injection Point for clustering. If clustering were applied
-      #    this would be much more dynamic and would not change (static for now)
+      #    this would be much more dynamic (static fileload for now)
       labels = loadLabels(DEFAULT.DATA_LABEL_FILE)
       labelNames = getLabelList(labels)
       numLabels = len(labelNames)
 
       # Load Transition Matrix & Historical index state labels
-      tmat = kv2DArray(archive, 'tmat', mag=5, dtype=int, init=0)
-      tmat_before = tmat.getAll()
-      tmat.display()
-
+      tmat = loadNPArray(archive, 'transitionmatrix')
+      if tmat == None:
+        tmat = np.zeros(shape=(5,5))    # TODO: Move to init
+      tmat_before = np.zeros(shape=tmat.shape)
+      np.copyto(tmat_before, tmat)
+      logging.debug("TMAT BEFORE\n" + str(tmat_before))
 
       # Set initial params for index calculations
       prevState = -1    # To track each state transition
@@ -355,9 +260,6 @@ class controlJob(macrothread):
       sourceHistory = None    # Holds Decision History data from source JC used to create the data
       observationDistribution = {}   #  distribution of observed states (for each input trajectory)
       observationSet = set()  # To track the # of unique observations (for each input trajectory)
-
-      sourceTrajectories = set()
-
 
       # NOTE: ld_index is a list of indexed trajectories. They may or may NOT be from
       #   the same simulation (allows for grouping of multiple downstream data into 
@@ -375,7 +277,10 @@ class controlJob(macrothread):
         if sourceJC != prevTrajectory:
           sourceHistory = {}
           observationDistribution[sourceJC] = np.zeros(5)
-          self.catalog.load({wrapKey('jc', sourceJC): sourceHistory})
+          observationCount[sourceJC] = np.zeros(5)
+
+          #  TODO: Load indices up front with source history
+          self.catalog.load({wrapKey('jc', sourceJC): sourceHistory})  #TODO: Load these up front
           if 'state' not in sourceHistory:
             prevState = None
             logging.info("New Index to analyze, %s: NO Historical State Data", sourceJC)
@@ -383,38 +288,37 @@ class controlJob(macrothread):
             prevState = int(sourceHistory['state'])
             logging.debug("New Index to analyze, %s: Source JC was supposed to start in state %d", sourceJC, prevState)
           prevTrajectory = sourceJC
+          self.addToState(wrapKey(sourceJC), sourceHistory)
 
           # Note:  Other Decision History is loaded here
 
         logging.info("\nProbing `%s` window at frame # %s  (state %s)", sourceJC, frame, str(prevState))
 
         # Probe historical index  -- for now only probing DEShaw index
-        #   TODO: Take NN distance into account when calculating stateCounts
-        observationSet.clear()
         neigh = engine.neighbours(index)
         if len(neigh) == 0:
           logging.info ("Found no near neighbors for %s", key)
         else:
-          logging.info ("Found %d neighbours:", len(neigh))
+          logging.debug ("Found %d neighbours:", len(neigh))
+
+          #  Track the weighted count (a.k.a. cluster) for this index's nearest neighbors
+          clust = np.zeros(5)
+          count = np.zeros(5)
           for n in neigh:
             nnkey = n[1]
             distance = n[2]
             trajectory, seqNum = nnkey.split(':')
             nn_state = labels[int(trajectory)].state
-            logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
-            
-            observationDistribution[sourceJC][nn_state] += 1
-            observationSet.add(nn_state)
+            # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
+            count[nn_state] += 1
+            clust[nn_state] += abs(1/distance)
 
-            # TODO: Factor in distance when calculating the observationDistribution
-            # TODO: Index observationDistribution and factor into future decisions
+            # Add total to the original input trajectory (for historical and feedback decisions)
+            observationCount[sourceJC][nn_state] += abs(1/distance)
+            observationDistribution[sourceJC][nn_state] += abs(1/distance)
 
-          # For now, just grab the top NN & closest relative state for this index from DEShaw Data
-          #  Possible future implementations can insert a auto-encoder and/or better ML algorithm
-          #  to classify the index and get a "state"
-          nnkey = neigh[0][1]
-          trajectory, seqNum = nnkey.split(':')
-          state = labels[int(trajectory)].state
+          # Classify this index with a label based on the highest weighted observed label among neighbors
+          state = np.argmax(clust)
 
           # Increment the transition matrix
           if prevState == None:
@@ -422,16 +326,15 @@ class controlJob(macrothread):
           logging.debug("  Transition %d  --->  %d    Incrementing transition counter (%d, %d)", prevState, state, prevState, state)
 
           # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
-          tmat.incr(prevState, state, 1)
-          # TODO:  Update observation counts
-          # self.data['observation_counts'][len(observationSet)] += 1
+          tmat[prevState][state] += 1
           prevState = state
 
       # Build Decision History Data for the Source JC's from the indices
-      transitionBins = kv2DArray(archive, 'transitionBins', mag=5, dtype=str, init=[])      # Should this load here (from archive) or with other state data from catalog?
+      # transitionBins = kv2DArray(archive, 'transitionBins', mag=5, dtype=str, init=[])      # Should this load here (from archive) or with other state data from catalog?
 
-      logging.debug("Updated Transition Matrix is below.")
-      tmat.display()
+      candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
+
+      logging.debug("Update TMAT:\n" + str(tmat))
 
       #  Theta is calculated as the probability of staying in 1 state (from observed data)
       theta = .6  #self.data['observation_counts'][1] / sum(self.data['observation_counts'])
@@ -439,168 +342,203 @@ class controlJob(macrothread):
 
 
       #  Process output data for each unque input trajectory (as produced by a single simulation)
-      for srckey, resultStates in observationDistribution.items():
-        logging.debug("\nFinal processing for Source Trajectory: %s : %s   (note: injection point here for better classification)", srckey, str(resultStates))
+      for sourceJC, cluster in observationDistribution.items():
+        logging.debug("\nFinal processing for Source Trajectory: %s : %s   (note: injection point here for better classification)", sourceJC, str(resultStates))
         if sum(resultStates) == 0:
-          logging.debug(" No observed data for, %s", srckey)
+          logging.debug(" No observed data for, %s", sourceJC)
           continue
 
         #  TODO: Another injection point for better classification. Here, the classification is for the input trajectory
         #     as a whole for future job candidate selection. 
-        dist = resultStates / sum(resultStates)
-        stateA = np.argmax(dist)
+
+        logging.debug("Observation Counts  for input index, %s\n  %s", sourceJC, str(observationCount[sourceJC]))
+        logging.debug("Observation weights for input index, %s\n  %s", sourceJC, str(cluster))
+        index_distro = cluster / sum(cluster)
+        # logging.debug("Observations for input index, %s\n  %s", sourceJC, str(distro))
+        sortedLabels = np.argsort(index_distro)[::-1]    # Should this be normaized to check theta????? or is theta a global calc?
+        stateA = sortedLabels[0]
 
         # Source Trajectory spent most of its time in 1 state
-        if max(dist) > theta: 
-          logging.debug(" Trajectory `%s`  classified as staying in state :  %d", srckey, stateA)
-          transitionBins.add(stateA, stateA, srckey)
+        if max(index_distro) > theta: 
+          logging.debug(" Trajectory `%s`  classified as staying in state :  %d", sourceJC, stateA)
           stateB = stateA
 
-        # Observation showed some trandition 
+        # Observation showed some transition 
         else:
-          dist[stateA] = 0        
-          stateB = np.argmax(dist)
-          logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", srckey, stateA, stateB)
-          transitionBins.add(stateA, stateB, srckey)
+          stateB = sortedLabels[1]
+          logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", sourceJC, stateA, stateB)
 
-        # if 'targetBin' in sourceHistory[srckey]:
-        #   outputBin = str(stateA, stateB)
-        #   inputBin  = sourceHistory[srcKey]['targetBin']
-        #   logging.info("  Predicted Taget Bin was       :  %s", inputBin) 
-        #   logging.info("  Actual Trajectory classified  :  %s", outputBin) 
-        #   logging.debug("    TODO: ID difference, update weights, etc..... (if desired)")
+        #  Add this candidate to list of potential pools:
+        #  TODO: Cap candidate pool size
+        self.data[candidPoolKey(stateA, stateB)].append(sourceJC)  
+        if 'targetBin' in self.data[wrapKey(sourceJC)]:
+          outputBin = str((stateA, stateB))
+          inputBin  = self.data[wrapKey(sourceJC)]['targetBin']
+          logging.info("  Predicted Taget Bin was       :  %s", inputBin) 
+          logging.info("  Actual Trajectory classified  :  %s", outputBin) 
+          logging.debug("    TODO: ID difference, update weights, etc..... (if desired)")
+
+        self.data[wrapKey(sourceJC)]['actualBin'] = outputBin
 
       ####   This is end of processing a single Job Candidate and here begins the cycle of finding next set of JC's
 
       # Weight Calculation 
 
-      # 1. Load New Transition Matrix
-      #   TODO:  Compare tmat_after with tmat_before to get change in observations and calculate 
-      #     convergence 
-      tmat_after = tmat.getAll()
+      bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
+      # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
+ 
+      #  1. Load current fatigue values
+      fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
 
-      # 2. Calculate new transition probability based on observed transitions
-      total_t = np.sum([[tmat_after[x][y] for x in range(numLabels)] for y in range(numLabels)])
-      # weights = sorted([[((x, y), tmat_after[x][y]/total) for x in range(5)] for y in range(5)], key=lambda x: x[1])
-      probability = [[tmat_after[x][y]/total_t for x in range(numLabels)] for y in range(numLabels)]
+      #  2. Calculate new "preference"  targetbin portion of the weight
+      totalObservations = np.sum(tmat)
+      tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
+      quota = totalObservations / len(tmat_distro.keys())
+      pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
 
-      # 3. Load current "fatigue" values
-      fmat = kv2DArray(archive, 'fatigue', mag=numLabels, dtype=float, init=0.)
-      fatigue = fmat.getAll() 
+      #  3. Apply constance. This can be user influenced
+      alpha = self.data['weight_alpha']
+      beta = self.data['weight_beta']
 
-      # 4. Appply weighted constant (TODO: Pull in from external or dymically set)
-      alpha = 0.5   
-      beta  = 0.5 
+      #  4. Set new weight and order from high to low
+      weight = {}
+      for k in bins:
+        weight[k] =  alpha * pref[k] + beta * (1 - fatigue[k])
+      updatedWeights = sorted(weight.items(), key=lambda x: x[1], reverse=True)
 
-      # 5. Set weights based on probability and fatigue values for job candidate bins
-      wght_mat = np.zeros(shape=(numLabels, numLabels))
-      for x in range(numLabels):
-        for y in range(numLabels):
-          wght_mat[x][y] = alpha * probability[x][y] + beta * fatigue[x][y]
-          logging.debug("Setting Weight (%d, %d):  %0.3f     Prob= %0.3f,  Fatig= %0.3f", x, y, wght_mat[x][y], probability[x][y], fatigue[x][y])
+      #  5. Load JC Queue and all items within to get respective weights and projected target bins
+      #   TODO:  Pipeline this or load all up front!
+      curqueue = []
+      for i in self.data['JCQueue']:
+        key = wrapKey(i)
+        curqueue.append(self.catalog.load())
 
-      # 6. SORT WEIGHTS  -- MIN is PREFERABLE
-      #   TODO:  Selection Process for deterining the next job candidates
-      #    INitial approach:  sort weights & choose the top N-bins
-      #       Question: Should we select 1 per bin or weighted # per bin??)
-      #    For exploration:  May want to examine more detailed stats to ID new regions of interest 
-      weights = sorted([((x, y), wght_mat[x][y]) for x in range(numLabels) for y in range(numLabels)], key=lambda x: x[1])
+      #  5a. (PreProcess current queue) in case weights were never set
+      for jc in range(len(curqueue)):
+        if 'weight' not in curqueue[jc]:
+          curqueue[jc]['weight'] = 1.0
 
-      tbin = transitionBins.getAll()
+      #  6. Sort current queue
+      existingQueue = deque(sorted(curqueue, key=lmabda x: x['weight'], reverse=True))
 
-      newJobCandidate = {}
-      selectedBins = []
-      for w in weights[:DEFAULT.MAX_NUM_NEW_JC]:
+      #  7. Det. potential set of  new jobs  (base on launch policy)
+      #     TODO: Set up as multiple jobs per bin, cap on a per-control task basis, or just 1 per bin
+      potentialJobs = deque(updatedWeights)
 
-        #  TODO:  Bin J.C. Selection into a set of potential new J.C. params/coords
-        #    can either be based on historical or a sub-state selection
-        #    This is where the infinite # of J.C. is bounded to something manageable
-        #     FOR NOW:  Pick a completely random DEShaw Window of the same state
-        #       and go withit
-        A = w[0][0]
-        B = w[0][1] 
-        logging.debug("\n\nCONTROL: Target transition bin:  %s    weight=%f", str(w[0]), w[1])
+      #  7. Prepare a new queue (for output)
+      jcqueue = deque()
 
-        # Pick a "target bin"
-        targetBin = tbin[A][B]
+      targetBin = potentialJobs.popleft()
+      oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
+      selectedBin = set()
+      while len(jcqueue) < DEFAULT.MAX_JOBS_IN_QUEUE:
 
-        # Ensure there are candidates to pick from
-        if len(targetBin) == 0:
-          logging.info("No DEShaw reference for transition, (%d, %d)  -- checking reverse direction", A, B)
+        if oldjob == None and targetBin == None:
+          break
 
-          # Flip direction of transition (only good if we're assuming transitions are non-symetric)
-          targetBin = tbin[B][A]
+        if (targetBin == None) or (oldjob and oldjob['weight'] > weight[targetBin]):
+          jcqueue.append(oldjob)
+          oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
 
-          if len(targetBin) == 0:
-            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking all bins starting from state %d", B, A, A)
-            targetBin = []
-
-            # Finally, pick any start point from the initial state (assume that state had a candidate)
-            for z in range(5):
-              targetBin.extend(tbin[A][z])
-
-        selectedBins.append((A, B))
-
-        # Pick a random trajectory from the bin
-        sourceTraj = choice(targetBin)
-        logging.debug("Selected DEShaw Trajectory # %s based on state %d", sourceTraj, A)
-
-
-        # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
-        #   or we have a pre-fetch algorithm to get the data
-        # Back-project  <--- Move to separate Function tied to decision history
-        # For now:
-        if sourceTraj.isdigit():      # It's a DEShaw file
-          fname = 'bpti-all-%03d.dcd' if int(sourceTraj) < 1000 else 'bpti-all-%04d.dcd'
-          archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, fname % int(sourceTraj))
-          pdbfile = DEFAULT.PDB_FILE
         else:
-          archiveFile = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.dcd' % sourceTraj)
-          pdbfile     = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.pdb' % sourceTraj)
-
-        jcID, params = generateNewJC(archiveFile, pdbfile)
-
-
-        # NOTE: Update Additional JC Params and Historical Data, as needed
-        jcConfig = dict(params,
-            name    = jcID,
-            runtime = 51000,
-            temp    = 310,
-            state   = A,
-            targetBin  = str((A, B)))
+          A, B = targetBin
+          logging.debug("\n\nCONTROL: Target transition bin:  %s    weight=%f", str(w[0]), w[1])
+          candidatePool = self.data[candidPoolKey(A, B)]
 
 
-        logging.info("New Simulation Job Created: %s", jcID)
-        for k, v in jcConfig.items():
-          logging.debug("   %s:  %s", k, str(v))
+          #  TODO:  Bin J.C. Selection into a set of potential new J.C. params/coords
+          #    can either be based on historical or a sub-state selection
+          #    This is where the infinite # of J.C. is bounded to something manageable
+          #     FOR NOW:  Pick a completely random DEShaw Window of the same state
+          #       and go withit
+          newJobCandidate = {}
 
-        newJobCandidate[jcID] = jcConfig
+          # Ensure there are candidates to pick from
+          if len(candidatePool) == 0:
+            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking reverse direction", A, B)
 
-        logging.info("New Job Candidate Complete:  %s" % jcID)
+            # Flip direction of transition (only good if we're assuming transitions are non-symetric)
+            candidatePool = self.data[candidPoolKey(B, A)]
+
+            if len(candidatePool) == 0:
+              logging.info("No DEShaw reference for transition, (%d, %d)  -- checking all bins starting from state %d", B, A, A)
+              candidatePool = []
+
+              # Finally, pick any start point from the initial state (assume that state had a candidate)
+              for z in range(5):
+                candidatePool.extend(self.data[candidPoolKey(A, z)])
+
+          # selectedBins.append((A, B))
+
+          # Pick a random trajectory from the bin
+          sourceTraj = choice(candidatePool)
+          logging.debug("Selected DEShaw Trajectory # %s based on state %d", sourceTraj, A)
+
+
+          # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
+          #   or we have a pre-fetch algorithm to get the data
+          # Back-project  <--- Move to separate Function tied to decision history
+          # For now:
+          if sourceTraj.isdigit():      # It's a DEShaw file
+            fname = 'bpti-all-%03d.dcd' if int(sourceTraj) < 1000 else 'bpti-all-%04d.dcd'
+            archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, fname % int(sourceTraj))
+            pdbfile = DEFAULT.PDB_FILE
+          else:
+            archiveFile = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.dcd' % sourceTraj)
+            pdbfile     = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.pdb' % sourceTraj)
+
+          jcID, params = generateNewJC(archiveFile, pdbfile)
+
+
+          # NOTE: Update Additional JC Params and Historical Data, as needed
+          jcConfig = dict(params,
+              name    = jcID,
+              runtime = 51000,
+              temp    = 310,
+              state   = A,
+              weight  = weight[targetBin],
+              targetBin  = str((A, B)))
+
+          logging.info("New Simulation Job Created: %s", jcID)
+          for k, v in jcConfig.items():
+            logging.debug("   %s:  %s", k, str(v))
+
+          #  Add to the output queue & save config info
+          jcqueue.append(jcID)
+          newJobCandidate[jcID] = jcConfig
+          selectedBin.add(targetBin)
+          logging.info("New Job Candidate Complete:  %s" % jcID)
           
+          targetBin = None if len(potentialJobs) == 0 else potentialJobs.popleft()
+
 
       # Updated the "fatigue" values  -- FOR NOW do it all at once after selection process
-      #   The associated bin of choice is increased by a ratio of 1/N where N is total # of bins
-      #   All other bins are "replenished" by a fractional amount
-      #   
-      #  TODO:  Flush Out these values
-      # expendedEnergy =   # 1/N of 
-      # replenishEnergy = expendedEnergy / (24.)   # e / (N-1)
-      # logging.debug("Setting Fatigue value for (%d,%d) to %f", A, B, fatigue[A][B] + expendedEnergy)
       for i in range(numLabels):
         for j in range(numLabels):
           if (i,j) in selectedBins:
-            logging.debug("Setting Fatigue value for (%d,%d) to %f", i, j, fatigue[i][j]*2)
-            fmat.set(i, j, min(fatigue[i][j] * 2, 1.))
+            fatigue[f] += (1-fatigue[f])/25
           else:
-            fmat.set(i, j, max(fatigue[i][j] * 0.95, 0.))
+            fatigue[f] -= (fatigue[f]/25)**2
 
       # logging.debug(" SIMULATION ONLY ---- NOT SAVING")
       # #  SIMULATING FOR NOW
       # sys.exit(0)
 
 
+    # CONVERGENCE CALCUALTION
+      biasdistro = {k: v/np.sum(v) for k,v in bias.items()}   
+      unbias = np.zeros(shape=(5,5))
+      for k in biasdistro:
+        unbias = np.add(unbias, biasdistro[k])
+      unbias  = unbias / 25
+      convergence = 1 - (np.sum(abs(unbias - last_ub)))
+      print ("%0.5f" % convergence)
+      np.copyto(last_ub, unbias)
+
+
+
       # Control Thread requires the catalog to be accessible. Hence it starts it:
+      #  TODO: use addState HERE & UPDATE self.data['JCQueue']
       self.catalogPersistanceState = True
       self.localcatalogserver = self.catalog.conn()
 

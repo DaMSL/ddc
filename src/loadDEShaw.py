@@ -5,6 +5,7 @@ from nearpy import Engine
 from nearpy.hashes import *  # Pick one, eventually
 from nearpy.distances import *
 from nearpy.storage import *
+from nearpy.filters import *
 import redis
 import datetime as dt
 import os
@@ -36,6 +37,39 @@ def dcdfile(n):
   return (home + '/work/bpti/bpti-all-' + ('%03d' if n < 1000 else '%04d') + '.dcd') % n
 
 # Eigen Calc
+def eigenDecomA(traj):
+  '''
+  Method A : Pairwise correlation based on each pair of atoms' 
+  distance to respective mean
+  '''
+  n_frames = traj.shape[0]
+  N_atoms = traj.shape[1]*3
+  T = traj.reshape(n_frames, N_atoms)
+  # t1 = traj.reshape(n_frames, n_atoms_pos)
+  mean = np.mean(T, axis=0)
+  cov = np.zeros(shape = (N_atoms, N_atoms))
+  logging.info("Start covariance:  %s", str(dt.datetime.now()))
+  for A in range(N_atoms):
+    # print("Atom # %d" % A, '     ', str(dt.datetime.now()))
+    if A % 100 == 0:
+      logging.info("  Atom # %d" % A)
+    for B in range(A, N_atoms):
+      S = 0.
+      for i in range(n_frames):
+        S += (T[i][A] - mean[A]) * (T[i][B] - mean[B])
+      cov[A][B] = S / n_frames
+      cov[B][A] = S / n_frames
+  # print ('\n', str(dt.datetime.now()), "  Doing eigenDecomp")
+  logging.info("End covariance:  %s", str(dt.datetime.now()))
+  logging.info(" Calculating Eigen")
+  logging.info("Completed:  %s\n", str(dt.datetime.now()))
+  # print(str(dt.datetime.now()), "  Calculating Eigen")
+  return LA.eig(cov)
+
+
+
+
+
 def eigenDecomB(traj):
   n_frames = traj.shape[0]
   n_atoms  = traj.shape[1]
@@ -49,8 +83,67 @@ def eigenDecomB(traj):
       dist[A][B] = delta
       dist[B][A] = delta
   logging.info("  Calculating Eigen")
-  return LA.eigh(dist)
+  return LA.eig(dist)
 
+
+def eigenDecomC(traj, numpc=0):
+  '''
+  Method A : Pairwise correlation based on each pair of atoms' 
+  distance to respective mean
+  '''
+  logging.info("Start covariance:  %s", str(dt.datetime.now()))
+  n_frames = traj.shape[0]
+  N_atoms = traj.shape[1]*3
+  if numpc == 0:
+    numpc = N_atoms
+  A = traj.reshape(n_frames, N_atoms)
+  a = A - np.mean(A, axis=0)
+  cov = np.dot(a.T, a)/n_frames
+  logging.info(" Calculating Eigen:  %s", str(dt.datetime.now()))
+  eg, ev = LA.eig(cov)
+  logging.info("Completed:  %s\n", str(dt.datetime.now()))
+  # print(str(dt.datetime.now()), "  Calculating Eigen")
+  return eg[:numpc], ev.T[:numpc]
+
+
+def distmatrix(traj):
+  n_frames = traj.shape[0]
+  n_atoms  = traj.shape[1]
+  mean = np.mean(traj, axis=0)
+  dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float32)
+  for A in range(n_atoms):
+    # if A % 100 == 0:
+    #   logging.info("Atom # %d" % A)
+    for B in range(A, n_atoms):
+      delta = LA.norm(mean[A] - mean[B])
+      dist[A][B] = delta
+      dist[B][A] = delta
+  return dist
+
+def covmatrix(traj):
+  n_frames = traj.shape[0]
+  n_atoms = traj.shape[1]*3
+  A = traj.reshape(n_frames, n_atoms)
+  a = A - np.mean(A, axis=0)
+  cov = np.dot(a.T, a)/n_frames
+  return cov
+
+
+def loadDEShawTraj(start, end=-1):
+  if end == -1:
+    end = start +1
+  trajectory = None
+  for dcdfile in range(start, end):
+    f = 'bpti-all-%03d.dcd' % dcdfile if dcdfile<1000 else 'bpti-all-%04d.dcd' % dcdfile
+    if not os.path.exists(home+'/work/bpti/' + f):
+      logging.info('%s   File not exists. Continuing with what I got', f)
+      break
+    logging.info("LOADING:  %s", f)
+    traj = md.load(home+'/work/bpti/' + f, top=home+'/work/bpti/bpti-all.pdb')
+    filt = traj.top.select_atom_indices(selection='heavy')
+    traj.atom_slice(filt, inplace=True)
+    trajectory = trajectory.join(traj) if trajectory else traj
+  return trajectory
 
 def pclist2vector(eg, ev, numpc):
   """
@@ -109,13 +202,18 @@ loadmd = lambda x: md.load(home+'/work/jc/'+x+'/'+x+'.dcd', top=home+'/work/jc/'
 mdslice = lambda x: x.atom_slice(x.top.select_atom_indices(selection='heavy'), inplace=True)
 win = loadLabels(home + '/ddc/bpti_labels_ms.txt')
 win.append(label(1.031125, 2))
+state_count = {state: len([i for i,w in enumerate(win) if w.state == state]) for state in [0,1,2,3,4]}
+
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--init', action='store_true')
   parser.add_argument('--check',  action='store_true')
   parser.add_argument('start', nargs='?', type=int)
-  parser.add_argument('-n', '--num', type=int, default=50)
+  parser.add_argument('-n', '--num', type=int, default=25)
+  parser.add_argument('--eigencalc', type=int)
+  parser.add_argument('--winsize', type=int, default=200)
+  parser.add_argument('--slide', type=int, default=100)
   parser.add_argument('--histocalc', action='store_true')
   parser.add_argument('--makebins', action='store_true')
   args = parser.parse_args()
@@ -143,6 +241,45 @@ if __name__ == '__main__':
     logging.debug('Storing Hash in Archive')
     redis_storage.store_hash_configuration(pcahash)
     sys.exit(0)
+
+  if args.eigencalc is not None:
+    winsize = args.winsize
+    slide = args.slide
+    start = args.eigencalc
+    num = args.num
+    winperfile = 1000 // slide
+    totalidx = winperfile * num
+    end = 1 + start + num + math.ceil(slide // 1000)
+    logging.info('Start        %d', start)
+    logging.info('End          %d', end)
+    logging.info('WinSize      %d', winsize)
+    logging.info('Slide        %d', slide)
+    logging.info('Idx / File   %d', winperfile)
+    logging.info('Total Idx    %d', totalidx)
+    trajectory = loadDEShawTraj(start, end)
+    n_var = trajectory.xyz.shape[1]
+    egm = np.zeros(shape=(num * 1000//slide, n_var*3), dtype=np.float32)
+    evm = np.zeros(shape=(num * 1000//slide, n_var*3, n_var*3), dtype=np.float32)
+    logging.info("Traj Shapes: " + str(egm.shape) + " " + str(evm.shape))
+    for k, w in enumerate(range(0, len(trajectory.xyz) - winsize+1, slide)):
+      if k == totalidx or w + winsize > len(trajectory.xyz):
+        break
+      logging.info("Trajectory  %d:   %d - %d", start+(k//10), w, w+winsize)
+      eg, ev = LA.eigh(covmatrix(trajectory.xyz[w:w+winsize]))
+      np.copyto(egm[k], eg)
+      np.copyto(evm[k], ev)
+    # archive = redis.StrictRedis(host='login-node03', port=6380, db=1)
+    # redis_storage = RedisStorage(archive)
+    # uni = UniBucket('uni')
+    # eucl = EuclideanDistance()
+    # eng = Engine(index_size1, distance=eucl, vector_filters=[near], lshashes=[uni])
+    evfile = home+'/work/eigen/evC%d_%04d' % (winsize, start)
+    egfile = home+'/work/eigen/egC%d_%04d' % (winsize, start) 
+    logging.info("Saving:  %s, %s", evfile, egfile) 
+    np.save(evfile, evm)
+    np.save(egfile, egm)
+    sys.exit(0)
+
 
   eng = startEngine()
 
@@ -185,6 +322,8 @@ if __name__ == '__main__':
         for key in sorted(confInterval.keys()):
           val = confInterval[key]
           obs.write(key+','+','.join((str(x) for x in val))+'\n')
+
+
 
 
 

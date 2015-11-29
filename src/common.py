@@ -59,6 +59,7 @@ class DEFAULT:
 
   # TODO:  Make this a functional filter ILO string filter
   ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection='heavy')
+  NUM_VAR = 454  # TODO: Set during Init
 
   @classmethod
   def envSetup(cls):
@@ -138,9 +139,11 @@ schema = dict(
         ctlSplitParam =  1,
         dcdFileList =  [], 
         processed =  0,
-        indexSize = 454*DEFAULT.NUM_PCOMP,
+        indexSize = DEFAULT.NUM_VAR*DEFAULT.NUM_PCOMP,
         LDIndexList = [],
         converge =  0.,
+        weight_alpha = .4,
+        weight_beta = .6,
         observation_counts = [])
 
 

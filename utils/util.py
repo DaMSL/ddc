@@ -56,8 +56,6 @@ def makeUnique(key):
     catalog.rpush(key, elm)
     print(elm)
 
-
-
 def loadLabels(fn):
   win = []
   with open(fn) as f:
@@ -104,4 +102,34 @@ def seedQeueus():
   for q in SEED.keys():
     catalog.rpush(q, *tuple(SEED[q]))
 
+
+
+
+def loadDEShawTraj(start, end=-1):
+  if end == -1:
+    end = start +1
+  for dcdfile in range(start, end):
+    f = 'bpti-all-%03d.dcd' % dcdfile if dcdfile<1000 else 'bpti-all-%04d.dcd' % dcdfile
+    if not os.path.exists(home+'/work/bpti/' + f):
+      logging.info('%s   File not exists. Continuing with what I got', f)
+      break
+    logging.info("LOADING:  %s", f)
+    traj = md.load(home+'/work/bpti/' + f, top=home+'/work/bpti/bpti-all.pdb')
+    filt = traj.top.select_atom_indices(selection='heavy')
+    traj.atom_slice(filt, inplace=True)
+    if trajectory:
+      trajectory = trajectory.join(traj)
+    else:
+      trajectory = traj
+  return trajectory
+
+def covmatrix(traj, numpc=0):
+  n_frames = traj.shape[0]
+  N_atoms = traj.shape[1]*3
+  if numpc == 0:
+    numpc = N_atoms
+  A = traj.reshape(n_frames, N_atoms)
+  a = A - np.mean(A, axis=0)
+  cov = np.dot(a.T, a)/n_frames
+  return cov
 

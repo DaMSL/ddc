@@ -100,6 +100,8 @@ class macrothread(object):
       self._state[a] = self.data[a]
     self._state['id_' + self.name] = 0
 
+  def addToState(self, label, data):
+    self._state[label] = data
 
   def setCatalog(self, catalog):
     self.catalog = catalog

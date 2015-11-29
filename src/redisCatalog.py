@@ -18,6 +18,13 @@ terminationFlag = Event()
 
 
 
+
+
+
+
+
+
+
 class dataStore(redis.StrictRedis, catalog):
   def __init__(self, name, host='localhost', port=6379, db=0, persist=True, connect=True):
 
