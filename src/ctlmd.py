@@ -2,15 +2,18 @@ import argparse
 import sys
 import os
 import sys
+import json
 
 import mdtraj as md
 import numpy as np
+np.set_printoptions(precision=5, suppress=True)
+
 from numpy import linalg as LA
 import nearpy
 from nearpy.storage.storage_redis import RedisStorage
 from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections
 
-from collections import namedtuple
+from collections import namedtuple, deque
 
 import redisCatalog
 from common import *
@@ -100,9 +103,11 @@ writepdb %(pdb)s
 ENDMOL''' % params
 
 
+candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
 
 
-def storeNPArray(arr, store, key):
+
+def storeNPArray(store, arr, key):
   #  Force numpy version 1.0 formatting
   header = {'shape': arr.shape,
             'fortran_order': arr.flags['F_CONTIGUOUS'],
@@ -111,7 +116,7 @@ def storeNPArray(arr, store, key):
 
 def loadNPArray(store, key):
   elm = {k.decode(): v for k, v in store.hgetall(key).items()}
-  if elm == {}
+  if elm == {}:
     return None
   header = json.loads(elm['header'].decode())
   arr = np.fromstring(elm['data'], dtype=header['dtype'])
@@ -120,21 +125,6 @@ def loadNPArray(store, key):
 
 def get2DKeys(key, X, Y):
   return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
-
-def loadLabels(fn):
-  label =namedtuple('window', 'time state')
-  win = []
-  with open(fn) as f:
-    for line in f.readlines():
-      t, s = line.split()
-      win.append(label(float(t), int(s)))
-  return win
-
-def getLabelList(labels):
-  labelset = set()
-  for lab in labels:
-    labelset.add(lab.state)
-  return sorted(list(labelset))
 
 def generateNewJC(rawfile, pdbfile):
 
@@ -196,7 +186,7 @@ class controlJob(macrothread):
       macrothread.__init__(self, schema, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('LDIndexList', 'JCQueue')
-      self.setState('indexSize', 'ctlSplitParam')
+      self.setState('indexSize', 'converge', 'ctlSplitParam', *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
       self.modules.add('namd')
 
 
@@ -221,6 +211,7 @@ class controlJob(macrothread):
     def execute(self, ld_index):
       logging.debug('CTL MT')
 
+      logging.debug("============================  <PRE-PROCESS>  =============================")
       # TODO:  Treat Archive as an overlay service. For now, wrap inside here and connect to it
       archive = redisCatalog.dataStore(**archiveConfig)
       redis_storage = RedisStorage(archive)
@@ -231,11 +222,11 @@ class controlJob(macrothread):
         return []
 
       # Create empty lshash and load stored hash
-      lshash = PCABinaryProjections(None, None, None)
+      lshash = DEFAULT.getEmptyHash()
       lshash.apply_config(config)
       indexSize = DEFAULT.NUM_VAR * DEFAULT.NUM_PCOMP
       logging.debug("INDEX SIZE = %d:  ", indexSize)
-      engine = nearpy.Engine(454*DEFAULT.NUM_PCOMP, 
+      engine = nearpy.Engine(indexSize, 
             lshashes=[lshash], 
             storage=redis_storage)
 
@@ -246,20 +237,42 @@ class controlJob(macrothread):
       labelNames = getLabelList(labels)
       numLabels = len(labelNames)
 
-      # Load Transition Matrix & Historical index state labels
-      tmat = loadNPArray(archive, 'transitionmatrix')
-      if tmat == None:
+      # Load Transition Matrix (& TODO: Historical index state labels)
+      tmat = loadNPArray(self.catalog, 'transitionmatrix')
+      if tmat is None:
         tmat = np.zeros(shape=(5,5))    # TODO: Move to init
       tmat_before = np.zeros(shape=tmat.shape)
       np.copyto(tmat_before, tmat)
       logging.debug("TMAT BEFORE\n" + str(tmat_before))
 
+      # Load Selection Matrix
+      smat = loadNPArray(self.catalog, 'selectionmatrix')
+      if smat is None:
+        smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
+      logging.debug("SMAT:\n" + str(smat))
+
+      # Load Convergence Matrix
+      cmat = loadNPArray(self.catalog, 'convergencematrix')
+      if cmat is None:
+        cmat = np.full((5,5), 0.04)    # TODO: Move to init
+      logging.debug("CMAT:\n" + str(cmat))
+
+      #  1. Load current fatigue values
+      fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
+      if fatigue is None:
+        fatigue = np.full((5,5), 0.04)    # TODO: Move to init
+
+ 
+      # PROBE   ------------------------
+      logging.debug("============================  <PROBE>  =============================")
+
       # Set initial params for index calculations
       prevState = -1    # To track each state transition
       prevTrajectory = None   # To check for unique trajectories
-      sourceHistory = None    # Holds Decision History data from source JC used to create the data
+      decisionHistory = {}    # Holds Decision History data from source JC used to create the data
       observationDistribution = {}   #  distribution of observed states (for each input trajectory)
-      observationSet = set()  # To track the # of unique observations (for each input trajectory)
+      observationCount = {}
+      # observationSet = set()  # To track the # of unique observations (for each input trajectory)
 
       # NOTE: ld_index is a list of indexed trajectories. They may or may NOT be from
       #   the same simulation (allows for grouping of multiple downstream data into 
@@ -275,31 +288,31 @@ class controlJob(macrothread):
         # Get Decision History for the index IF its a new index not previously processed
         #  and initialize observation distribution to zeros
         if sourceJC != prevTrajectory:
-          sourceHistory = {}
+          decisionHistory[sourceJC] = {}
           observationDistribution[sourceJC] = np.zeros(5)
           observationCount[sourceJC] = np.zeros(5)
 
           #  TODO: Load indices up front with source history
-          self.catalog.load({wrapKey('jc', sourceJC): sourceHistory})  #TODO: Load these up front
-          if 'state' not in sourceHistory:
+          self.catalog.load({wrapKey('jc', sourceJC): decisionHistory[sourceJC]})  #TODO: Load these up front
+          if 'state' not in decisionHistory[sourceJC]:
             prevState = None
             logging.info("New Index to analyze, %s: NO Historical State Data", sourceJC)
           else:
-            prevState = int(sourceHistory['state'])
+            prevState = int(decisionHistory[sourceJC]['state'])
             logging.debug("New Index to analyze, %s: Source JC was supposed to start in state %d", sourceJC, prevState)
           prevTrajectory = sourceJC
-          self.addToState(wrapKey(sourceJC), sourceHistory)
+          self.addToState(wrapKey('jc', sourceJC), decisionHistory[sourceJC])
 
           # Note:  Other Decision History is loaded here
 
-        logging.info("\nProbing `%s` window at frame # %s  (state %s)", sourceJC, frame, str(prevState))
+        logging.info("Probing `%s` window at frame # %s  (state %s)", sourceJC, frame, str(prevState))
 
         # Probe historical index  -- for now only probing DEShaw index
         neigh = engine.neighbours(index)
         if len(neigh) == 0:
           logging.info ("Found no near neighbors for %s", key)
         else:
-          logging.debug ("Found %d neighbours:", len(neigh))
+          logging.debug ("  Found %d neighbours:", len(neigh))
 
           #  Track the weighted count (a.k.a. cluster) for this index's nearest neighbors
           clust = np.zeros(5)
@@ -307,14 +320,14 @@ class controlJob(macrothread):
           for n in neigh:
             nnkey = n[1]
             distance = n[2]
-            trajectory, seqNum = nnkey.split(':')
+            trajectory, seqNum = nnkey[2:].split('-')
             nn_state = labels[int(trajectory)].state
             # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
             count[nn_state] += 1
             clust[nn_state] += abs(1/distance)
 
             # Add total to the original input trajectory (for historical and feedback decisions)
-            observationCount[sourceJC][nn_state] += abs(1/distance)
+            observationCount[sourceJC][nn_state] += 1
             observationDistribution[sourceJC][nn_state] += abs(1/distance)
 
           # Classify this index with a label based on the highest weighted observed label among neighbors
@@ -324,6 +337,8 @@ class controlJob(macrothread):
           if prevState == None:
             prevState = state
           logging.debug("  Transition %d  --->  %d    Incrementing transition counter (%d, %d)", prevState, state, prevState, state)
+          logging.debug("  Clustered at: %s", str(clust))
+          logging.debug("  Counts:       %s", str(count))
 
           # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
           tmat[prevState][state] += 1
@@ -332,7 +347,6 @@ class controlJob(macrothread):
       # Build Decision History Data for the Source JC's from the indices
       # transitionBins = kv2DArray(archive, 'transitionBins', mag=5, dtype=str, init=[])      # Should this load here (from archive) or with other state data from catalog?
 
-      candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
 
       logging.debug("Update TMAT:\n" + str(tmat))
 
@@ -341,10 +355,13 @@ class controlJob(macrothread):
       logging.debug("  THETA  = %0.3f", theta)
 
 
+      #  DECISION HISTORY  --------------------------
+      logging.debug("============================  <DECISION HIST>  =============================")
+
       #  Process output data for each unque input trajectory (as produced by a single simulation)
       for sourceJC, cluster in observationDistribution.items():
-        logging.debug("\nFinal processing for Source Trajectory: %s : %s   (note: injection point here for better classification)", sourceJC, str(resultStates))
-        if sum(resultStates) == 0:
+        logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point here for better classification)", sourceJC)
+        if sum(observationDistribution[sourceJC]) == 0:
           logging.debug(" No observed data for, %s", sourceJC)
           continue
 
@@ -370,33 +387,44 @@ class controlJob(macrothread):
 
         #  Add this candidate to list of potential pools:
         #  TODO: Cap candidate pool size
-        self.data[candidPoolKey(stateA, stateB)].append(sourceJC)  
-        if 'targetBin' in self.data[wrapKey(sourceJC)]:
-          outputBin = str((stateA, stateB))
-          inputBin  = self.data[wrapKey(sourceJC)]['targetBin']
+        outputBin = str((stateA, stateB))
+        # self.data[candidPoolKey(stateA, stateB)].append(sourceJC)  
+        if 'targetBin' in self.data[wrapKey('jc', sourceJC)]:
+          inputBin  = self.data[wrapKey('jc', sourceJC)]['targetBin']
           logging.info("  Predicted Taget Bin was       :  %s", inputBin) 
           logging.info("  Actual Trajectory classified  :  %s", outputBin) 
           logging.debug("    TODO: ID difference, update weights, etc..... (if desired)")
 
-        self.data[wrapKey(sourceJC)]['actualBin'] = outputBin
+        self.data[wrapKey('jc', sourceJC)]['actualBin'] = outputBin
 
       ####   This is end of processing a single Job Candidate and here begins the cycle of finding next set of JC's
+
+      #  WEIGHT CALCULATION ---------------------------
+      logging.debug("============================  <WEIGHT CALC>  =============================")
 
       # Weight Calculation 
 
       bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
       # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
  
-      #  1. Load current fatigue values
-      fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
-
       #  2. Calculate new "preference"  targetbin portion of the weight
       totalObservations = np.sum(tmat)
       tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
-      quota = totalObservations / len(tmat_distro.keys())
+      quota = max(totalObservations / len(tmat_distro.keys()), len(tmat_distro.keys()))
+      
       pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
 
-      #  3. Apply constance. This can be user influenced
+      logging.debug("CURRENT (BIASED) OUTPUT DISTRIBUTION:")
+      logging.debug("  Total observations = %d", totalObservations)
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% tmat_distro[(i,k)] for k in range(5)]))
+
+
+      logging.debug("PREFERENCE WEIGHTS:")
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% pref[(i,k)] for k in range(5)]))
+
+      #  3. Apply constancs. This can be user influenced
       alpha = self.data['weight_alpha']
       beta = self.data['weight_beta']
 
@@ -404,13 +432,19 @@ class controlJob(macrothread):
       weight = {}
       for k in bins:
         weight[k] =  alpha * pref[k] + beta * (1 - fatigue[k])
+
+      logging.debug("UPDATED WEIGHTS:")
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% weight[(i,k)] for k in range(5)]))
+
       updatedWeights = sorted(weight.items(), key=lambda x: x[1], reverse=True)
+
 
       #  5. Load JC Queue and all items within to get respective weights and projected target bins
       #   TODO:  Pipeline this or load all up front!
       curqueue = []
       for i in self.data['JCQueue']:
-        key = wrapKey(i)
+        key = wrapKey('jc', i)
         curqueue.append(self.catalog.load())
 
       #  5a. (PreProcess current queue) in case weights were never set
@@ -419,7 +453,7 @@ class controlJob(macrothread):
           curqueue[jc]['weight'] = 1.0
 
       #  6. Sort current queue
-      existingQueue = deque(sorted(curqueue, key=lmabda x: x['weight'], reverse=True))
+      existingQueue = deque(sorted(curqueue, key=lambda x: x['weight'], reverse=True))
 
       #  7. Det. potential set of  new jobs  (base on launch policy)
       #     TODO: Set up as multiple jobs per bin, cap on a per-control task basis, or just 1 per bin
@@ -430,19 +464,27 @@ class controlJob(macrothread):
 
       targetBin = potentialJobs.popleft()
       oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
-      selectedBin = set()
+      selectionTally = np.zeros(shape=(numLabels, numLabels))
+      newJobCandidate = {}
+
+      #  SCHEDULING   -----------------------------------------
+      logging.debug("============================  <SCHEDULING>  =============================")
+
       while len(jcqueue) < DEFAULT.MAX_JOBS_IN_QUEUE:
 
         if oldjob == None and targetBin == None:
+          logging.info("No more jobs to queue.")
           break
 
-        if (targetBin == None) or (oldjob and oldjob['weight'] > weight[targetBin]):
+        if (targetBin == None) or (oldjob and oldjob['weight'] > targetBin[1]):
           jcqueue.append(oldjob)
           oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
 
         else:
-          A, B = targetBin
-          logging.debug("\n\nCONTROL: Target transition bin:  %s    weight=%f", str(w[0]), w[1])
+          A, B = targetBin[0]
+          logging.debug("\n\nCONTROL: Target transition bin:  %s", str((A, B)))
+
+          # Identify a pool of starting points
           candidatePool = self.data[candidPoolKey(A, B)]
 
 
@@ -451,8 +493,6 @@ class controlJob(macrothread):
           #    This is where the infinite # of J.C. is bounded to something manageable
           #     FOR NOW:  Pick a completely random DEShaw Window of the same state
           #       and go withit
-          newJobCandidate = {}
-
           # Ensure there are candidates to pick from
           if len(candidatePool) == 0:
             logging.info("No DEShaw reference for transition, (%d, %d)  -- checking reverse direction", A, B)
@@ -468,6 +508,9 @@ class controlJob(macrothread):
               for z in range(5):
                 candidatePool.extend(self.data[candidPoolKey(A, z)])
 
+          logging.debug('Prime CANDIDPOOLKEY = %s', candidPoolKey(A, B))
+          logging.debug('final CANDIDPOOL    = %s', str(candidatePool))
+
           # selectedBins.append((A, B))
 
           # Pick a random trajectory from the bin
@@ -479,7 +522,7 @@ class controlJob(macrothread):
           #   or we have a pre-fetch algorithm to get the data
           # Back-project  <--- Move to separate Function tied to decision history
           # For now:
-          if sourceTraj.isdigit():      # It's a DEShaw file
+          if isinstance(sourceTraj, int) or sourceTraj.isdigit():      # It's a DEShaw file
             fname = 'bpti-all-%03d.dcd' if int(sourceTraj) < 1000 else 'bpti-all-%04d.dcd'
             archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, fname % int(sourceTraj))
             pdbfile = DEFAULT.PDB_FILE
@@ -487,16 +530,16 @@ class controlJob(macrothread):
             archiveFile = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.dcd' % sourceTraj)
             pdbfile     = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.pdb' % sourceTraj)
 
+          # Generate new set of params/coords
           jcID, params = generateNewJC(archiveFile, pdbfile)
 
-
-          # NOTE: Update Additional JC Params and Historical Data, as needed
+          # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
               name    = jcID,
               runtime = 51000,
               temp    = 310,
               state   = A,
-              weight  = weight[targetBin],
+              weight  = targetBin[1],
               targetBin  = str((A, B)))
 
           logging.info("New Simulation Job Created: %s", jcID)
@@ -506,48 +549,74 @@ class controlJob(macrothread):
           #  Add to the output queue & save config info
           jcqueue.append(jcID)
           newJobCandidate[jcID] = jcConfig
-          selectedBin.add(targetBin)
+          selectionTally[A][B] += 1
           logging.info("New Job Candidate Complete:  %s" % jcID)
           
           targetBin = None if len(potentialJobs) == 0 else potentialJobs.popleft()
 
+      self.data['JCQueue'] = list(jcqueue)
+      for jcid, config in newJobCandidate.items():
+        jckey = wrapKey('jc', jcid)
+        self.catalog.save({jckey: config})
 
-      # Updated the "fatigue" values  -- FOR NOW do it all at once after selection process
+
+      # Updated the "fatigue" values for all selected jobs
+      #    -- FOR NOW do it all at once after selection process
+      #    TODO: This can be weighted based on # of selections
       for i in range(numLabels):
         for j in range(numLabels):
-          if (i,j) in selectedBins:
-            fatigue[f] += (1-fatigue[f])/25
+          if selectionTally[i][j] > 0:
+            fatigue[i][j] += (1-fatigue[i][j])/25
+            logging.debug("Increasing fatigue value for %d, %d to %f", i, j, fatigue[i][j])
           else:
-            fatigue[f] -= (fatigue[f]/25)**2
+            fatigue[i][j] -= (fatigue[i][j]/25)**2
 
-      # logging.debug(" SIMULATION ONLY ---- NOT SAVING")
-      # #  SIMULATING FOR NOW
-      # sys.exit(0)
+      # CONVERGENCE CALCUALTION  -------------------------------------
+      logging.debug("============================  <CONVEGENCE>  =============================")
+
+      logging.debug("TMAT:\n" + str(tmat))
+      logging.debug("Fatigue:\n" + str(fatigue))
+
+      # Update global selection matrix
+      smat += selectionTally
+      logging.debug("SMAT:\n" + str(smat))
+
+      # Remove bias from selection and add to observations 
+      #  which gives the unbiased, uniform selection 
+      inverseSelectFunc = lambda x: (np.max(x)) - x
+
+      #  For now, Assume a 4:1 ratio (input:output) and do not factor in output prob distro
+      unbias = 3 * inverseSelectFunc(smat) + tmat
+      logging.debug("UNBIAS:\n" + str(unbias))
+
+      # Calculcate "convergence" matrix as unbias(i,j) / sel(i.j)
+      updated_cmat = unbias / np.sum(unbias)
+      logging.debug("CMAT_0:\n" + str(cmat))
+      logging.debug("CMAT_1:\n" + str(updated_cmat))
 
 
-    # CONVERGENCE CALCUALTION
-      biasdistro = {k: v/np.sum(v) for k,v in bias.items()}   
-      unbias = np.zeros(shape=(5,5))
-      for k in biasdistro:
-        unbias = np.add(unbias, biasdistro[k])
-      unbias  = unbias / 25
-      convergence = 1 - (np.sum(abs(unbias - last_ub)))
-      print ("%0.5f" % convergence)
-      np.copyto(last_ub, unbias)
+      # Calculate global convergence as summed difference:  cmat_t1 - cmat_t0
+      convergence = np.sum(abs(updated_cmat - cmat))
 
-
+      logging.info('\nLAST CONVERGENCE:  %0.6f', self.data['converge'])
+      logging.info("NEW CONVERGENCE:  %0.6f\n", convergence)
+      self.data['converge'] = convergence
 
       # Control Thread requires the catalog to be accessible. Hence it starts it:
       #  TODO: use addState HERE & UPDATE self.data['JCQueue']
       self.catalogPersistanceState = True
       self.localcatalogserver = self.catalog.conn()
 
-      for jcid, config in newJobCandidate.items():
-        jckey = wrapKey('jc', jcid)
-        # self.data['JCQueue'].append(jcid)
-        # self.data[jckey] = config
-        self.catalog.save({jckey: config})
 
+
+      # Save all  packed matrices to catalog
+      logging.info("Saving global matrices to catalog")
+      storeNPArray(self.catalog, tmat, 'transitionmatrix')
+      storeNPArray(self.catalog, smat, 'selectionmatrix')
+      storeNPArray(self.catalog, updated_cmat, 'convergencematrix')
+      storeNPArray(self.catalog, fatigue, 'fatigue')
+
+  
       return list(newJobCandidate.keys())
 
 

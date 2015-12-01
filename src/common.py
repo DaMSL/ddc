@@ -3,6 +3,14 @@ import os
 import shutil
 import uuid
 import subprocess as proc
+import nearpy
+from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections, UniBucket
+from nearpy.distances import EuclideanDistance
+from nearpy.storage import RedisStorage
+import sys
+
+from collections import namedtuple
+
 
 
 logger = 0
@@ -14,7 +22,7 @@ archiveConfig = dict(name='archive', port=6380)
 
 class DEFAULT:
 
-  MANAGER_RERUN_DELAY = 240
+  MANAGER_RERUN_DELAY = 60
 
   #  TODO:  Set up with Config File
   WORKDIR = os.path.join(os.environ['HOME'], 'work')
@@ -40,7 +48,7 @@ class DEFAULT:
   HIST_SLIDE  = 50
   HIST_WINDOW = 100
 
-  HASH_NAME = 'pcahash'
+  HASH_NAME = 'rbphash'
 
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
   REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
@@ -54,9 +62,11 @@ class DEFAULT:
 
   # TODO: Move this from a file to the archive!
   DATA_LABEL_FILE = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
+  CANDIDATE_POOL_SIZE = 100
 
-  MAX_NUM_NEW_JC = 4
-
+  MAX_NUM_NEW_JC = 10
+  MAX_JOBS_IN_QUEUE = 100
+  
   # TODO:  Make this a functional filter ILO string filter
   ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection='heavy')
   NUM_VAR = 454  # TODO: Set during Init
@@ -68,6 +78,12 @@ class DEFAULT:
 
     if not os.path.exists(cls.LOG_DIR):
       os.mkdir(cls.LOG_DIR)
+
+  @classmethod
+  def getEmptyHash(cls):
+    return UniBucket(DEFAULT.HASH_NAME)
+    return RandomBinaryProjections(None, None)
+    # return PCABinaryProjections(None, None, None)
 
 
 
@@ -123,20 +139,69 @@ def executecmd(cmd):
   return stdout.decode()
 
 
+label =namedtuple('window', 'time state')
+
+def loadLabels(fn=DEFAULT.DATA_LABEL_FILE):
+  label =namedtuple('window', 'time state')
+  win = []
+  with open(fn) as f:
+    for line in f.readlines():
+      t, s = line.split()
+      win.append(label(float(t), int(s)))
+  return win
+
+def getLabelList(labels):
+  labelset = set()
+  for lab in labels:
+    labelset.add(lab.state)
+  return sorted(list(labelset))
 
 
+
+
+
+def getNearpyEngine(archive, indexSize):
+    # Connect Storage & nearpy engine
+  redis_storage = RedisStorage(archive)
+  config = redis_storage.load_hash_configuration('rbphash')
+  if not config:
+    logging.error("LSHash not configured")
+    sys.exit(0)
+
+  logging.debug("CONFIG:")
+  for k,v in config.items():
+    logging.debug("%s,  %s", str(k), str(v))
+
+  # Create empty lshash and load stored hash
+  eucl = EuclideanDistance()
+  lshash = DEFAULT.getEmptyHash()
+  lshash.apply_config(config)
+
+  if config['dim'] is None:
+    logging.debug("NO DIM SET IN HASH. RESETTING TO 10")
+    lshash.reset(10)
+    redis_storage.store_hash_configuration(lshash)
+    logging.debug("HASH SAVED")
+
+
+  logging.debug("INDEX SIZE = %d:  ", indexSize)
+  engine = nearpy.Engine(indexSize, distance=eucl, lshashes=[lshash], storage=redis_storage)
+
+  return engine
 
 
 #  PROGRAM DEFAULTS FOR INITIALIZATION
 #   TODO:  Consolidate & dev config file
 
+
+
 schema = dict(  
         JCQueue = [],
         JCComplete = 0,
         JCTotal = 1,
-        simSplitParam =  1, 
-        anlSplitParam =  1,
-        ctlSplitParam =  1,
+        simSplitParam =  4, 
+        anlSplitParam =  4,
+        ctlSplitParam =  4,
         dcdFileList =  [], 
         processed =  0,
         indexSize = DEFAULT.NUM_VAR*DEFAULT.NUM_PCOMP,
@@ -145,6 +210,16 @@ schema = dict(
         weight_alpha = .4,
         weight_beta = .6,
         observation_counts = [])
+
+candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
+
+for i in range(5):
+  for j in range(5):
+    schema[candidPoolKey(i,j)] = []
+
+
+
+
 
 
 def initialize(catalog, archive, flushArchive=False):

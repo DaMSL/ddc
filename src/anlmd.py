@@ -46,22 +46,21 @@ def makeIndex(eg, ev, num_pc=DEFAULT.NUM_PCOMP):
   index_size = num_var * num_pc
   index = np.zeros(index_size)
   eigorder = np.argsort(abs(eg))[::-1]
-  norm = LA.norm(eigorder[:num_pc], ord=1)
+  norm = LA.norm(eigorder, ord=1)
   # np.copyto(index[:num_var], ev[i][:,-1] * eg[i][-1])    # FOr only 1 eigvector
   for n, eig in enumerate(eigorder[:num_pc]):
-    eig = 0
-    direction = -1 if eg[eig] < 0 else 1
-    # np.copyto(index[n*num_var:n*num_var+num_var], direction * ev[i][:,eig] * abs(eg[i][eig]) / norm)
-    np.copyto(index[n*num_var:n*num_var+num_var], direction * ev[i][:,eig])
+    # direction = -1 if eg[eig] < 0 else 1
+    # np.copyto(index[n*num_var:n*num_var+num_var], direction * ev[:,eig])
+    np.copyto(index[n*num_var:n*num_var+num_var], ev[:,eig] * eg[eig] / norm)
   return index
 
 
 class analysisJob(macrothread):
     def __init__(self, schema, fname):
-      macrothread.__init__(self, schema, fname, 'anl')
+      macrothread.__init__(self, schema, fname,  'anl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('dcdFileList', 'LDIndexList')
-      self.setState('JCComplete', 'processed', 'anlSplitParam')
+      self.setState('JCComplete', 'processed', 'anlSplitParam', 'indexSize')
 
       self.modules.add('redis')
 
@@ -72,8 +71,8 @@ class analysisJob(macrothread):
       self.slurmParams['cpus-per-task'] = DEFAULT.CPU_PER_NODE
 
       # TODO: Move to Catalog or define on a per-task basis
-      self.winsize = 50
-      self.slide   = 25
+      self.winsize = 100
+      self.slide   = 50
 
     def setBuild(self, build=True):
       self.buildArchive = build
@@ -112,7 +111,7 @@ class analysisJob(macrothread):
         return []
 
       result = {}
-      indexSize = DEFAULT.NUM_VAR * DEFAULT.NUM_PCOMP
+      indexSize = self.data['indexSize']
       # 2. Split raw data in WINSIZE chunks and calc eigen vectors
       #   TODO: Retain provenance
       for win in range(0, len(traj.xyz), self.slide):
@@ -122,37 +121,24 @@ class analysisJob(macrothread):
         key = jobnum + ':' + '%04d' % win
         result[key] = makeIndex(eg, ev)
 
-      # Create empty lshash and load stored hash
-      # OPTION A:  Build Archive online
+      # To Build Archive online
       if self.buildArchive:
         archive = redisCatalog.dataStore(**archiveConfig)
-        redis_storage = RedisStorage(archive)
-        config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
-        if not config:
-          logging.error("LSHash not configured")
-
-        #TODO: Gracefully exit
-        # lshash = RandomBinaryProjections(None, None)
-        lshash = PCABinaryProjections(None, None, None)
-        lshash.apply_config(config)
-        engine = nearpy.Engine(indexSize, 
-            lshashes=[lshash], 
-            storage=redis_storage)
+        engine = getNearpyEngine(archive, indexSize)
         for key, idx in result.items():
           engine.store_vector(idx, key)
 
-      # OPTION B:  Index for downstream retrieval
-      else:
-        logging.debug('Saving Index in catalog')
+      # Index for downstream retrieval
+      logging.debug('Saving Index in catalog')
 
-        # Pack & store data
-        for k, v in result.items():
-          logging.debug(" `%s`:  <vector with dimensions, %s>" % (k, str(v.shape)))
-        packed = {k: v.tobytes() for k, v in result.items()}
-        
-        # Index Key : If/When to update job ID management for downstream data
-        index_key = wrapKey('idx', jobnum)
-        self.catalog.save({index_key: packed})
+      # Pack & store data
+      for k, v in result.items():
+        logging.debug(" `%s`:  <vector with dimensions, %s>" % (k, str(v.shape)))
+      packed = {k: v.tobytes() for k, v in result.items()}
+      
+      # Index Key : If/When to update job ID management for downstream data
+      index_key = wrapKey('idx', jobnum)
+      self.catalog.save({index_key: packed})
 
       return [jobnum]
 

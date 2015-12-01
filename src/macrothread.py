@@ -100,8 +100,9 @@ class macrothread(object):
       self._state[a] = self.data[a]
     self._state['id_' + self.name] = 0
 
-  def addToState(self, label, data):
-    self._state[label] = data
+  def addToState(self, key, value):
+    self._state[key] = value
+    self.data[key] = value
 
   def setCatalog(self, catalog):
     self.catalog = catalog
@@ -160,6 +161,13 @@ class macrothread(object):
     if not self.catalog:
       self.catalog = redisCatalog.dataStore('catalog')
     self.localcatalogserver = self.catalog.conn()
+
+
+    # Check global termination:
+    term_flag = self.catalog.get('terminate')
+    if term_flag:
+      logger.info('RECEIVED TERMINATION FLAG. Shutting down')
+      sys.exit(0)
 
     # Load Data from Thread's State and Upstream thread
     self.load(self._state)
@@ -321,6 +329,11 @@ class macrothread(object):
 
       logging.debug ("  WORKER output:   %s", r)  
     
+    #  SIMULATING FOR NOW
+    # logging.debug(" SIMULATION ONLY ---- NOT SAVING")
+    # sys.exit(0)
+
+
     self.catalog.append(self.downstream, result)
 
     if self.localcatalogserver and self.catalogPersistanceState:

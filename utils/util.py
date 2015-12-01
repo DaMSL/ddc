@@ -103,25 +103,24 @@ def seedQeueus():
     catalog.rpush(q, *tuple(SEED[q]))
 
 
-
-
 def loadDEShawTraj(start, end=-1):
   if end == -1:
     end = start +1
+  trajectory = None
+  bptidir = DEFAULT.RAW_ARCHIVE + '/'
   for dcdfile in range(start, end):
     f = 'bpti-all-%03d.dcd' % dcdfile if dcdfile<1000 else 'bpti-all-%04d.dcd' % dcdfile
-    if not os.path.exists(home+'/work/bpti/' + f):
+    if not os.path.exists(bptidir + f):
       logging.info('%s   File not exists. Continuing with what I got', f)
       break
     logging.info("LOADING:  %s", f)
-    traj = md.load(home+'/work/bpti/' + f, top=home+'/work/bpti/bpti-all.pdb')
+    traj = md.load(bptidir + f, top=DEFAULT.PDB_FILE)
     filt = traj.top.select_atom_indices(selection='heavy')
     traj.atom_slice(filt, inplace=True)
-    if trajectory:
-      trajectory = trajectory.join(traj)
-    else:
-      trajectory = traj
+    trajectory = trajectory.join(traj) if trajectory else traj
   return trajectory
+
+
 
 def covmatrix(traj, numpc=0):
   n_frames = traj.shape[0]
