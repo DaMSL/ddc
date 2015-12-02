@@ -29,18 +29,14 @@ class macrothread(object):
     self.name = name
     self.fname = fname
 
-    #  TODO: See if this can be Simplied by combining all "state" items into one 
-    #     big set of state fields dict
-
-    # self._input = {}
-    # self._term  = {}
-    # self._split = {}
-    # self._exec  = {}
-
+    # Thread State
     self._state = {}
     self.data = schema
     self.upstream = None
     self.downstream = None
+
+    # Elasticity
+    self.delay = None
 
 
     self.catalog = None
@@ -86,12 +82,12 @@ class macrothread(object):
   # TODO:  Eventually we may want multiple up/down streams
   def setStream(self, upstream, downstream):
     if upstream is None or upstream not in self.data.keys():
-      logging.error("Upstream data `%s` not defined in schema", upstream)
+      logger.warning("Upstream data `%s` not defined in schema", upstream)
     else:
       self.upstream = upstream
 
     if downstream is None or downstream not in self.data.keys():
-      logging.error("Downstream data `%s` not defined in schema", downstream)
+      logger.warning("Downstream data `%s` not defined in schema", downstream)
     else:
       self.downstream = downstream
 
@@ -129,6 +125,14 @@ class macrothread(object):
     Retrieve data element associated with given item reference (defaults to returning item ref)
     """
     return item
+
+  def configElasPolicy(self):
+    """
+    Set rescheduling / delay policies for the manager thread 
+    """
+    self.delay = DEFAULT.MANAGER_RERUN_DELAY
+
+
 
   def retry_redisConn(ex):
     return isinstance(ex, redis.ConnectionError)
@@ -183,6 +187,8 @@ class macrothread(object):
     # self.load(self._split)
     # self.load(self._input)
 
+    # Set Elasticity Policy
+    self.configElasPolicy()
 
     # Note: Manager can become a service daemon. Thus, we allow the manager
     #  to run along with the monitor process and assume the manager overhead
@@ -213,7 +219,8 @@ class macrothread(object):
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
-      delay = DEFAULT.MANAGER_RERUN_DELAY
+
+      delay = self.delay
       logger.debug("MANAGER %s: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
       self.slurmParams['begin'] = 'now+%d' % delay
 
@@ -231,7 +238,8 @@ class macrothread(object):
     # Reschedule Next Manager:
     # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
     #      FOR NOW, back off delay  (for debug/demo/testing)
-    delay = DEFAULT.MANAGER_RERUN_DELAY  
+    # TODO: Use Elas Policy to control manager rescheduling
+    delay = self.delay  
     self.slurmParams['begin'] = 'now+%d' % delay
 
     self.slurmParams['job-name'] = "%sM-%05d" % (self.name, jobid)
@@ -256,7 +264,7 @@ class macrothread(object):
     #  TODO: Should we just make this only 1 list allowed for upstream data?
     if isinstance(defer, list) and len(defer) > 0:
       self.catalog.removeItems(self.upstream, defer)
-    else:
+    elif defer is not None:
       self.catalog.slice(self.upstream, defer)
 
     # Other interal thread state is saved back to catalog
@@ -334,7 +342,8 @@ class macrothread(object):
     # sys.exit(0)
 
 
-    self.catalog.append(self.downstream, result)
+    if self.downstream is not None:
+      self.catalog.append(self.downstream, result)
 
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Worker is running the catalog. Waiting on local service to terminate...")

@@ -313,7 +313,7 @@ class dataStore(redis.StrictRedis, catalog):
       else:
         pipe.get(key)
         tp = 'VAL'
-      logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
+      # logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
 
     # TODO:  Better handling of dynamic dispatching for datatypes
 
@@ -322,27 +322,42 @@ class dataStore(redis.StrictRedis, catalog):
     #  Data Conversion
 
     for i, key in enumerate(keys):
-      logger.debug('Caching:  ' + key)
-      if isinstance(data[key], list):
-        tmp = [val.decode() for val in vals[i]]
-        if len(tmp) == 0:
-          data[key] = []
-        elif tmp[0].isdigit():
-          data[key] = [int(val) for val in tmp]
-        else:
+      try:
+        # logger.debug('Caching:  ' + key)
+        if isinstance(data[key], list):
+          tmp = [val.decode() for val in vals[i]]
           try:
-            data[key] = [float(val) for val in tmp]
+            if len(tmp) == 0:
+              data[key] = []
+            elif tmp[0].isdigit():
+              data[key] = [int(val) for val in tmp]
+            else:
+              data[key] = [float(val) for val in tmp]
           except ValueError as ex:
             data[key] = tmp
-      elif isinstance(data[key], dict):
-        data[key] = {k.decode():v.decode() for k,v in vals[i].items()}
-      elif isinstance(data[key], int):
-        data[key] = int(vals[i].decode())
-      elif isinstance(data[key], float):
-        data[key] = float(vals[i].decode())
-      else:
-        data[key] = vals[i].decode()
-
+        elif isinstance(data[key], dict):
+          # logging.debug("Hash Loader")
+          for k,v in vals[i].items():
+            try:
+              subkey = k.decode()
+              subval = v.decode()
+              # logging.debug("   %s:  %s", k, (str(v)))
+              if v.isdigit():
+                data[key][subkey] = int(subval)
+              else:
+                data[key][subkey] = float(subval)
+            except ValueError as ex:
+              data[key][subkey] = subval
+        elif isinstance(data[key], int):
+          data[key] = int(vals[i].decode())
+        elif isinstance(data[key], float):
+          data[key] = float(vals[i].decode())
+        else:
+          data[key] = vals[i].decode()
+      except (AttributeError, KeyError) as ex:
+        logging.error("BAD KEY:  %s", key)
+        logging.error("Trace:  %s", str(ex))
+        sys.exit(0)
 
   # Slice off data in-place. Asssume key stores a list
   def slice(self, key, num):

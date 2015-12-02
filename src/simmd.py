@@ -23,7 +23,7 @@ class simulationJob(macrothread):
 
     # State Data for Simulation MacroThread -- organized by state
     self.setStream('JCQueue', 'dcdFileList')
-    self.setState('JCComplete', 'JCTotal', 'simSplitParam')
+    self.setState('JCComplete', 'JCTotal', 'simSplitParam', 'simDelay')
 
     # Local Data to this running instance
     self.cpu = 1
@@ -45,6 +45,10 @@ class simulationJob(macrothread):
     split = int(self.data['simSplitParam'])
     immed = self.data['JCQueue'][:split]
     return immed, split
+
+
+  def configElasPolicy(self):
+    self.delay = self.data['simDelay']
 
 
   def fetch(self, i):

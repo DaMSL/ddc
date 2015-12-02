@@ -1,7 +1,6 @@
 import argparse
 import sys
 import os
-import sys
 
 import mdtraj as md
 import numpy as np
@@ -60,7 +59,7 @@ class analysisJob(macrothread):
       macrothread.__init__(self, schema, fname,  'anl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('dcdFileList', 'LDIndexList')
-      self.setState('JCComplete', 'processed', 'anlSplitParam', 'indexSize')
+      self.setState('JCComplete', 'processed', 'anlSplitParam', 'anlDelay', 'indexSize')
 
       self.modules.add('redis')
 
@@ -85,6 +84,10 @@ class analysisJob(macrothread):
       split = int(self.data['anlSplitParam'])
       immed = self.data['dcdFileList'][:split]
       return immed, split
+
+
+    def configElasPolicy(self):
+      self.delay = self.data['anlDelay']
 
 
     def execute(self, i):

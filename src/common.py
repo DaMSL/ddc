@@ -1,4 +1,5 @@
 import logging
+
 import os
 import shutil
 import uuid
@@ -8,12 +9,14 @@ from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections, UniBuck
 from nearpy.distances import EuclideanDistance
 from nearpy.storage import RedisStorage
 import sys
+import random
+import string
 
 from collections import namedtuple
 
 
 
-logger = 0
+logger = None
 
 
 archiveConfig = dict(name='archive', port=6380)
@@ -45,9 +48,6 @@ class DEFAULT:
   NODES = 1
   CPU_PER_NODE = 24
 
-  HIST_SLIDE  = 50
-  HIST_WINDOW = 100
-
   HASH_NAME = 'rbphash'
 
   SIM_CONF_TEMPLATE = 'src/sim_template.conf'
@@ -67,9 +67,10 @@ class DEFAULT:
   MAX_NUM_NEW_JC = 10
   MAX_JOBS_IN_QUEUE = 100
   
-  # TODO:  Make this a functional filter ILO string filter
   ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection='heavy')
   NUM_VAR = 454  # TODO: Set during Init
+
+  EPOCH_LABEL = 'dampening1'
 
   @classmethod
   def envSetup(cls):
@@ -88,21 +89,27 @@ class DEFAULT:
 
 
 
+
 def setLogger(name=""):
   global logger
-  if not logger:
+
+  if logger is None:
     # log_fmt = logging.Formatter(fmt='[%(asctime)s %(levelname)-5s %(name)s] %(message)s',datefmt='%H:%M:%S')
     log_fmt = logging.Formatter(fmt= '[%(module)s] %(message)s',datefmt='%H:%M:%S')
     logger = logging.getLogger("")
     log_console = logging.StreamHandler()
     log_console.setFormatter(log_fmt)
     logger.setLevel(logging.DEBUG)
-    logger.addHandler(log_console)
+    # logger.addHandler(log_console)
+
   return logger
 
 
 def getUID():
-  return str(uuid.uuid1()).split('-')[0]
+  chrid = random.choice(string.ascii_lowercase + string.ascii_lowercase)
+  unique = str(uuid.uuid1()).split('-')[0]
+
+  return chrid + unique
 
 
 # TODO:  Encode/Decode Wrapper Class via functional methods
@@ -193,20 +200,29 @@ def getNearpyEngine(archive, indexSize):
 #  PROGRAM DEFAULTS FOR INITIALIZATION
 #   TODO:  Consolidate & dev config file
 
-
-
+# SCHEMA
+#  For now defined as a dict, for simplicity, with thread state receiving a 
+#     copy of this and caching locally only what it needs as defined in setState()
+#  TODO:  Each item in the schema should be traced obj w/getter/setter attrib to
+#     trace dirty flagging (which reduces I/O) and provides a capability to 
+#     synchronize between threads thru the catalog
 schema = dict(  
         JCQueue = [],
         JCComplete = 0,
         JCTotal = 1,
         simSplitParam =  4, 
         anlSplitParam =  4,
-        ctlSplitParam =  4,
+        ctlSplitParam =  1,
+        simDelay =  60, 
+        anlDelay =  60,
+        ctlDelay =  15,
+        gcDelay  =  600,
         dcdFileList =  [], 
         processed =  0,
         indexSize = DEFAULT.NUM_VAR*DEFAULT.NUM_PCOMP,
         LDIndexList = [],
         converge =  0.,
+        timestep = 0,
         weight_alpha = .4,
         weight_beta = .6,
         observation_counts = [])
@@ -250,7 +266,7 @@ def initialize(catalog, archive, flushArchive=False):
   executecmd("shopt -s extglob | rm !(SEED.p*)")
 
   # TODO:  Job ID Management
-  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl']}
+  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
 
   logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
   catalog.clear()
