@@ -40,7 +40,7 @@ def covmatrix(traj):
   return cov
 
 
-def makeIndex(eg, ev, num_pc=DEFAULT.NUM_PCOMP):
+def makeIndex(eg, ev, num_pc=3):
   num_var = len(eg)
   index_size = num_var * num_pc
   index = np.zeros(index_size)
@@ -55,8 +55,8 @@ def makeIndex(eg, ev, num_pc=DEFAULT.NUM_PCOMP):
 
 
 class analysisJob(macrothread):
-    def __init__(self, schema, fname):
-      macrothread.__init__(self, schema, fname,  'anl')
+    def __init__(self, fname):
+      macrothread.__init__(self, fname,  'anl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('dcdFileList', 'LDIndexList')
       self.setState('JCComplete', 'processed', 'anlSplitParam', 'anlDelay', 'indexSize')
@@ -67,7 +67,7 @@ class analysisJob(macrothread):
       self.manual = False
 
       # Update Base Slurm Params
-      self.slurmParams['cpus-per-task'] = DEFAULT.CPU_PER_NODE
+      self.slurmParams['cpus-per-task'] = 24
 
       # TODO: Move to Catalog or define on a per-task basis
       self.winsize = 100
@@ -92,7 +92,7 @@ class analysisJob(macrothread):
 
     def execute(self, i):
 
-      # TODO: Better Job ID Mgmt, for now hack the filename
+      # TODO: Better Job ID Mgmt, for now hack the filename (for analysis)
       i.replace(':', '_').replace('-', '_')
       jobnum = os.path.basename(i).split('.')[0].split('_')[-1]
       # logging.debug("jobnum = " + jobnum)
@@ -100,9 +100,15 @@ class analysisJob(macrothread):
       if self.manual:
         dcd, pdb = tuple(map(lambda x: os.path.join(os.path.dirname(i), "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
       else:
-        dcd, pdb = tuple(map(lambda x: os.path.join(DEFAULT.JOB_DIR, jobnum, "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
+        dcd, pdb = tuple(map(lambda x: os.path.join(DEFAULT.JOBDIR, jobnum, "%s.%s" % (jobnum, x)), ['dcd', 'pdb']))
 
-      # 1. Load raw data from trajectory file
+      # 1. Check if source files exist
+      if not (os.path.exists(dcd) and os.path.exists(pdb)):
+        logging.error('Source Files not found: %s, %s', dcd, pdb)
+        return []
+
+
+      # 2. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
       traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
 
@@ -126,7 +132,7 @@ class analysisJob(macrothread):
 
       # To Build Archive online
       if self.buildArchive:
-        archive = redisCatalog.dataStore(**archiveConfig)
+        archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
         engine = getNearpyEngine(archive, indexSize)
         for key, idx in result.items():
           engine.store_vector(idx, key)
@@ -147,20 +153,15 @@ class analysisJob(macrothread):
 
 
 
-    def addArgs(self):
-      parser = macrothread.addArgs(self)
-      parser.add_argument('-b', '--build')
-      parser.add_argument('--winsize', type=int)
-      parser.add_argument('--slide', type=int)
-      return parser
-
-
-
-
 if __name__ == '__main__':
-  mt = analysisJob(schema, __file__)
+  mt = analysisJob(__file__)
+
+  mt.parser.add_argument('-b', '--build')
+  mt.parser.add_argument('--winsize', type=int)
+  mt.parser.add_argument('--slide', type=int)
+  args = mt.parser.parse_args()
   #  For archiving
-  args = mt.addArgs().parse_args()
+  # args = mt.addArgs().parse_args()
 
   if args.winsize:
     mt.winsize = args.winsize

@@ -126,7 +126,7 @@ def loadNPArray(store, key):
 def get2DKeys(key, X, Y):
   return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
 
-def generateNewJC(rawfile, pdbfile):
+def generateNewJC(rawfile, pdbfile, topo, parm):
 
     logging.debug("Generating new simulation coordinates from:  %s", rawfile)
 
@@ -136,7 +136,7 @@ def generateNewJC(rawfile, pdbfile):
 
     # Write out coords (TODO: should this go to catalog or to file?)
     # tmpCoord = os.path.join(DEFAULT.COORD_FILE_DIR, '%s_tmp.pdb' % jcuid)
-    jobdir = os.path.join(DEFAULT.JOB_DIR,  jcuid)
+    jobdir = os.path.join(DEFAULT.JOBDIR,  jcuid)
     coordFile  = os.path.join(jobdir, '%s_coord.pdb' % jcuid)
     newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
     newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
@@ -171,7 +171,7 @@ def generateNewJC(rawfile, pdbfile):
 
     logging.info("  Running PSFGen to set up simulation pdf/pdb files.")
     stdout = executecmd(psfgen(newsimJob))
-    logging.debug("  PSFGen COMPLETE!!\n" + stdout)
+    logging.debug("  PSFGen COMPLETE!!\n")
 
     os.remove(coordFile)
     del newsimJob['coord']
@@ -185,14 +185,18 @@ def generateNewJC(rawfile, pdbfile):
 
 
 class controlJob(macrothread):
-    def __init__(self, schema, fname):
-      macrothread.__init__(self, schema, fname, 'ctl')
+    def __init__(self, fname):
+      macrothread.__init__(self, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('LDIndexList', None)
       self.setState('JCQueue', 'indexSize', 'timestep', 
                     'converge', 'ctlSplitParam', 'ctlDelay',
                     *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
       self.modules.add('namd')
+
+
+      self.addImmut('num_var')
+      self.addImmut('num_pc')
 
 
     def term(self):
@@ -227,7 +231,7 @@ class controlJob(macrothread):
       self.data['timestep'] += 1
       logging.info('TIMESTEP: %d', self.data['timestep'])
 
-      archive = redisCatalog.dataStore(**archiveConfig)
+      archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
       redis_storage = RedisStorage(archive)
       config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
       if not config:
@@ -238,7 +242,7 @@ class controlJob(macrothread):
       # Create empty lshash and load stored hash
       lshash = DEFAULT.getEmptyHash()
       lshash.apply_config(config)
-      indexSize = DEFAULT.NUM_VAR * DEFAULT.NUM_PCOMP
+      indexSize = self.data['num_var'] * self.data['num_pc']
       logging.debug("INDEX SIZE = %d:  ", indexSize)
       engine = nearpy.Engine(indexSize, 
             lshashes=[lshash], 
@@ -247,7 +251,7 @@ class controlJob(macrothread):
       # Load current set of known states
       #  TODO:  Injection Point for clustering. If clustering were applied
       #    this would be much more dynamic (static fileload for now)
-      labels = loadLabels(DEFAULT.DATA_LABEL_FILE)
+      labels = loadLabels()
       labelNames = getLabelList(labels)
       numLabels = len(labelNames)
 
@@ -483,16 +487,18 @@ class controlJob(macrothread):
         key = wrapKey('jc', i)
         config = {}
         self.catalog.load({key: config})
-        if debug:
-          logging.debug('Sample Job output (1st on queue: idx `%s`)', i)
-          for k, v in config.items():
-            logging.debug('  %s:  %s',  k, str(v))  
-          debug = False        
+        # if debug:
+        #   logging.debug('Sample Job output (1st on queue: idx `%s`)', i)
+        #   for k, v in config.items():
+        #     logging.debug('  %s:  %s',  k, str(v))  
+        #   debug = False        
 
         # Dampening Factor: proportional it currency (if no ts, set it to 1)
         jc_ts = config['timestep'] if 'timestep' in config else 1
         
+
         #   May want to consider incl convergence of sys at time job was created
+        w_before    = config['weight']
         config['weight'] = config['weight'] * (jc_ts / self.data['timestep'])
         logging.debug("Dampening Factor Applied (jc_ts = %d):   %0.5f  to  %05f", jc_ts, w_before, config['weight'])
         curqueue.append(config)
@@ -509,8 +515,12 @@ class controlJob(macrothread):
 
 
       #  6. Sort current queue
-      existingQueue = deque(sorted(curqueue, key=lambda x: x['weight'], reverse=True))
-      logging.debug("Existing Queue has %d items between weights: %0.5f - %0.5f", len(existingQueue), existingQueue[0]['weight'], existingQueue[-1]['weight'])
+      if len(curqueue) > 0:
+        existingQueue = deque(sorted(curqueue, key=lambda x: x['weight'], reverse=True))
+        logging.debug("Existing Queue has %d items between weights: %0.5f - %0.5f", len(existingQueue), existingQueue[0]['weight'], existingQueue[-1]['weight'])
+      else:
+        existingQueue = deque()
+        logging.debug("Existing Queue is empty.")
 
       #  7. Det. potential set of  new jobs  (base on launch policy)
       #     TODO: Set up as multiple jobs per bin, cap on a per-control task basis, or just 1 per bin
@@ -524,11 +534,7 @@ class controlJob(macrothread):
       oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
       selectionTally = np.zeros(shape=(numLabels, numLabels))
       newJobCandidate = {}
-      logging.debug('First Old job (debug):')
-      for k, v in oldjob.items():
-        logging.debug('  %s:  %s',  k, str(v))  
-
-
+   
       while len(jcqueue) < DEFAULT.MAX_JOBS_IN_QUEUE:
 
         if oldjob == None and targetBin == None:
@@ -586,8 +592,8 @@ class controlJob(macrothread):
             archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, fname % int(sourceTraj))
             pdbfile = DEFAULT.PDB_FILE
           else:
-            archiveFile = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.dcd' % sourceTraj)
-            pdbfile     = os.path.join(DEFAULT.JOB_DIR, sourceTraj, '%s.pdb' % sourceTraj)
+            archiveFile = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.dcd' % sourceTraj)
+            pdbfile     = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.pdb' % sourceTraj)
 
           # Generate new set of params/coords
           jcID, params = generateNewJC(archiveFile, pdbfile)
@@ -595,7 +601,7 @@ class controlJob(macrothread):
           # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
               name    = jcID,
-              runtime = 51000,
+              runtime = DEFAULT.RUNTIME,
               temp    = 310,
               state   = A,
               weight  = targetBin[1],
@@ -621,6 +627,7 @@ class controlJob(macrothread):
 
 
       # Mark obsolete jobs for garbage collection:
+      logging.info("Marking %d obsolete jobs for garbage collection", len(existingQueue))
       while len(existingQueue) > 0:
         config = existingQueue.popleft()
         config['gc'] = 0
@@ -646,11 +653,18 @@ class controlJob(macrothread):
       # CONVERGENCE CALCUALTION  -------------------------------------
       logging.debug("============================  <CONVEGENCE>  =============================")
 
+      logging.debug("Observations MAT:\n" + str(tmat))
+      logging.debug("Fatigue:\n" + str(fatigue))
+
       # Load Selection Matrix
       smat = loadNPArray(self.catalog, 'selectionmatrix')
       if smat is None:
         smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
+
+      # Merge Update global selection matrix
+      smat += selectionTally
       logging.debug("SMAT:\n" + str(smat))
+
 
       # Load Convergence Matrix
       cmat = loadNPArray(self.catalog, 'convergencematrix')
@@ -659,12 +673,6 @@ class controlJob(macrothread):
       logging.debug("CMAT:\n" + str(cmat))
 
 
-      logging.debug("TMAT:\n" + str(tmat))
-      logging.debug("Fatigue:\n" + str(fatigue))
-
-      # Merge Update global selection matrix
-      smat += selectionTally
-      logging.debug("SMAT:\n" + str(smat))
 
       # Remove bias from selection and add to observations 
       #  which gives the unbiased, uniform selection 
@@ -710,30 +718,34 @@ class controlJob(macrothread):
       return list(newJobCandidate.keys())
 
 
-    def addArgs(self):
-      parser = macrothread.addArgs(self)
-      parser.add_argument('--gendata')
-      return parser
-
-
 
 if __name__ == '__main__':
-  mt = controlJob(schema, __file__)
+  mt = controlJob(__file__)
 
   #  For generating a seed JC
+  mt.parser.add_argument('--gendata')
   args = mt.addArgs().parse_args()
 
   if args.gendata:
-    jcID, params = generateNewJC(args.gendata, 500)
+    win = args.gendata
+    labels = loadLabels()
+    jcID, params = generateNewJC(win, 500)
+
     jcConfig = dict(params,
         name    = jcID,
-        runtime = 51000,
+        runtime = DEFAULT.RUNTIME,
         temp    = 310,
-        state   = 1)
+        state   = labels[win].state,
+        weight  = 0.,
+        timestep = 0,
+        gc      = 1,
+        epoch   = DEFAULT.EPOCH_LABEL,
+        converge = 0.,
+        targetBin  = str((labels[win].state, labels[win].state)))
     for k, v in jcConfig.items():
       logging.info('%s: %s', k, str(v))
 
-    catalog = redisCatalog.dataStore('catalog')
+    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     catalog.save({'jc_'+jcID: jcConfig})
     sys.exit(0)
 

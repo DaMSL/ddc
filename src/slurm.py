@@ -43,22 +43,20 @@ class slurm:
       else:  
         inline += '#SBATCH --%s=%s\n' % (k, str(v))
 
-    joboutput = "%s/%s.out" % (DEFAULT.LOG_DIR, str(taskid))
+    joboutput = "%s/%s.out" % (DEFAULT.LOGDIR, str(taskid))
     inline += '#SBATCH --output=%s\n' % joboutput
-    if DEFAULT.PARTITION:
-      inline += '#SBATCH --partition=%s\n' % DEFAULT.PARTITION
 
     for mod in modules:
       inline += 'module load %s\n' % mod
 
 
     # For quickly watching last output (good for demo)
-    task = options['job-name'].split('-')[0]
-    inline += "echo 'watch -n 1 tail -80 ~/work/log/%s.out' > watch_%s.sh\n" % (options['job-name'], task)
-    inline += "chmod +x watch_%s.sh\n" % task
+    # task = options['job-name'].split('-')[0]
+    # inline += "echo 'watch -n 1 tail -80 ~/work/log/%s.out' > watch_%s.sh\n" % (options['job-name'], task)
+    # inline += "chmod +x watch_%s.sh\n" % task
 
-    inline += "echo 'less ~/work/log/%s.out' > less_%s.sh\n" % (options['job-name'], task)
-    inline += "chmod +x less_%s.sh\n" % task
+    # inline += "echo 'less ~/work/log/%s.out' > less_%s.sh\n" % (options['job-name'], task)
+    # inline += "chmod +x less_%s.sh\n" % task
 
 
     inline += 'echo ================================\n'
@@ -66,12 +64,9 @@ class slurm:
     inline += '\n%s\n' % cmd
 
 
-    # logging.debug(" DEBUGGING ---->> RETURNING AND NOT SCHEDULING")
-    # return
-
-    # logging.info("Inline SBATCH:------------->>")
-    # logging.info(inline)
-    # logging.info("<<-------  Batch Complete")
+    # logging.debug("Inline SBATCH:------------->>")
+    # logging.debug(inline)
+    # logging.debug("<<-------  Batch Complete")
 
     # Launch job
     job = proc.Popen('sbatch <<EOF\n%sEOF' % inline,

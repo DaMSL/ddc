@@ -2,6 +2,7 @@ from simmd import *
 from anlmd import *
 from ctlmd import *
 import math
+import json
 
 DO_COV_MAT = False
 
@@ -12,20 +13,20 @@ def init_catalog(catalog):
   logging.debug("System schema:")
 
   # Loading schema and insert the start job into the queue
-  for k in sorted(schema.keys()):
-    logging.info("  %15s:   %s", k, schema[k])
+  for k in sorted(DEFAULT.schema.keys()):
+    logging.info("  %15s:   %s", k, DEFAULT.schema[k])
 
   # executecmd("shopt -s extglob | rm !(SEED.p*)")
 
   # TODO:  Job ID Management
-  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl']}
+  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
 
   logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
   catalog.clear()
 
   logging.debug("Loading schema into catalog.")
   catalog.save(ids)
-  catalog.save(schema)
+  catalog.save(DEFAULT.schema)
 
   # TODO:  LOAD DEFAULT SETTINGS
 
@@ -171,7 +172,7 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
 def init_control(catalog, archive):
   
   # Initialize Candidate Pools
-  labels = loadLabels(DEFAULT.DATA_LABEL_FILE)
+  labels = loadLabels()
   labelList = getLabelList(labels)
   numLabels  = len(labelList)
   pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
@@ -181,6 +182,7 @@ def init_control(catalog, archive):
   pools[labels[0].state].append(0)
   pools[labels[-1].state].append(len(labels))
 
+  logging.info("Scanning labellist for potential candidates")
   for i in range(1, len(labels)-1):
     if labels[i-1].state == labels[i].state == labels[i+1].state:
       pools[labels[i].state][labels[i].state].append(i)
@@ -189,6 +191,7 @@ def init_control(catalog, archive):
     else:
       pools[labels[i-1].state][labels[i].state].append(i)
 
+  logging.info("Creating candidate pools")
   for i in range(numLabels):
     for j in range(numLabels):
       if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
@@ -197,14 +200,17 @@ def init_control(catalog, archive):
         candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
     
   pipe = catalog.pipeline()  
+  logging.info("Deleting existing candidate pools")
+  for i in range(numLabels):
+    for j in range(numLabels):
+      pipe.delete(candidPoolKey(i, j))
+
+  logging.info("Loading candidate pools")
   for i in range(numLabels):
     for j in range(numLabels):
       for c in candidates[i][j]:
         pipe.rpush(candidPoolKey(i, j), c)
   pipe.execute()
-
-
-
 
 def reindex(archive):
   indexsize = int(archive.get('indexSize').decode())
@@ -283,8 +289,6 @@ def findstartpts():
     startfiles[b] = i[3]
 
 
-
-
 def seedJob(catalog, num=None):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
@@ -320,12 +324,12 @@ def seedJob(catalog, num=None):
     pdbfile = DEFAULT.PDB_FILE
 
     # Generate new set of params/coords
-    jcID, params = generateNewJC(archiveFile, pdbfile)
+    jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM)
 
     # Update Additional JC Params and Decision History, as needed
     config = dict(params,
         name    = jcID,
-        runtime = 51000,
+        runtime = DEFAULT.RUNTIME,
         temp    = 310,
         state   = tbin[0],
         weight  = 0.,
@@ -340,15 +344,16 @@ def seedJob(catalog, num=None):
     catalog.rpush('JCQueue', jcID)
     catalog.hmset(wrapKey('jc', jcID), config)
 
+
+
   logging.debug("Stopping the catalog.")
   catalog.stop()
-  if os.path.exists('catalog.lock'):
-    os.remove('catalog.lock')
 
 
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
+  parser.add_argument('-c', '--conf', default='default.conf')
   parser.add_argument('--initarchive', action='store_true')
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--initcontrol', action='store_true')
@@ -361,33 +366,41 @@ if __name__ == '__main__':
   args = parser.parse_args()
 
 
+  confile = args.conf
+  DEFAULT = systemsettings()
+  DEFAULT.applyConfig(confile)
+
   if args.initcatalog:
-    catalog = redisCatalog.dataStore('catalog')
+    DEFAULT.envSetup()
+    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     init_catalog(catalog)
-    sys.exit(0)
 
   if args.initarchive:
-    archive = redisCatalog.dataStore(**archiveConfig)
-    logging.debug("DON'T DO THIS!")
+    archive = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+    logging.warning("DON'T DO THIS!")
     # init_archive(archive)
     sys.exit(0)
 
   if args.loadindex is not None:
-    catalog = redisCatalog.dataStore('catalog')
-    archive = redisCatalog.dataStore(**archiveConfig)
+    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     index_DEShaw(catalog, archive, args.loadindex, args.num, args.winsize, args.slide)
     sys.exit(0)
 
   if args.reindex:
-    archive = redisCatalog.dataStore(**archiveConfig)
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     reindex(archive)
 
 
   if args.initcontrol:
-    archive = redisCatalog.dataStore(**archiveConfig)
-    catalog = redisCatalog.dataStore('catalog')
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     init_control(catalog, archive)
 
   if args.seedjob:
-    catalog = redisCatalog.dataStore('catalog')
+    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     seedJob(catalog)
+
+
+
+

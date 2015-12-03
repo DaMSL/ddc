@@ -20,21 +20,16 @@ terminationFlag = Event()
 
 
 
-
-
-
-
-
 class dataStore(redis.StrictRedis, catalog):
   def __init__(self, name, host='localhost', port=6379, db=0, persist=True, connect=True):
 
     redis.StrictRedis.__init__(self, host=host, port=port)
 
     self.lockfile = name + '.lock'
-    self.config = name + '.conf'
+    self.config = name + '_db.conf'
     self.host = host
-    self.port = port
-    self.database = db
+    self.port = int(port)
+    self.database = int(db)
     self.name = name
     self.persist = persist
 
@@ -206,6 +201,8 @@ class dataStore(redis.StrictRedis, catalog):
 
     pong = False
     timeout = time.time() + DEFAULT.CATALOG_STARTUP_DELAY
+    ping_cmd = 'redis-cli -p %d ping' % self.port
+    logger.debug("PING CMD: %s", ping_cmd)
 
     while not pong:
       if time.time() > timeout:
@@ -213,7 +210,7 @@ class dataStore(redis.StrictRedis, catalog):
         break
 
       time.sleep(1)
-      check = executecmd('redis-cli ping').strip()
+      check = executecmd(ping_cmd).strip()
       logger.debug("Ping from local redis server:  %s", check)
       pong = (check == 'PONG')
 
@@ -303,8 +300,6 @@ class dataStore(redis.StrictRedis, catalog):
     for key in keys:
       tp = ''
       if isinstance(data[key], list):
-        if key == 'JCQueue':
-            print ("     GETTING:", data[key], type(data[key]))
         pipe.lrange(key, 0, -1)
         tp = 'LIST'
       elif isinstance(data[key], dict):
@@ -352,6 +347,8 @@ class dataStore(redis.StrictRedis, catalog):
           data[key] = int(vals[i].decode())
         elif isinstance(data[key], float):
           data[key] = float(vals[i].decode())
+        elif vals[i] is None:
+          data[key] = None
         else:
           data[key] = vals[i].decode()
       except (AttributeError, KeyError) as ex:

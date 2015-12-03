@@ -13,7 +13,6 @@ import catalog
 from slurm import slurm
 
 from collections import namedtuple
-ddl = namedtuple('key', 'value, type')
 
 # For now: use redis catalog
 import redisCatalog
@@ -25,13 +24,24 @@ logger = setLogger("MT")
 class macrothread(object):
   __metaclass__ = abc.ABCMeta
 
-  def __init__(self, schema, fname, name):
+  def __init__(self, fname, name):
     self.name = name
     self.fname = fname
 
+    #  TODO: Better handling of command line args
+    self.parser = None
+    self.parser = self.addArgs()
+
+    args = self.parser.parse_args()
+
+    self.config = args.config
+    DEFAULT.applyConfig(self.config)
+    # System-wide meta-data TODO: (part loaded from file, part from catalog)
+    self._immut = {}
+
     # Thread State
     self._state = {}
-    self.data = schema
+    self.data = DEFAULT.schema
     self.upstream = None
     self.downstream = None
 
@@ -57,27 +67,10 @@ class macrothread(object):
               'job-name':self.name,
               'workdir' : os.getcwd()}
 
-  # For now retain 2 copies -- to enable reverting of data
-  #   Eventually this may change to a flag based data structure for inp/exec/term, etc...
-  # def setInput(self, *arg):
-  #   for a in arg:
-  #     self._input[a] = self.data[a]
 
-  # def setExec(self, *arg):
-  #   for a in arg:
-  #     self._exec[a] = self.data[a]
 
-  # def setTerm(self, *arg):
-  #   for a in arg:
-  #     self._term[a] = self.data[a]
-
-  # def setSplit(self, *arg):
-  #   for a in arg:
-  #     self._split[a] = self.data[a]
-
-  #   # TODO: job ID management  
-  #   self._split['id_' + self.name] = 0
-
+  def addImmut(self, key, default=None):
+    self._immut[key] = default
 
   # TODO:  Eventually we may want multiple up/down streams
   def setStream(self, upstream, downstream):
@@ -92,6 +85,7 @@ class macrothread(object):
       self.downstream = downstream
 
   def setState(self, *arg):
+
     for a in arg:
       self._state[a] = self.data[a]
     self._state['id_' + self.name] = 0
@@ -130,7 +124,7 @@ class macrothread(object):
     """
     Set rescheduling / delay policies for the manager thread 
     """
-    self.delay = DEFAULT.MANAGER_RERUN_DELAY
+    self.delay = 60
 
 
 
@@ -163,9 +157,10 @@ class macrothread(object):
 
     # Catalog Service Check here
     if not self.catalog:
-      self.catalog = redisCatalog.dataStore('catalog')
+      self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     self.localcatalogserver = self.catalog.conn()
 
+    self.load(self._immut)
 
     # Check global termination:
     term_flag = self.catalog.get('terminate')
@@ -232,7 +227,7 @@ class macrothread(object):
         slurm.sbatch(taskid=self.slurmParams['job-name'],
             options = self.slurmParams,
             modules = self.modules,
-            cmd = "python3 %s -w %s" % (self.fname, str(i)))
+            cmd = "python3 %s -c %s -w %s" % (self.fname, self.config, str(i)))
         jobid += 1
 
     # Reschedule Next Manager:
@@ -246,7 +241,7 @@ class macrothread(object):
     slurm.sbatch(taskid =self.slurmParams['job-name'],
               options   = self.slurmParams,
               modules   = self.modules,
-              cmd = "python3 %s" % self.fname)
+              cmd = "python3 %s -c %s" % (self.fname, self.config))
     jobid += 1
 
     # METHOD 2.  Trigger Based
@@ -291,13 +286,13 @@ class macrothread(object):
 
     # Catalog Service Check here. Ensure catalog is available and then retrieve all data up front
     if not self.catalog:
-      self.catalog = redisCatalog.dataStore('catalog')
+      self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     self.localcatalogserver = self.catalog.conn()
 
+
     logger.info("WORKER Loading Thread State for from catalog:")
+    self.load(self._immut)
     self.load(self._state)
-    # self.load(self._exec)
-    # self.load(self._term)
     logger.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
     jobInput = self.fetch(i)      # TODO: Manage job Input w/multiple input items, for now just pass it
 
@@ -342,7 +337,7 @@ class macrothread(object):
     # sys.exit(0)
 
 
-    if self.downstream is not None:
+    if self.downstream is not None and len(result) > 0:
       self.catalog.append(self.downstream, result)
 
     if self.localcatalogserver and self.catalogPersistanceState:
@@ -354,15 +349,24 @@ class macrothread(object):
 
 
   def addArgs(self):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-w', '--workinput')
-    parser.add_argument('-i', '--init', action='store_true')
-    parser.add_argument('-d', '--debug', action='store_true')
-    return parser
+    if self.parser is None:
+      parser = argparse.ArgumentParser()
+      parser.add_argument('-w', '--workinput')
+      parser.add_argument('-c', '--config', default='default.conf')
+      parser.add_argument('-i', '--init', action='store_true')
+      parser.add_argument('-d', '--debug', action='store_true')
+      self.parser = parser
+    return self.parser
 
 
   def run(self):
-    args = self.addArgs().parse_args()
+    args = self.parser.parse_args()
+
+    logging.info("EPOCH:    %s", DEFAULT.EPOCH_LABEL)
+    logging.info("WORKDIR:  %s", DEFAULT.WORKDIR)
+
+    # Apply Schema  (TODO:  Eventually pull this from the catalog)
+    self.data = DEFAULT.schema
 
     if args.debug:
       logging.debug("DEBUGGING: %s", self.name)
@@ -372,8 +376,8 @@ class macrothread(object):
       # TODO:  Abstract The Catalog/Archive to enable mutliple
       #   and dynamic Storage type    
       #   FOR NOW:  Use a Redis Implmentation
-      catalog = redisCatalog.dataStore('catalog')
-      archive = redisCatalog.dataStore(**archiveConfig)
+      catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+      archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
 
       initialize(catalog, archive)
       sys.exit(0)

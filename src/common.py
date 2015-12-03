@@ -11,83 +11,158 @@ from nearpy.storage import RedisStorage
 import sys
 import random
 import string
+import json
 
 from collections import namedtuple
 
+
+def singleton(cls):
+    instances = {}
+    def getinstance(*args, **kwargs):
+        if cls not in instances:
+            instances[cls] = cls(*args)
+        return instances[cls]
+    return getinstance
 
 
 logger = None
 
 
-archiveConfig = dict(name='archive', port=6380)
-#archiveConfig = dict(name='testarch', port=6381)
+# archiveConfig = dict(name='archive', port=6380)
 
 
-class DEFAULT:
+@singleton
+class systemsettings:
+  def __init__(self, confile=None):
+    self._configured = False
+    self._confile = confile
 
-  MANAGER_RERUN_DELAY = 60
+  def applyConfig(self, ini_file=None):
 
-  #  TODO:  Set up with Config File
-  WORKDIR = os.path.join(os.environ['HOME'], 'work')
-  LOG_DIR  = os.path.join(WORKDIR, 'log')
-  PSF_FILE = os.path.join(WORKDIR, 'bpti_gen.psf')
-  PDB_FILE = os.path.join(WORKDIR, 'bpti', 'bpti-all.pdb')
-  RAW_ARCHIVE = os.path.join(WORKDIR, 'bpti')
-  # FFIELD   = '/home-1/bring4@jhu.edu/namd/toppar/par_all36_prot.rtf'
+    if ini_file is not None:
+      self._confile = ini_file
 
-  TOPO = os.path.join(os.environ['HOME'], 'bpti', 'amber', 'top_all22_prot.inp')
-  PARM = os.path.join(os.environ['HOME'], 'bpti', 'amber', 'par_all22_prot.inp')
+    with open(self._confile) as f:
+      defaults = json.loads(f.read())
 
-  # FFIELD   = '/home-1/bring4@jhu.edu/bpti/toppar/top_all22_prot.prm'
-  HIST_FILE_DIR  = os.path.join(WORKDIR, 'bpti')
-  JOB_DIR = os.path.join(WORKDIR, 'jc')
+    ini = defaults['settings']
+
+    # System Environment Settings
+    #  READ & SET for EACH 
+    self.EPOCH_LABEL         = ini.get('epoch_label', 'debug')
+    self.WORKDIR             = ini.get('workdir', '.')
+    self.LOGDIR = os.path.join(self.WORKDIR, 'log', self.EPOCH_LABEL)
+    self.JOBDIR = os.path.join(self.WORKDIR, 'jc', self.EPOCH_LABEL)
+
+    self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
+    self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
+    self.CATALOG_IDLE_THETA    = ini.get('catalog_idle_theta', 300)
+    self.CATALOG_STARTUP_DELAY = ini.get('catalog_startup_delay', 10)
+
+    self.catalogConfig  = dict(
+        name=ini.get('catalog_name', 'catalog'),
+        port=ini.get('catalog_port', '6379') )
+
+
+
+    # Remainder COULD all move to catalog
+    self.archiveConfig  = dict(
+        name=ini.get('archive_name', 'archive'),
+        port=ini.get('archive_port', '6380') )
+    self.HASH_NAME             = ini.get('hash_name', 'rbphash')  #TODO CHANGE NAME
+
+    # Simulation & Analysis Protein Settings
+    raw = ini.get('raw_archive','bpti')
+    self.RAW_ARCHIVE = raw if raw.startswith('/') else os.path.join(self.WORKDIR, raw)
+    pdb = ini.get('pdb','bpti-all.pdb')
+    self.PDB_FILE = pdb if pdb.startswith('/') else os.path.join(self.RAW_ARCHIVE, pdb)
+    self.TOPO       = ini.get('topo') 
+    self.PARM       = ini.get('parm') 
+    self.NUM_PCOMP  = ini.get('num_pcomp', 3)
+    self.NUM_VAR    = ini.get('num_var', 454)  # TODO: Set during Init
+    self.RUNTIME    = ini.get('runtime', 51000)
+
+    # Filter Options: {‘all’, ‘alpha’, ‘minimal’, ‘heavy’, ‘water’}
+    atom_filter = ini.get('atom_filter', 'heavy')
+    self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
+
+    # Controller Settings
+    self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
+    self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
+    self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
+  
+    # Potentailly Dynamic
+    self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
+
+
+    # Config Schema -- placed here for now (TODO: Split????)    
+    # SCHEMA
+    #  For now defined as a dict, for simplicity, with thread state receiving a 
+    #     copy of this and caching locally only what it needs as defined in setState()
+    #  TODO:  Each item in the schema should be traced obj w/getter/setter attrib to
+    #     trace dirty flagging (which reduces I/O) and provides a capability to 
+    #     synchronize between threads thru the catalog
+
+    self.schema = defaults['schema']
+
+    # make_config_file = 'default.conf'
+
+    # if make_config_file:
+    #   data = {'settings': ini, 'schema': self.schema}
+    #   with open(make_config_file, 'w') as f:
+    #     f.write(json.dumps(data, sort_keys=True, indent=4))
+
+
+    candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
+    for i in range(5):
+      for j in range(5):
+        self.schema[candidPoolKey(i,j)] = []
+
+    self._configured = True
+
+
 
   # INDEX_LOCKFILE = os.path.join(WORKDIR, 'index.lock')
-  CONFIG_DIR     = WORKDIR
-  NUM_PCOMP = 3
-  NODES = 1
-  CPU_PER_NODE = 24
 
-  HASH_NAME = 'rbphash'
 
-  SIM_CONF_TEMPLATE = 'src/sim_template.conf'
-  REDIS_CONF_TEMPLATE = 'src/redis.conf.temp'
-
-  PARTITION = 'parallel'
+    # DATA_LABEL_FILE = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
 
   # Catalog Params
-  MONITOR_WAIT_DELAY = 30
-  CATALOG_IDLE_THETA = 300
-  CATALOG_STARTUP_DELAY = 10
-
   # TODO: Move this from a file to the archive!
-  DATA_LABEL_FILE = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
-  CANDIDATE_POOL_SIZE = 100
-
-  MAX_NUM_NEW_JC = 10
-  MAX_JOBS_IN_QUEUE = 100
   
-  ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection='heavy')
-  NUM_VAR = 454  # TODO: Set during Init
+  
 
-  EPOCH_LABEL = 'dampening1'
+  def setnum_pc(self, n=3):
+    self.NUM_PCOMP = n
 
-  @classmethod
-  def envSetup(cls):
-    if not os.path.exists(cls.JOB_DIR):
-      os.makedirs(cls.JOB_DIR)
+  def setnum_var(self, n=454):
+    self.NUM_VAR = n
+  
+  def envSetup(self):
+    if not os.path.exists(self.JOBDIR):
+      os.makedirs(self.JOBDIR)
 
-    if not os.path.exists(cls.LOG_DIR):
-      os.mkdir(cls.LOG_DIR)
+    if not os.path.exists(self.LOGDIR):
+      os.mkdir(self.LOGDIR)
+
+    checkpath = lambda k, x: print('%-10s: %s.....%s ' % (k, x, ('ok' if os.path.exists(x) else " DOES NOT EXIST")))
+
+    checkpath('WORKDIR', self.WORKDIR)
+    checkpath('JOBDIR', self.JOBDIR)
+    checkpath('LOGDIR', self.LOGDIR)
+    checkpath('REDIS_CONF', self.REDIS_CONF_TEMPLATE)
+    checkpath('TOPO', self.TOPO)
+    checkpath('PARM', self.PARM)
+
 
   @classmethod
   def getEmptyHash(cls):
     return UniBucket(DEFAULT.HASH_NAME)
-    return RandomBinaryProjections(None, None)
+    # return RandomBinaryProjections(None, None)
     # return PCABinaryProjections(None, None, None)
 
 
-
+DEFAULT = systemsettings()
 
 
 def setLogger(name=""):
@@ -112,20 +187,6 @@ def getUID():
   return chrid + unique
 
 
-# TODO:  Encode/Decode Wrapper Class via functional methods
-def encodeLabel(window, seqnum):
-  return "%04d_%03d" % (int(window), int(seqnum))
-
-def decodeLabel(label):
-  win, seq = label.split("_")
-  return int(win), int(seq)
-
-def getJC_Key(uid):
-  return "jc_%s" % str(uid) if not uid.startswith('jc_') else uid
-
-def getJC_UID(jckey):
-  return jckey[3:] if jckey.startswith('jc_') else jckey
-
 def wrapKey(prefix, key):
   return "%s_%s" % (prefix, key) if not key.startswith('%s_' % prefix) else key
 
@@ -146,9 +207,13 @@ def executecmd(cmd):
   return stdout.decode()
 
 
+
+
 label =namedtuple('window', 'time state')
 
-def loadLabels(fn=DEFAULT.DATA_LABEL_FILE):
+def loadLabels(fn=None):
+  if fn is None:
+    fn = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
   label =namedtuple('window', 'time state')
   win = []
   with open(fn) as f:
@@ -162,9 +227,6 @@ def getLabelList(labels):
   for lab in labels:
     labelset.add(lab.state)
   return sorted(list(labelset))
-
-
-
 
 
 def getNearpyEngine(archive, indexSize):
@@ -197,133 +259,5 @@ def getNearpyEngine(archive, indexSize):
   return engine
 
 
-#  PROGRAM DEFAULTS FOR INITIALIZATION
-#   TODO:  Consolidate & dev config file
-
-# SCHEMA
-#  For now defined as a dict, for simplicity, with thread state receiving a 
-#     copy of this and caching locally only what it needs as defined in setState()
-#  TODO:  Each item in the schema should be traced obj w/getter/setter attrib to
-#     trace dirty flagging (which reduces I/O) and provides a capability to 
-#     synchronize between threads thru the catalog
-schema = dict(  
-        JCQueue = [],
-        JCComplete = 0,
-        JCTotal = 1,
-        simSplitParam =  4, 
-        anlSplitParam =  4,
-        ctlSplitParam =  1,
-        simDelay =  60, 
-        anlDelay =  60,
-        ctlDelay =  15,
-        gcDelay  =  600,
-        dcdFileList =  [], 
-        processed =  0,
-        indexSize = DEFAULT.NUM_VAR*DEFAULT.NUM_PCOMP,
-        LDIndexList = [],
-        converge =  0.,
-        timestep = 0,
-        weight_alpha = .4,
-        weight_beta = .6,
-        observation_counts = [])
-
-candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
-
-for i in range(5):
-  for j in range(5):
-    schema[candidPoolKey(i,j)] = []
 
 
-
-
-
-
-def initialize(catalog, archive, flushArchive=False):
-
-
-  #  Create a "seed" job
-  logging.debug("Loading schema and setting initial job")
-  jcuid = 'SEED'
-
-  seedJobCandidate = dict(
-    workdir = str(os.path.join(DEFAULT.JOB_DIR,  jcuid)),
-    psf     = jcuid + '.psf',
-    pdb     = jcuid + '.pdb',
-    parm    = DEFAULT.PARM,
-    name    = jcuid,
-    temp    = 310,
-    runtime = 25000)
-
-
-  key = getJC_Key(jcuid)
-  initParams = {key:seedJobCandidate}
-
-  # Load schema and insert the start job into the queue
-  startState = dict(schema)
-  startState['JCQueue'] = [key]
-  startState['JCTotal'] = 1
-
-  executecmd("shopt -s extglob | rm !(SEED.p*)")
-
-  # TODO:  Job ID Management
-  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
-
-  logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
-  catalog.clear()
-
-  logging.debug("Loading initial state into catalog.")
-  catalog.save(ids)
-  catalog.save(startState)
-  catalog.save(initParams)
-
-  for k, v in initParams.items():
-      logging.debug("    %s: %s" % (k, v))
-  
-
-  # Load DEShaw data
-  histo = np.load('histogram.npy')
-
-  # TO INIT FATIGUE VALS:
-
-
-
-  logging.debug("Stopping the catalog.")
-  catalog.stop()
-  if os.path.exists('catalog.lock'):
-    os.remove('catalog.lock')
-
-
-
-  logging.debug("Archive found on `%s`. Stopping it.", archive.host)
-
-  if flushArchive:
-    archive.clear()
-
-    # Create redis storage adapter
-    redis_storage = RedisStorage(archive)
-
-    # Create Hash
-    # lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, 3)
-
-    # Assume vects is 
-    # pcahash = PCABinaryProjections('pcahash', 10, [v[0] for v in vects])
-    # redis_storage.store_hash_configuration(pcahash)
-    # eng2 = Engine(454, lshashes=[pcahash], storage=redis_storage)
-    # for v in vects:
-    #   eng2.store_vector(v[0], v[1])
-
-
-
-    # Store hash configuration in redis for later use
-    logging.debug('Storing Hash in Archive')
-    redis_storage.store_hash_configuration(lshash)
-
-    # TODO:  Automate Historical Archive (Re)Loading
-
-
-  archive.stop()
-  if os.path.exists('archive.lock'):
-    os.remove('archive.lock')
-
-
-  logging.debug("Initialization complete\n")

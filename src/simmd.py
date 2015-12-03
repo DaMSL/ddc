@@ -12,14 +12,10 @@ import logging
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 
 
-#  TODO:  Move this to abstract and est. 'dispatcher' method
-
-
-
 
 class simulationJob(macrothread):
-  def __init__(self, schema, fname, jobnum = None):
-    macrothread.__init__(self, schema, fname, 'sim')
+  def __init__(self, fname, jobnum = None):
+    macrothread.__init__(self, fname, 'sim')
 
     # State Data for Simulation MacroThread -- organized by state
     self.setStream('JCQueue', 'dcdFileList')
@@ -34,7 +30,7 @@ class simulationJob(macrothread):
     self.modules.add('redis')
     # self.slurmParams['share'] = None
 
-
+    self.addImmut('sim_conf_template')
 
   def term(self):
     jccomplete = self.data['JCComplete']
@@ -45,7 +41,6 @@ class simulationJob(macrothread):
     split = int(self.data['simSplitParam'])
     immed = self.data['JCQueue'][:split]
     return immed, split
-
 
   def configElasPolicy(self):
     self.delay = self.data['simDelay']
@@ -64,7 +59,7 @@ class simulationJob(macrothread):
   def execute(self, params):
 
     # Prepare & source to config file
-    with open(DEFAULT.SIM_CONF_TEMPLATE, 'r') as template:
+    with open(self.data['sim_conf_template'], 'r') as template:
       source = template.read()
 
     # Prepare working directory, input/output files
@@ -93,8 +88,6 @@ class simulationJob(macrothread):
 
 
 
-
-
 if __name__ == '__main__':
-  mt = simulationJob(schema, __file__)
+  mt = simulationJob(__file__)
   mt.run()

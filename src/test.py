@@ -1,13 +1,19 @@
 from initialize import *
+import datetime as dt
 
+timediff = lambda x, y: (y-x).seconds + (.001)*((y-x).microseconds//1000)
 
 def getDEShawIndex(archive, num, frame=400, winsize=200):
 
+  start = dt.datetime.now()
   indexSize = int(archive.get('indexSize').decode())
   numpc = int(archive.get('num_pc').decode())
+  ts_index = dt.datetime.now()
   traj = loadDEShawTraj(num)
+  ts_load = dt.datetime.now()
   logging.debug('Trajectory Loaded %s', str(traj))
   eg, ev = LA.eigh(distmatrix(traj.xyz[frame:frame+winsize]))
+  ts_eigen = dt.datetime.now()
 
   logging.debug('%s', eg[:10])
 
@@ -16,7 +22,9 @@ def getDEShawIndex(archive, num, frame=400, winsize=200):
   engine = getNearpyEngine(archive, indexSize)
 
   logging.debug("Probing:")
+  ts_nearpy = dt.datetime.now()
   neigh = engine.neighbours(index)
+  ts_probe = dt.datetime.now()
   if len(neigh) == 0:
     logging.info ("Found no near neighbors for %s", key)
   else:
@@ -28,12 +36,10 @@ def getDEShawIndex(archive, num, frame=400, winsize=200):
     for n in neigh[1:]:
       nnkey = n[1]
       distance = n[2]
+      nn_state = int(nnkey[0])
       logging.info(  '%s, %f', nnkey, distance)
-      # trajectory, seqNum = nnkey.split(':')
-      # nn_state = labels[int(trajectory)].state
-      # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
-      # count[nn_state] += 1
-      # clust[nn_state] += abs(1/distance)
+      count[nn_state] += 1
+      clust[nn_state] += abs(1/distance)
     # Classify this index with a label based on the highest weighted observed label among neighbors
     state = np.argmax(clust)
     win = loadLabels()
@@ -41,14 +47,16 @@ def getDEShawIndex(archive, num, frame=400, winsize=200):
     logging.info("PROBE GOT:     %d", state)
     logging.info("Neigh count:  %s", str(count))
     logging.info("Neigh clust:  %s", str(clust))
-
+    logging.info("Benchmarking:")
+    logging.info("  Redis :     %0.3f", timediff(start, ts_index))
+    logging.info("  MDLoad:     %0.3f", timediff(ts_index, ts_load))
+    logging.info("  Eigen :     %0.3f", timediff(ts_load, ts_eigen))
+    logging.info("  Probe :     %0.3f", timediff(ts_nearpy, ts_probe))
 
 
 
 
 def showMatrices():
-
-    # CONVERGENCE CALCUALTION  -------------------------------------
   logging.debug("============================  <CONVEGENCE>  =============================")
 
   # Load Transition Matrix (& TODO: Historical index state labels)
@@ -121,8 +129,10 @@ if __name__ == '__main__':
   parser.add_argument('--num', type=int, default=10)
   args = parser.parse_args()
 
+  DEFAULT = systemsettings()
+  DEFAULT.applyConfig('settings.conf')
 
   if args.testindex is not None:
-    archive = redisCatalog.dataStore(**archiveConfig)
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     getDEShawIndex(archive, args.testindex)
     sys.exit(0)

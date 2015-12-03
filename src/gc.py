@@ -9,8 +9,8 @@ import logging
 logging.basicConfig(format='[%(module)s]: %(message)s', level=logging.DEBUG)
 
 class garbageCollect(macrothread):
-  def __init__(self, schema, fname):
-    macrothread.__init__(self, schema, fname, 'gc')
+  def __init__(self, fname):
+    macrothread.__init__(self, fname, 'gc')
 
     # State Data for Simulation MacroThread -- organized by state
     self.setStream(None, None)
@@ -81,7 +81,7 @@ class garbageCollect(macrothread):
 
 
 if __name__ == '__main__':
-  mt = garbageCollect(schema, __file__)
+  mt = garbageCollect(__file__)
   mt.run()
 
 
