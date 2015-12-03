@@ -242,7 +242,7 @@ class controlJob(macrothread):
       # Create empty lshash and load stored hash
       lshash = DEFAULT.getEmptyHash()
       lshash.apply_config(config)
-      indexSize = self.data['num_var'] * self.data['num_pc']
+      indexSize = 1362#self.data['num_var'] * self.data['num_pc']
       logging.debug("INDEX SIZE = %d:  ", indexSize)
       engine = nearpy.Engine(indexSize, 
             lshashes=[lshash], 
@@ -596,7 +596,7 @@ class controlJob(macrothread):
             pdbfile     = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.pdb' % sourceTraj)
 
           # Generate new set of params/coords
-          jcID, params = generateNewJC(archiveFile, pdbfile)
+          jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM)
 
           # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
