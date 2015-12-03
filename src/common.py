@@ -157,8 +157,8 @@ class systemsettings:
 
   @classmethod
   def getEmptyHash(cls):
-    return UniBucket(DEFAULT.HASH_NAME)
-    # return RandomBinaryProjections(None, None)
+    # return UniBucket(DEFAULT.HASH_NAME)
+    return RandomBinaryProjections(None, None)
     # return PCABinaryProjections(None, None, None)
 
 
@@ -230,7 +230,6 @@ def getLabelList(labels):
 
 
 def getNearpyEngine(archive, indexSize):
-    # Connect Storage & nearpy engine
   redis_storage = RedisStorage(archive)
   config = redis_storage.load_hash_configuration('rbphash')
   if not config:

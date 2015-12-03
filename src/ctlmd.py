@@ -22,7 +22,7 @@ from slurm import slurm
 from random import choice, randint
 
 import logging
-logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
 
 
@@ -194,7 +194,6 @@ class controlJob(macrothread):
                     *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
       self.modules.add('namd')
 
-
       self.addImmut('num_var')
       self.addImmut('num_pc')
 
@@ -242,7 +241,7 @@ class controlJob(macrothread):
       # Create empty lshash and load stored hash
       lshash = DEFAULT.getEmptyHash()
       lshash.apply_config(config)
-      indexSize = 1362#self.data['num_var'] * self.data['num_pc']
+      indexSize = self.data['num_var'] * self.data['num_pc']
       logging.debug("INDEX SIZE = %d:  ", indexSize)
       engine = nearpy.Engine(indexSize, 
             lshashes=[lshash], 

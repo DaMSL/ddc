@@ -212,8 +212,9 @@ def init_control(catalog, archive):
         pipe.rpush(candidPoolKey(i, j), c)
   pipe.execute()
 
-def reindex(archive):
+def reindex(archive, size=10):
   indexsize = int(archive.get('indexSize').decode())
+
   redis_storage = RedisStorage(archive)
   hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_rbphash_*')]
   indexlist = []
@@ -224,9 +225,14 @@ def reindex(archive):
       indexlist.append(b)
   logging.debug("Pulled %d keys", len(indexlist))
 
-  # engine = getNearpyEngine(archive, indexsize)
+    # engine = getNearpyEngine(archive, indexsize)
   eucl = EuclideanDistance()
-  lshash = UniBucket(DEFAULT.HASH_NAME)
+    # lshash = UniBucket(DEFAULT.HASH_NAME)
+  lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, size)
+    # lshash = RandomBinaryProjections(None, None)
+    # lshash = PCABinaryProjections(None, None, None)
+
+
 
   engine = nearpy.Engine(indexsize, distance=eucl, lshashes=[lshash], storage=redis_storage)
   engine.clean_all_buckets()
@@ -240,15 +246,15 @@ def reindex(archive):
   config = lshash.get_config()
   for k,v in config.items():
     logging.info("%s: %s", str(k), str(v))
-  # Assume vects is 
-  # pcahash = PCABinaryProjections('pcahash', 10, [v[0] for v in vects])
-  # redis_storage.store_hash_configuration(pcahash)
-  # eng2 = Engine(454, lshashes=[pcahash], storage=redis_storage)
-  # for v in vects:
-  #   eng2.store_vector(v[0], v[1])
+    # Assume vects is 
+    # pcahash = PCABinaryProjections('pcahash', 10, [v[0] for v in vects])
+    # redis_storage.store_hash_configuration(pcahash)
+    # eng2 = Engine(454, lshashes=[pcahash], storage=redis_storage)
+    # for v in vects:
+    #   eng2.store_vector(v[0], v[1])
 
-  # Store hash configuration in redis for later use
-  logging.debug('Storing Hash in Archive')
+    # Store hash configuration in redis for later use
+    logging.debug('Storing Hash in Archive')
   redis_storage.store_hash_configuration(lshash)
 
 
@@ -358,7 +364,7 @@ if __name__ == '__main__':
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--initcontrol', action='store_true')
   parser.add_argument('--seedjob', action='store_true')
-  parser.add_argument('--reindex', action='store_true')
+  parser.add_argument('--reindex', nargs='?', const=10, type=int)
   parser.add_argument('--loadindex', type=int)
   parser.add_argument('--num', type=int, default=50)
   parser.add_argument('--winsize', type=int, default=200)
@@ -389,7 +395,7 @@ if __name__ == '__main__':
 
   if args.reindex:
     archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-    reindex(archive)
+    reindex(archive, args.reindex)
 
 
   if args.initcontrol:
