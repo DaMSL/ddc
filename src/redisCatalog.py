@@ -18,6 +18,9 @@ terminationFlag = Event()
 
 
 
+def get2DKeys(key, X, Y):
+  return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
+
 
 
 class dataStore(redis.StrictRedis, catalog):
@@ -90,8 +93,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     return serviceThread
 
-
-
   def exists(self):
     try:
       alive = self.ping()
@@ -101,7 +102,6 @@ class dataStore(redis.StrictRedis, catalog):
 
   def clear(self):
     self.flushdb()
-
 
   def redisServerMonitor(self, termEvent):
 
@@ -153,7 +153,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     # Post-termination logic
     logger.debug('[Catalog Monitor]  Redis Service was shutdown. Exiting monitor thread.')
-
 
   def start(self):
 
@@ -240,22 +239,19 @@ class dataStore(redis.StrictRedis, catalog):
 
       # TODO:  Implementation of list vs queue (append vs update)
 
+
+
+  def loadSchema(self, keys):
+    self.schema = self.hgetall('META_schema')
+
   def save(self, data):
     pipe = self.pipeline()
     for key, value in data.items():
-      if key == 'JCQueue':
-        print (key, type(key), value, type(value))
-
       #  Lists are removed and updated enmasse
       if isinstance(value, list):
         pipe.delete(key)
         for val in value:
           pipe.rpush(key, val)
-        # if len(value) > 0:
-        #   if key == 'JCQueue':
-        #     print ("     SETTING:", value, type(value), len(value))
-        #   for i, val in enumerate(value):
-        #     pipe.lset(key, i, val)
       elif isinstance(value, dict):
         pipe.hmset(key, value)
       else:
@@ -282,14 +278,85 @@ class dataStore(redis.StrictRedis, catalog):
   #     elif isinstance(value, dict):
   #       pipe.hmset(key, value)
   #     elif isinstance(value, int):
-  #       pipe.set(key, value)
-  #     logger.debug("  Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
+  #       pipe.incr(key, value)
+  #     elif isinstance(value, float):
+  #       pipe.incrbyfloat(key, value)      
+  #   logger.debug("  Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
 
   #     # TODO:  handle other datatypes beside list
 
   #   pipe.execute()
 
 
+
+  # # Retrieve data stored for each key in data & store into data 
+  # def load(self, keys):
+
+  #   defer = []
+  #   # Support single item data retrieval:
+  #   pipe = self.pipeline()
+  #   for key in keys:
+  #     if key not in self.schema:
+  #       logging.error('KEY ERROR. %s not found in Data Store Schema', key)
+  #     elif self.schema[key] == 'list':
+  #       pipe.lrange(key, 0, -1)
+  #     elif self.schema[key] == 'dict':
+  #       pipe.hgetall(key)
+  #     elif self.schema[key] == 'kv2DArray':
+  #       defer.append(key)
+  #     else:
+  #       pipe.get(key)
+
+  #   vals = pipe.execute()
+
+  #   #  Data Conversion
+
+  #   for i, key in enumerate(keys):
+  #     try:
+  #       if self.schema[key] == 'list':
+  #         tmp = [val.decode() for val in vals[i]]
+  #         try:
+  #           if len(tmp) == 0:
+  #             data[key] = []
+  #           elif tmp[0].isdigit():
+  #             data[key] = [int(val) for val in tmp]
+  #           else:
+  #             data[key] = [float(val) for val in tmp]
+  #         except ValueError as ex:
+  #           data[key] = tmp
+  #       elif self.schema[key] == 'dict':
+  #         for k,v in vals[i].items():
+  #           try:
+  #             subkey = k.decode()
+  #             subval = v.decode()
+  #             # logging.debug("   %s:  %s", k, (str(v)))
+  #             if v.isdigit():
+  #               data[key][subkey] = int(subval)
+  #             else:
+  #               data[key][subkey] = float(subval)
+  #           except ValueError as ex:
+  #             data[key][subkey] = subval
+  #       elif self.schema[key] == 'kv2DArray':
+          
+  #       else:
+  #         pipe.get(key)
+
+
+  #       if isinstance(data[key], list):
+  #       elif isinstance(data[key], dict):
+  #         # logging.debug("Hash Loader")
+  #       elif isinstance(data[key], int):
+  #         data[key] = int(vals[i].decode())
+  #       elif isinstance(data[key], float):
+  #         data[key] = float(vals[i].decode())
+  #       elif vals[i] is None:
+  #         data[key] = None
+  #       else:
+  #         data[key] = vals[i].decode()
+  #     except (AttributeError, KeyError) as ex:
+  #       logging.error("BAD KEY:  %s", key)
+  #       logging.error("Trace:  %s", str(ex))
+  #       sys.exit(0)
 
   # Retrieve data stored for each key in data & store into data 
   def load(self, data):
@@ -310,11 +377,11 @@ class dataStore(redis.StrictRedis, catalog):
         tp = 'VAL'
       # logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
 
-    # TODO:  Better handling of dynamic dispatching for datatypes
 
     vals = pipe.execute()
 
     #  Data Conversion
+    # TODO:  MOVE TO JSON BASED RETRIEVAL
 
     for i, key in enumerate(keys):
       try:

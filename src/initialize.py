@@ -38,6 +38,13 @@ def init_catalog(catalog):
   if os.path.exists('catalog.lock'):
     os.remove('catalog.lock')
 
+def create_schema(catalog, schema):
+  dtype_map = {}
+  for k, v in schema.items():
+    dtype_map[k] = type(v).__name__
+  catalog.hmset("META_schema", dtype_map)
+
+
 def init_archive(archive, hashsize=10):
 
   logging.debug("Archive found on `%s`. Stopping it.", archive.host)
@@ -212,6 +219,12 @@ def init_control(catalog, archive):
         pipe.rpush(candidPoolKey(i, j), c)
   pipe.execute()
 
+
+  # Initialize observations matrix
+  obsMat_Store = kv2DArray(catalog, 'observation')
+  selMat_Store = kv2DArray(catalog, 'selection')
+  schedMat_Store = kv2DArray(catalog, 'scheduled')
+
 def reindex(archive, size=10):
   indexsize = int(archive.get('indexSize').decode())
 
@@ -257,7 +270,6 @@ def reindex(archive, size=10):
     logging.debug('Storing Hash in Archive')
   redis_storage.store_hash_configuration(lshash)
 
-
 def findstartpts():
 
   startfiles = {}
@@ -293,7 +305,6 @@ def findstartpts():
     if b in startfiles:
       continue
     startfiles[b] = i[3]
-
 
 def seedJob(catalog, num=None):
   """

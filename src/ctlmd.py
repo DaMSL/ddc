@@ -18,6 +18,7 @@ from collections import namedtuple, deque
 import redisCatalog
 from common import *
 from macrothread import macrothread
+from kvadt import kv2DArray
 from slurm import slurm
 from random import choice, randint
 
@@ -123,8 +124,9 @@ def loadNPArray(store, key):
   return arr.reshape(header['shape'])
 
 
-def get2DKeys(key, X, Y):
-  return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
+
+
+
 
 def generateNewJC(rawfile, pdbfile, topo, parm):
 
@@ -181,16 +183,13 @@ def generateNewJC(rawfile, pdbfile, topo, parm):
 
 
 
-
-
-
 class controlJob(macrothread):
     def __init__(self, fname):
       macrothread.__init__(self, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('LDIndexList', None)
-      self.setState('JCQueue', 'indexSize', 'timestep', 
-                    'converge', 'ctlSplitParam', 'ctlDelay',
+      self.setState('JCQueue', 'indexSize', 'timestep', 'num_var', 
+                    'converge', 'ctlSplitParam', 'ctlDelay', 'num_pc',
                     *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
       self.modules.add('namd')
 
@@ -364,6 +363,7 @@ class controlJob(macrothread):
 
 
       #  Process output data for each unque input trajectory (as produced by a single simulation)
+      launch_delta = np.zeros(shape=(numLabels, numLabels))
       for sourceJC, cluster in observationDistribution.items():
         logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point here for better classification and/or move to analysis)", sourceJC)
         if sum(observationDistribution[sourceJC]) == 0:
@@ -396,6 +396,11 @@ class controlJob(macrothread):
         # self.data[candidPoolKey(stateA, stateB)].append(sourceJC)  
         if 'targetBin' in self.data[wrapKey('jc', sourceJC)]:
           inputBin  = self.data[wrapKey('jc', sourceJC)]['targetBin']
+          a, b = eval(inputBin)
+
+          #  INCREMENT "LAUNCH" Counter
+          launch_delta[a][b] += 1
+
           logging.info("  Predicted Taget Bin was       :  %s", inputBin) 
           logging.info("  Actual Trajectory classified  :  %s", outputBin) 
           logging.debug("    TODO: ID difference, update ML weights, provonance, etc..... (if desired)")
@@ -408,6 +413,9 @@ class controlJob(macrothread):
         self.data[key]['indexList'] = json.dumps(statdata[sourceJC])
 
       ####   This is end of processing a single Job Candidate and here begins the cycle of finding next set of JC's
+      #  Everything above  could actually co-locate with the analysis thread whereby the output of the analysis
+      #  is a label or set of labels (vice a low-dim index). 
+
 
       #  WEIGHT CALCULATION ---------------------------
       logging.debug("============================  <WEIGHT CALC>  =============================")
@@ -415,25 +423,33 @@ class controlJob(macrothread):
  
       #  TODO:  Consistency
       # Load Transition Matrix (& TODO: Historical index state labels)
-      tmat = loadNPArray(self.catalog, 'transitionmatrix')
-      if tmat is None:
-        tmat = np.zeros(shape=(5,5))    # TODO: Move to init
+      # tmat = loadNPArray(self.catalog, 'transitionmatrix')
+      # if tmat is None:
+      #   tmat = np.zeros(shape=(5,5))    # TODO: Move to init
+      obsMat_Store = kv2DArray(self.catalog, 'observations')
 
       # Merge in delta
-      tmat += delta_tmat
+      obsMat_Store.merge(delta_tmat)
+      tmat = obsMat_Store.get()
+      # tmat += delta_tmat
 
       # Write back out  (limit inconsitency for now)
-      storeNPArray(self.catalog, tmat, 'transitionmatrix')
+      # storeNPArray(self.catalog, tmat, 'transitionmatrix')
 
 
 
       # Weight Calculation 
 
       #  Load current fatigue values
-      fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
-      if fatigue is None:
-        fatigue = np.full((5,5), 0.04)    # TODO: Move to init
+      # fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
+      # if fatigue is None:
+      #   fatigue = np.full((5,5), 0.04)    # TODO: Move to init
 
+      #  FATIGUE OPTION B (derived from # og times each bin was "launched")
+      launchMat_Store = kv2DArray(self.catalog, 'launch')
+      launchMat_Store.merge(launch_delta)
+      launch = launchMat_Store.get()
+      fatigue = launch / np.sum(launch)   # Simple for now
 
       bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
       # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
@@ -455,6 +471,7 @@ class controlJob(macrothread):
       for i in range(5):
         logging.debug("  %s", str(['%0.5f'% pref[(i,k)] for k in range(5)]))
 
+
       #  3. Apply constants. This can be user influenced
       alpha = self.data['weight_alpha']
       beta = self.data['weight_beta']
@@ -463,8 +480,6 @@ class controlJob(macrothread):
       weight = {}
       for k in bins:
         weight[k] =  alpha * pref[k] + beta * (1 - fatigue[k])
-
-
 
 
       logging.debug("UPDATED WEIGHTS (INCL FATIGUE):")
@@ -597,6 +612,8 @@ class controlJob(macrothread):
           # Generate new set of params/coords
           jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM)
 
+          #  DERIVE RUNTIME HERE
+
           # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
               name    = jcID,
@@ -625,6 +642,14 @@ class controlJob(macrothread):
             targetBin = potentialJobs.popleft()
 
 
+        break
+
+
+
+      # Update the selection matrix
+      selObs_Store = kv2DArray(self.catalog, 'selection')
+      selObs_Store.merge(selectionTally)
+
       # Mark obsolete jobs for garbage collection:
       logging.info("Marking %d obsolete jobs for garbage collection", len(existingQueue))
       while len(existingQueue) > 0:
@@ -635,42 +660,40 @@ class controlJob(macrothread):
         self.addToState(wrapKey('jc', config['name']), config)
 
 
-
       # Updated the "fatigue" values for all selected jobs
       #    -- FOR NOW do it all at once after selection process
       #    TODO: This can be weighted based on # of selections
       #  TODO:  RESOLVE CONSITENCY
-      for i in range(numLabels):
-        for j in range(numLabels):
-          if selectionTally[i][j] > 0:
-            fatigue[i][j] += (1-fatigue[i][j])/25
-            logging.debug("Increasing fatigue value for %d, %d to %f", i, j, fatigue[i][j])
-          else:
-            fatigue[i][j] -= (fatigue[i][j]/25)**2
-
+      # for i in range(numLabels):
+      #   for j in range(numLabels):
+      #     if selectionTally[i][j] > 0:
+      #       fatigue[i][j] += (1-fatigue[i][j])/25
+      #       logging.debug("Increasing fatigue value for %d, %d to %f", i, j, fatigue[i][j])
+      #     else:
+      #       fatigue[i][j] -= (fatigue[i][j]/25)**2
 
       # CONVERGENCE CALCUALTION  -------------------------------------
       logging.debug("============================  <CONVEGENCE>  =============================")
 
-      logging.debug("Observations MAT:\n" + str(tmat))
-      logging.debug("Fatigue:\n" + str(fatigue))
 
-      # Load Selection Matrix
-      smat = loadNPArray(self.catalog, 'selectionmatrix')
-      if smat is None:
-        smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
+      # logging.debug("Observations MAT:\n" + str(tmat))
+      # logging.debug("Fatigue:\n" + str(fatigue))
 
-      # Merge Update global selection matrix
-      smat += selectionTally
-      logging.debug("SMAT:\n" + str(smat))
+      # # Load Selection Matrix
+      # smat = loadNPArray(self.catalog, 'selectionmatrix')
+      # if smat is None:
+      #   smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
 
+      # # Merge Update global selection matrix
+      # smat += selectionTally
+      # logging.debug("SMAT:\n" + str(smat))
+      # # Load Convergence Matrix
+      # cmat = loadNPArray(self.catalog, 'convergencematrix')
+      # if cmat is None:
+      #   cmat = np.full((5,5), 0.04)    # TODO: Move to init
+      # logging.debug("CMAT:\n" + str(cmat))
 
-      # Load Convergence Matrix
-      cmat = loadNPArray(self.catalog, 'convergencematrix')
-      if cmat is None:
-        cmat = np.full((5,5), 0.04)    # TODO: Move to init
-      logging.debug("CMAT:\n" + str(cmat))
-
+      
 
 
       # Remove bias from selection and add to observations 
