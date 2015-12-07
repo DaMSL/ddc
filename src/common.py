@@ -49,10 +49,11 @@ class systemsettings:
 
     # System Environment Settings
     #  READ & SET for EACH 
-    self.EPOCH_LABEL         = ini.get('epoch_label', 'debug')
-    self.WORKDIR             = ini.get('workdir', '.')
-    self.LOGDIR = os.path.join(self.WORKDIR, 'log', self.EPOCH_LABEL)
-    self.JOBDIR = os.path.join(self.WORKDIR, 'jc', self.EPOCH_LABEL)
+    application = os.path.basename(self._confile).split('.')[0]
+    self.APPL_LABEL  = application
+    self.WORKDIR     = ini.get('workdir', '.')
+    self.LOGDIR = os.path.join(self.WORKDIR, 'log', application)
+    self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
 
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
     self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
@@ -60,7 +61,7 @@ class systemsettings:
     self.CATALOG_STARTUP_DELAY = ini.get('catalog_startup_delay', 10)
 
     self.catalogConfig  = dict(
-        name=ini.get('catalog_name', 'catalog'),
+        name=ini.get('catalog_name', application),
         port=ini.get('catalog_port', '6379') )
 
 

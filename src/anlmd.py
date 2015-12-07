@@ -45,7 +45,7 @@ def makeIndex(eg, ev, num_pc=3):
   index_size = num_var * num_pc
   index = np.zeros(index_size)
   eigorder = np.argsort(abs(eg))[::-1]
-  norm = LA.norm(eigorder, ord=1)
+  norm = LA.norm(eg, ord=1)
   # np.copyto(index[:num_var], ev[i][:,-1] * eg[i][-1])    # FOr only 1 eigvector
   for n, eig in enumerate(eigorder[:num_pc]):
     # direction = -1 if eg[eig] < 0 else 1
@@ -134,6 +134,9 @@ class analysisJob(macrothread):
       if self.buildArchive:
         archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
         engine = getNearpyEngine(archive, indexSize)
+
+        #  TODO: Better label
+        label = key
         for key, idx in result.items():
           engine.store_vector(idx, key)
 

@@ -64,6 +64,7 @@ class macrothread(object):
     self.slurmParams = {'time':'6:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
+              'partition':'parallel', 
               'job-name':self.name,
               'workdir' : os.getcwd()}
 
@@ -88,7 +89,7 @@ class macrothread(object):
 
     for a in arg:
       self._state[a] = self.data[a]
-    self._state['id_' + self.name] = 0
+    # self._state['id_' + self.name] = 0
 
   def addToState(self, key, value):
     self._state[key] = value
@@ -176,7 +177,7 @@ class macrothread(object):
     # Check for termination  
     if self.term():
       logger.info('TERMINATION condition for ' + self.name)
-      sys.exit(0)
+      # sys.exit(0)
 
     # # Split input data set
     # self.load(self._split)
@@ -210,7 +211,8 @@ class macrothread(object):
     # jobid = int(catalog.load('id_' + self.name))
     # logger.debug("Loaded ID = %d" % jobid)
     myid = 'id_%s' % self.name
-    jobid  = self.data[myid]
+    jobid = int(self.catalog.get(myid).decode())
+    self.catalog.incr(myid)
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
@@ -362,7 +364,7 @@ class macrothread(object):
   def run(self):
     args = self.parser.parse_args()
 
-    logging.info("EPOCH:    %s", DEFAULT.EPOCH_LABEL)
+    logging.info("APPLICATION:    %s", DEFAULT.APPL_LABEL)
     logging.info("WORKDIR:  %s", DEFAULT.WORKDIR)
 
     # Apply Schema  (TODO:  Eventually pull this from the catalog)

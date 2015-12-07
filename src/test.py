@@ -218,7 +218,7 @@ if __name__ == '__main__':
   args = parser.parse_args()
 
   DEFAULT = systemsettings()
-  DEFAULT.applyConfig('default.conf')
+  DEFAULT.applyConfig('debug.conf')
 
   archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
 

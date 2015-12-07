@@ -195,6 +195,10 @@ class controlJob(macrothread):
       self.setState('JCQueue', 'indexSize', 'timestep', 'num_var', 
                     'converge', 'ctlSplitParam', 'ctlDelay', 'num_pc',
                     *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
+
+      # Update Base Slurm Params
+      self.slurmParams['cpus-per-task'] = 24
+
       self.modules.add('namd')
 
       self.addImmut('num_var')
@@ -325,7 +329,9 @@ class controlJob(macrothread):
             nnkey = n[1]
             distance = n[2]
             trajectory, seqNum = nnkey[2:].split('-')
-            nn_state = labels[int(trajectory)].state
+
+            # CHANGED: Grab state direct from label (assume state is 1 char, for now)
+            nn_state = int(nnkey[0])  #labels[int(trajectory)].state
             # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
             count[nn_state] += 1
             clust[nn_state] += abs(1/distance)
@@ -340,7 +346,13 @@ class controlJob(macrothread):
           statdata[sourceJC][frame]['count'] = count.tolist()
           statdata[sourceJC][frame]['clust'] = clust.tolist()
 
-          # Increment the transition matrix
+          # BUILD ARCHIVE ONLINE:
+          label = '%d %s-%s' % (state, sourceJC, frame)
+          logging.info("ADDING new Index to the Archive:  %s", label)
+          engine.store_vector(index, label)
+
+          # Increment the transition matrix  
+          #  (NOTE: SHOULD WE IGNORE 1ST INDEX IN A TRAJECTORY, since it doesn't describe a transition?)
           if prevState == None:
             prevState = state
           logging.debug("    Transition (%d, %d)", prevState, state)
@@ -350,6 +362,7 @@ class controlJob(macrothread):
           # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
           delta_tmat[prevState][state] += 1
           prevState = state
+
 
       # Build Decision History Data for the Source JC's from the indices
       # transitionBins = kv2DArray(archive, 'transitionBins', mag=5, dtype=str, init=[])      # Should this load here (from archive) or with other state data from catalog?
@@ -394,10 +407,13 @@ class controlJob(macrothread):
           stateB = sortedLabels[1]
           logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", sourceJC, stateA, stateB)
 
-        #  Add this candidate to list of potential pools:
-        #  TODO: Cap candidate pool size
+        #  Add this candidate to list of potential pools (FIFO: popleft if pool at max size):
+        if len(self.data[candidPoolKey(stateA, stateB)]) >= DEFAULT.CANDIDATE_POOL_SIZE:
+          del self.data[candidPoolKey(stateA, stateB)][0] 
+        logging.info("BUILD_ARCHIVE: Added `%s` to candidate pool (%d, %d)", sourceJC, stateA, stateB)
+        self.data[candidPoolKey(stateA, stateB)].append(sourceJC)
+
         outputBin = str((stateA, stateB))
-        # self.data[candidPoolKey(stateA, stateB)].append(sourceJC)  
         if 'targetBin' in self.data[wrapKey('jc', sourceJC)]:
           inputBin  = self.data[wrapKey('jc', sourceJC)]['targetBin']
           a, b = eval(inputBin)
@@ -412,7 +428,7 @@ class controlJob(macrothread):
         # Update other History Data
         key = wrapKey('jc', sourceJC)
         self.data[key]['actualBin'] = outputBin
-        self.data[key]['epoch'] = DEFAULT.EPOCH_LABEL
+        self.data[key]['application'] = DEFAULT.APPL_LABEL
         logging.debug("%s", str(statdata[sourceJC]))
         self.data[key]['indexList'] = json.dumps(statdata[sourceJC])
 
@@ -496,7 +512,7 @@ class controlJob(macrothread):
       logging.debug("============================  <SCHEDULING>  =============================")
 
       #  5. Load JC Queue and all items within to get respective weights and projected target bins
-      #   TODO:  Pipeline this or load all up front!
+      #   TODO:  Pipeline cur queue  and/or load all up front
       curqueue = []
       logging.debug("Loading Current Queue of %d items", len(self.data['JCQueue']))
       debug = True
@@ -512,9 +528,8 @@ class controlJob(macrothread):
 
         # Dampening Factor: proportional it currency (if no ts, set it to 1)
         jc_ts = config['timestep'] if 'timestep' in config else 1
-        
 
-        #   May want to consider incl convergence of sys at time job was created
+        #  TODO: May want to consider incl convergence of sys at time job was created
         w_before    = config['weight']
         config['weight'] = config['weight'] * (jc_ts / self.data['timestep'])
         logging.debug("Dampening Factor Applied (jc_ts = %d):   %0.5f  to  %05f", jc_ts, w_before, config['weight'])
@@ -529,7 +544,6 @@ class controlJob(macrothread):
 
         if 'gc' not in curqueue[jc]:
           curqueue[jc]['gc'] = 1
-
 
       #  6. Sort current queue
       if len(curqueue) > 0:
@@ -596,7 +610,7 @@ class controlJob(macrothread):
 
           # Pick a random trajectory from the bin
           sourceTraj = choice(candidatePool)
-          logging.debug("Selected DEShaw Trajectory # %s based from candidate pool.", sourceTraj)
+          logging.debug("Selected Trajectory `%s` from candidate pool.", sourceTraj)
 
 
           # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
@@ -614,7 +628,7 @@ class controlJob(macrothread):
           # Generate new set of params/coords
           jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM)
 
-          #  DERIVE RUNTIME HERE
+          # TODO: DERIVE RUNTIME HERE
 
           # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
@@ -625,7 +639,7 @@ class controlJob(macrothread):
               weight  = targetBin[1],
               timestep = self.data['timestep'],
               gc      = 1,
-              epoch   = DEFAULT.EPOCH_LABEL,
+              application   = DEFAULT.APPL_LABEL,
               targetBin  = str((A, B)))
 
           logging.info("New Simulation Job Created: %s", jcID)
@@ -673,7 +687,7 @@ class controlJob(macrothread):
           oij  = observe[i][j]
 
           #  Should we square the denom here ????
-          curConvergeScore += (flij* (flij - oij)) / max(oij**2, 1)
+          curConvergeScore += (flij* (flij - oij)) / max(oij, 1)
 
       # 2. Get current coverg list and sort it (or default to 0)
       clist = [json.loads(val.decode()) for val in self.catalog.lrange('globalconvergelist', 0, -1)]
@@ -739,7 +753,7 @@ if __name__ == '__main__':
         weight  = 0.,
         timestep = 0,
         gc      = 1,
-        epoch   = DEFAULT.EPOCH_LABEL,
+        application   = DEFAULT.APPL_LABEL,
         converge = 0.,
         targetBin  = str((labels[win].state, labels[win].state)))
     for k, v in jcConfig.items():

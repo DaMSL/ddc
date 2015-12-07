@@ -45,7 +45,7 @@ def create_schema(catalog, schema):
   catalog.hmset("META_schema", dtype_map)
 
 
-def init_archive(archive, hashsize=10):
+def init_archive(archive, hashsize=8):
 
   logging.debug("Archive found on `%s`. Stopping it.", archive.host)
 
@@ -150,7 +150,7 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
       logging.debug('  num_atoms   %d', trajectory.n_atoms)
     else:
       indexSize = int(indexSize.decode())
-      logging.debug("Meta Data alread configured:  Indexsize = %d", indexSize)
+      logging.debug("Meta Data already configured:  Indexsize = %d", indexSize)
       if indexSize != (n_var * DEFAULT.NUM_PCOMP):
         logging.error("Inconsistent Index Size:  Setting %d x %d  but had %d stored", n_var, DEFAULT.NUM_PCOMP, indexSize)
 
@@ -244,8 +244,6 @@ def reindex(archive, size=10):
   lshash = RandomBinaryProjections(DEFAULT.HASH_NAME, size)
     # lshash = RandomBinaryProjections(None, None)
     # lshash = PCABinaryProjections(None, None, None)
-
-
 
   engine = nearpy.Engine(indexsize, distance=eucl, lshashes=[lshash], storage=redis_storage)
   engine.clean_all_buckets()
@@ -363,7 +361,7 @@ def seedJob(catalog, num=None):
         weight  = 0.,
         timestep = 0,
         gc      = 1,
-        epoch   = DEFAULT.EPOCH_LABEL,
+        application   = DEFAULT.APPL_LABEL,
         converge = 0.,
         targetBin  = str(tbin))
     logging.info("New Simulation Job Created: %s", jcID)
@@ -371,11 +369,6 @@ def seedJob(catalog, num=None):
       logging.debug("   %s:  %s", k, str(v))
     catalog.rpush('JCQueue', jcID)
     catalog.hmset(wrapKey('jc', jcID), config)
-
-
-
-  logging.debug("Stopping the catalog.")
-  catalog.stop()
 
 
 
@@ -405,7 +398,7 @@ if __name__ == '__main__':
     init_catalog(catalog)
 
   if args.initarchive:
-    archive = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     logging.warning("DON'T DO THIS!")
     # init_archive(archive)
     sys.exit(0)
