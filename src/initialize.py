@@ -223,7 +223,7 @@ def init_control(catalog, archive):
   # Initialize observations matrix
   obsMat_Store = kv2DArray(catalog, 'observation')
   selMat_Store = kv2DArray(catalog, 'selection')
-  schedMat_Store = kv2DArray(catalog, 'scheduled')
+  launchMat_Store = kv2DArray(catalog, 'launch')
 
 def reindex(archive, size=10):
   indexsize = int(archive.get('indexSize').decode())
@@ -306,6 +306,17 @@ def findstartpts():
       continue
     startfiles[b] = i[3]
 
+def seedData(catalog):
+  with open('seeddata.json') as src:
+    seedlist = json.loads(src.read())
+
+  for s in seedlist:
+    key =  tuple(s.keys())[0]
+    catalog.hmset(key, s[key])
+    catalog.hdel(key, 'indexList')
+    catalog.hdel(key, 'actualBin')
+
+
 def seedJob(catalog, num=None):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
@@ -375,6 +386,7 @@ if __name__ == '__main__':
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--initcontrol', action='store_true')
   parser.add_argument('--seedjob', action='store_true')
+  parser.add_argument('--seeddata', action='store_true')
   parser.add_argument('--reindex', nargs='?', const=10, type=int)
   parser.add_argument('--loadindex', type=int)
   parser.add_argument('--num', type=int, default=50)
@@ -418,6 +430,10 @@ if __name__ == '__main__':
     catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     seedJob(catalog)
 
+
+  if args.seeddata:
+    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+    seedData(catalog)
 
 
 

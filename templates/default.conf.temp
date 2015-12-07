@@ -19,10 +19,7 @@
         "sim_conf_template": "template/sim.conf.temp",
         "timestep": 0,
         "weight_alpha": 0.4,
-        "weight_beta": 0.6,
-        "terminate": no,
-        "num_var": 454,
-        "num_pc": 3
+        "weight_beta": 0.6
     },
     "settings": {
         "archive_name": "archive",
@@ -35,7 +32,7 @@
         "config_dir": "/home-1/bring4@jhu.edu/work",
         "cpu_per_node": 24,
         "data_label_file": "/home-1/bring4@jhu.edu/ddc/bpti_labels_ms.txt",
-        "epoch_label": "debug",
+        "epoch_label": "dampening1",
         "hash_name": "rbphash",
         "hist_file_dir": "/home-1/bring4@jhu.edu/work/bpti",
         "job_dir": "/home-1/bring4@jhu.edu/work/jc",

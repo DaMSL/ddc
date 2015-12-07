@@ -19,7 +19,7 @@ class simulationJob(macrothread):
 
     # State Data for Simulation MacroThread -- organized by state
     self.setStream('JCQueue', 'dcdFileList')
-    self.setState('JCComplete', 'JCTotal', 'simSplitParam', 'simDelay')
+    self.setState('JCComplete', 'JCTotal', 'simSplitParam', 'simDelay', 'terminate')
 
     # Local Data to this running instance
     self.cpu = 1
@@ -33,9 +33,12 @@ class simulationJob(macrothread):
     self.addImmut('sim_conf_template')
 
   def term(self):
-    jccomplete = self.data['JCComplete']
-    jctotal = self.data['JCTotal']
-    return (jccomplete == jctotal)
+    # jccomplete = self.data['JCComplete']
+    # jctotal = self.data['JCTotal']
+    if 'terminate' in self.data and self.data['terminate'] is not None:
+      return self.data['terminate'].lower() == 'converged'
+    else:
+      return False
 
   def split(self):
     split = int(self.data['simSplitParam'])

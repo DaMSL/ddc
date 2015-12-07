@@ -164,7 +164,7 @@ class macrothread(object):
 
     # Check global termination:
     term_flag = self.catalog.get('terminate')
-    if term_flag:
+    if term_flag and term_flag.lower() in ['halt', 'stop', 'now']:
       logger.info('RECEIVED TERMINATION FLAG. Shutting down')
       sys.exit(0)
 

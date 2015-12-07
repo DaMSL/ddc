@@ -104,7 +104,11 @@ writepdb %(pdb)s
 ENDMOL''' % params
 
 
+def makeLogisticFunc (maxval, steep, midpt):
+  return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
+skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
+
 
 
 
@@ -426,63 +430,62 @@ class controlJob(macrothread):
       # tmat = loadNPArray(self.catalog, 'transitionmatrix')
       # if tmat is None:
       #   tmat = np.zeros(shape=(5,5))    # TODO: Move to init
-      obsMat_Store = kv2DArray(self.catalog, 'observations')
-
-      # Merge in delta
-      obsMat_Store.merge(delta_tmat)
-      tmat = obsMat_Store.get()
       # tmat += delta_tmat
 
-      # Write back out  (limit inconsitency for now)
-      # storeNPArray(self.catalog, tmat, 'transitionmatrix')
 
+      # Weight Calculation: create a logistic function using current observation distribution
+      totalBins = numLabels ** 2
 
+      # 1. Calc "preference" part of the weight
+      obsMat_Store = kv2DArray(self.catalog, 'observations')
+      obsMat_Store.merge(delta_tmat)
+      observe = obsMat_Store.get()
+        #  Isolate rare events (s.t. rare event seen less than mean)
+      rareObserve = np.choose(np.where(observe.flatten() < np.mean(observe)), observe.flatten())
 
-      # Weight Calculation 
+        #  Est. mid point of logisitc curve by accounting for distribution skew
+      midptObs = np.mean(observe) * skew(observe) + np.median(observe)
 
-      #  Load current fatigue values
-      # fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
-      # if fatigue is None:
-      #   fatigue = np.full((5,5), 0.04)    # TODO: Move to init
+        #  Create the function
+      prefFunc = makeLogisticFunc(1, 1 / np.std(rareObserve), midptObs)
 
-      #  FATIGUE OPTION B (derived from # og times each bin was "launched")
+      # 2. Fatigue portion based on # times each bin was "launched"
       launchMat_Store = kv2DArray(self.catalog, 'launch')
       launchMat_Store.merge(launch_delta)
       launch = launchMat_Store.get()
-      fatigue = launch / np.sum(launch)   # Simple for now
+      quota = np.sum(launch) / totalBins
 
       bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
       # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
- 
-      #  2. Calculate new "preference"  targetbin portion of the weight
-      totalObservations = np.sum(tmat)
-      tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
-      quota = max(totalObservations / len(tmat_distro.keys()), len(tmat_distro.keys()))
-      
-      pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
-
-      logging.debug("CURRENT (BIASED) OBSERVATION DISTRIBUTION OF OUTPUT:")
-      logging.debug("  Total observations = %d", totalObservations)
-      for i in range(5):
-        logging.debug("  %s", str(['%0.5f'% tmat_distro[(i,k)] for k in range(5)]))
-
-
-      logging.debug("PREFERENCE WEIGHTS:")
-      for i in range(5):
-        logging.debug("  %s", str(['%0.5f'% pref[(i,k)] for k in range(5)]))
-
 
       #  3. Apply constants. This can be user influenced
       alpha = self.data['weight_alpha']
       beta = self.data['weight_beta']
 
-      #  4. Set new weight and order from high to low
+
+      # 4. Calculate weight (note: follow 2 are retained for debugging only)
+
+      pref = np.zeros(shape=(numLabels, numLabels))
+      fatigue = np.zeros(shape=(numLabels, numLabels))
       weight = {}
-      for k in bins:
-        weight[k] =  alpha * pref[k] + beta * (1 - fatigue[k])
+      for i in range(5):
+        for j in range(5):
+          pref[i][j] = prefFunc(observe[i][j] - midptObs)
+          fatigue[i][j] = min((launch[i][j] / quota**2), 1)
+          weight[(i,j)] =  alpha * pref[i][j] + beta * (1 - fatigue[i][j])
+ 
+      # totalObservations = np.sum(tmat)
+      # tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
+      # quota = max(totalObservations / len(tmat_distro.keys()), len(tmat_distro.keys()))
+      # pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
 
-
-      logging.debug("UPDATED WEIGHTS (INCL FATIGUE):")
+      logging.debug("UPDATED Pref:")
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% pref[(i,k)] for k in range(5)]))
+      logging.debug("UPDATED Fatigue:")
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% fatigue[(i,k)] for k in range(5)]))
+      logging.debug("UPDATED WEIGHTS:")
       for i in range(5):
         logging.debug("  %s", str(['%0.5f'% weight[(i,k)] for k in range(5)]))
 
@@ -567,7 +570,6 @@ class controlJob(macrothread):
           # Identify a pool of starting points
           candidatePool = self.data[candidPoolKey(A, B)]
 
-
           #  TODO:  Bin J.C. Selection into a set of potential new J.C. params/coords
           #    can either be based on historical or a sub-state selection
           #    This is where the infinite # of J.C. is bounded to something manageable
@@ -642,13 +644,9 @@ class controlJob(macrothread):
             targetBin = potentialJobs.popleft()
 
 
-        break
-
-
-
       # Update the selection matrix
-      selObs_Store = kv2DArray(self.catalog, 'selection')
-      selObs_Store.merge(selectionTally)
+      # selObs_Store = kv2DArray(self.catalog, 'selection')
+      # selObs_Store.merge(selectionTally)
 
       # Mark obsolete jobs for garbage collection:
       logging.info("Marking %d obsolete jobs for garbage collection", len(existingQueue))
@@ -656,71 +654,51 @@ class controlJob(macrothread):
         config = existingQueue.popleft()
         config['gc'] = 0
 
-        # Ensure to add it to the state to write back to catalog
+        # Add gc jobs it to the state to write back to catalog (flags it for gc)
         self.addToState(wrapKey('jc', config['name']), config)
 
-
-      # Updated the "fatigue" values for all selected jobs
-      #    -- FOR NOW do it all at once after selection process
-      #    TODO: This can be weighted based on # of selections
-      #  TODO:  RESOLVE CONSITENCY
-      # for i in range(numLabels):
-      #   for j in range(numLabels):
-      #     if selectionTally[i][j] > 0:
-      #       fatigue[i][j] += (1-fatigue[i][j])/25
-      #       logging.debug("Increasing fatigue value for %d, %d to %f", i, j, fatigue[i][j])
-      #     else:
-      #       fatigue[i][j] -= (fatigue[i][j]/25)**2
 
       # CONVERGENCE CALCUALTION  -------------------------------------
       logging.debug("============================  <CONVEGENCE>  =============================")
 
+      totalObservations = np.sum(observe)
+      totalLaunches = np.sum(launch)
+      fanout = totalObservations / totalLaunches
 
-      # logging.debug("Observations MAT:\n" + str(tmat))
-      # logging.debug("Fatigue:\n" + str(fatigue))
+      # 1. Calc current covergence "score" as: sum(f*l_ij(f*l_ij - o_ij)) / max(o_ij, 1) 
+      curConvergeScore = 0
+      for i in range(numLabels):
+        for j in range(numLabels):
+          flij = fanout * launch[i][j]
+          oij  = observe[i][j]
 
-      # # Load Selection Matrix
-      # smat = loadNPArray(self.catalog, 'selectionmatrix')
-      # if smat is None:
-      #   smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
+          #  Should we square the denom here ????
+          curConvergeScore += (flij* (flij - oij)) / max(oij**2, 1)
 
-      # # Merge Update global selection matrix
-      # smat += selectionTally
-      # logging.debug("SMAT:\n" + str(smat))
-      # # Load Convergence Matrix
-      # cmat = loadNPArray(self.catalog, 'convergencematrix')
-      # if cmat is None:
-      #   cmat = np.full((5,5), 0.04)    # TODO: Move to init
-      # logging.debug("CMAT:\n" + str(cmat))
+      # 2. Get current coverg list and sort it (or default to 0)
+      clist = [json.loads(val.decode()) for val in self.catalog.lrange('globalconvergelist', 0, -1)]
+      if len(clist) == 0:
+        lastConvergeScore = 0
+        lastGlobalConverge = 1.
+      else:
+        lastConvergeScore = max(clist, key=lambda x: x['timestep'])['cscore']
+        lastGlobalConverge = max(clist, key=lambda x: x['timestep'])['cglobal']
 
-      
+      # 3. Calc global convergenance and post to catalog
+      globalConverge = (curConvergeScore - lastConvergeScore)
+      clist_entry = {'timestep': self.data['timestep'], 'cscore': curConvergeScore, 'cglobal': globalConverge}
+      self.catalog.rpush('globalconvergelist', json.dumps(clist_entry))
 
+      logging.info("OBSERVATION_Matrix:\n" + str(observe))
 
-      # Remove bias from selection and add to observations 
-      #  which gives the unbiased, uniform selection 
-      inverseSelectFunc = lambda x: (np.max(x)) - x
+      logging.info("LAUNCH_Matrix:\n" + str(launch))
 
-      #  For now, Assume a 4:1 ratio (input:output) and do not factor in output prob distro
-      unbias = 3 * inverseSelectFunc(smat) + tmat
-      logging.debug("UNBIAS:\n" + str(unbias))
+      logging.info('\nLast Convergence:  %0.6f', lastGlobalConverge)
+      logging.info("\nGLOBAL Convergence:  %0.6f\n", globalConverge)
 
-      # Calculcate "convergence" matrix as unbias(i,j) / sel(i.j)
-      updated_cmat = unbias / np.sum(unbias)
-      logging.debug("CMAT_0:\n" + str(cmat))
-      logging.debug("CMAT_1:\n" + str(updated_cmat))
-
-
-      # Calculate global convergence as summed difference:  cmat_t1 - cmat_t0
-      convergence = np.sum(abs(updated_cmat - cmat))
-
-      logging.info('\nLAST CONVERGENCE:  %0.6f', self.data['converge'])
-      logging.info("NEW CONVERGENCE:  %0.6f\n", convergence)
-      self.data['converge'] = convergence
-
-      # Control Thread requires the catalog to be accessible. Hence it starts it:
-      #  TODO: use addState HERE & UPDATE self.data['JCQueue']
-      # self.catalogPersistanceState = True
-      # self.localcatalogserver = self.catalog.conn()
+      if abs(globalConverge) < 0.0001:
+        self.catalog.set('terminate', 'CONVERGED')
+        logging.debug("***TEMINTION CONDITION met for GLOBAL CONVERGENCE")
 
       self.data['JCQueue'] = list(jcqueue)
       # Update Each new job with latest convergence score and save to catalog(TODO: save may not be nec'y)
@@ -732,9 +710,9 @@ class controlJob(macrothread):
 
       # Save all  packed matrices to catalog
       logging.info("Saving global matrices to catalog")
-      storeNPArray(self.catalog, smat, 'selectionmatrix')
-      storeNPArray(self.catalog, updated_cmat, 'convergencematrix')
-      storeNPArray(self.catalog, fatigue, 'fatigue')
+      # storeNPArray(self.catalog, smat, 'selectionmatrix')
+      # storeNPArray(self.catalog, updated_cmat, 'convergencematrix')
+      # storeNPArray(self.catalog, fatigue, 'fatigue')
 
   
       return list(newJobCandidate.keys())
@@ -773,3 +751,42 @@ if __name__ == '__main__':
 
 
   mt.run()
+
+
+
+
+# OLD COVERGENCE:
+      # logging.debug("Observations MAT:\n" + str(tmat))
+      # logging.debug("Fatigue:\n" + str(fatigue))
+
+      # # Load Selection Matrix
+      # smat = loadNPArray(self.catalog, 'selectionmatrix')
+      # if smat is None:
+      #   smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
+
+      # # Merge Update global selection matrix
+      # smat += selectionTally
+      # logging.debug("SMAT:\n" + str(smat))
+      # # Load Convergence Matrix
+      # cmat = loadNPArray(self.catalog, 'convergencematrix')
+      # if cmat is None:
+      #   cmat = np.full((5,5), 0.04)    # TODO: Move to init
+      # logging.debug("CMAT:\n" + str(cmat))
+
+      # # Remove bias from selection and add to observations 
+      # #  which gives the unbiased, uniform selection 
+      # inverseSelectFunc = lambda x: (np.max(x)) - x
+
+      # #  For now, Assume a 4:1 ratio (input:output) and do not factor in output prob distro
+      # unbias = 3 * inverseSelectFunc(smat) + tmat
+      # logging.debug("UNBIAS:\n" + str(unbias))
+
+      # # Calculcate "convergence" matrix as unbias(i,j) / sel(i.j)
+      # updated_cmat = unbias / np.sum(unbias)
+      # logging.debug("CMAT_0:\n" + str(cmat))
+      # logging.debug("CMAT_1:\n" + str(updated_cmat))
+
+
+      # # Calculate global convergence as summed difference:  cmat_t1 - cmat_t0
+      # convergence = np.sum(abs(updated_cmat - cmat))
+
