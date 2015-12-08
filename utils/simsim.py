@@ -1,16 +1,35 @@
 from collections import deque
 import numpy as np
 import sys
-import redis
+# import redis
 import json
 
 #Init
-DEshaw = np.array([[ 241.,   12.,    7.,    0.,    0.],
+distro_DEshaw = np.array([
+       [ 241.,   12.,    7.,    0.,    0.],
        [  14.,   79.,    0.,    0.,    2.],
        [   5.,    4.,   32.,    1.,    0.],
        [   2.,    0.,    0.,    8.,    0.],
        [   1.,    1.,    0.,    0.,    4.]])
-desh = DEshaw / np.sum(DEshaw)
+
+
+distro_DEShaw2 = np.array(
+       [ 499.,   87.,   14.,    0.,    6.],
+       [  54.,  103.,   10.,    0.,    0.],
+       [  11.,    8.,   12.,    1.,    0.],
+       [   2.,    0.,    0.,    6.,    0.],
+       [   3.,    2.,    0.,    0.,    2.]])
+
+distro_long = np.array([
+       [ 2530.,   198.,   152.,    36.,     1.],
+       [  274.,   300.,    41.,     0.,     0.],
+       [  193.,    57.,   413.,    21.,     0.],
+       [   88.,     3.,    47.,   180.,     0.],
+       [  125.,     5.,     0.,     0.,     0.]])
+
+distro = DEShaw2
+
+p_distro = distro / np.sum(distro)
 
 b=[(i,j) for i in range(5) for j in range(5)]
 alpha = .6
@@ -18,8 +37,6 @@ beta = .4
 last_ub = np.zeros(shape=(5,5))
 numLabels = 5 
 totalBins = 25
-
-r = redis.StrictRedis()
 
 def makeLogisticFunc (maxval, steep, midpt):
   return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
@@ -33,6 +50,7 @@ def newstate():
   pref = np.zeros(shape=(5,5))
   fatigue = np.zeros(shape=(5,5))
   weight = np.zeros(shape=(5,5))
+  trand = {}
   jcqueue = deque()
   state = (jcqueue, fatigue, weight, select, launch, percellobs, observe, pref)
   for i in range(5):
@@ -43,11 +61,11 @@ def newstate():
 
 def checktrans(a, b):
   if a == b:
-    res = np.random.choice(range(5), p=desh[a]/np.sum(desh[a]))
+    res = np.random.choice(range(5), p=p_distro[a]/np.sum(p_distro[a]))
     return res, res
   else:
-    # Set prob distro of transitioning to a state (or not)
-    spots = [desh[a][a]**2, 4*desh[a][b], desh[b][b]**2]
+    # Set prob distro of transitioning to a state (or not) -- perturbed for "transition-dwel"
+    spots = [p_distro[a][a]**2, 4*p_distro[a][b], p_distro[b][b]**2]
     res = np.random.choice(range(3), p=spots/np.sum(spots))
     if res == 0:
       return a, a
@@ -73,13 +91,14 @@ def showd(l):
 
 def show(state):
   jcqueue, fatigue, weight, select, launch, percellobs, observe, pref = state
-  print(  '\nBIN      WGT  PREF   FAT       SEL  LAUNCH   OBS  DEShaw') ;           
+  print('\nCurrent State of Matrices:')
+  print(  'BIN      WGT  PREF   FAT       SEL  LAUNCH   OBS  Actual') ;           
   for i in range(5):
     for j in range(5):  
       print('%s  %.3f  %.3f  %.3f  %5d  %5d  %5d  %5d' % (str((i,j)), 
-        weight[i][j], pref[i][j], fatigue[i][j], select[i][j], launch[i][j], observe[i][j], DEshaw[i][j]))
+        weight[i][j], pref[i][j], fatigue[i][j], select[i][j], launch[i][j], observe[i][j], distro[i][j]))
   print('%s  %4.3f  %4.3f  %4.3f  %5d  %5d  %5d  %5d' % ('TOTAL:', 
-    np.mean(weight), np.mean(pref), np.mean(fatigue), np.sum(select), np.sum(launch), np.sum(observe), np.sum(DEshaw)))
+    np.mean(weight), np.mean(pref), np.mean(fatigue), np.sum(select), np.sum(launch), np.sum(observe), np.sum(distro)))
   print ('Next 5 jobs:')
   for i in range(5):
     if len(jcqueue) == 0:
@@ -92,9 +111,11 @@ def go(state, num=1):
     timestep = 0
     convergeList = []
     ep = 1
+    print('\nConvergence Tracking:')
     print('\n   TS    C-SCORE   totalC     C-Delta')
+    last = 0.
     for epoch in range(num):
-      for turn in range(1):
+      for turn in range(10):
         timestep += 1
 
         #  Weight Calc
@@ -153,28 +174,33 @@ def go(state, num=1):
       # Convergence Calc
       totalObservations = np.sum(observe)
       totalLaunches = np.sum(launch)
-      fanout = totalObservations / totalLaunches
+      f = fanout = totalObservations / totalLaunches
 
       convergeScore = 0
+      warr = []
+      tarr = []
+      harr = []
       for i in range(5):
         for j in range(5):
-          flij = fanout * launch[i][j]
-          convergeScore += (flij* (flij - observe[i][j])) / max(observe[i][j]**2, 1)
+          l = launch[i][j]
+          o = observe[i][j]
+          reward = (f * l) - o
+          ratio = f * l / (max(o, f * l))
+          convergeScore += reward * ratio
+          harr.append(o/(f*l) if l > 0 else 0)
+          warr.append(reward)
+          tarr.append(ratio)
+          # flij = fanout * launch[i][j]
+          # convergeScore += (flij* (flij - observe[i][j])) / max(observe[i][j]**2, 1)
 
-      if len(convergeList) == 0:
-        totalConverge = 1.
-        lastConverge = 0
-      else:
-        totalConverge = (convergeScore - convergeList[-1]) / convergeScore
-        # totalConverge = (convergeScore - convergeList[-1])
-      convergeList.append(convergeScore)
-      r.rpush('simsim_convergelist', json.dumps({'timestep': timestep, 'converge': convergeScore}))
+      # r.rpush('simsim_convergelist', json.dumps({'timestep': timestep, 'converge': convergeScore}))
 
-      cdiff = totalConverge - lastConverge
-      print('%4d:  %10.2f   %2.3f   %10.2f' % (timestep, convergeScore, totalConverge, cdiff))
-      # np.copyto(last_ub, unbias)
-      lastConverge = totalConverge
+      delta = convergeScore - last
+      print('%4d:  %9.2f   %8.2f  |  %.2f  %.2f' % 
+        (timestep, convergeScore, delta, np.mean(harr), np.std(harr)))
+      last = convergeScore
     state = (jcqueue, fatigue, weight, select, launch, percellobs, observe, pref)
+
   # show(state)
   # return state
 

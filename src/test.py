@@ -70,7 +70,7 @@ def benchmarkDEShaw(archive, theta=.6, winsize=200):
 
   frame = 400
 
-  skip = 10
+  skip = 5
 
   loadtime = 0.
   eigentime = 0.
@@ -85,54 +85,58 @@ def benchmarkDEShaw(archive, theta=.6, winsize=200):
 
   for num in range(0, 4100):
 
-    if num % skip == 0:
-      total += 1
-      start = dt.datetime.now()
-      traj = loadDEShawTraj(num)
-      ts_load = dt.datetime.now()
-      eg, ev = LA.eigh(distmatrix(traj.xyz[frame:frame+winsize]))
-      index = makeIndex(eg, ev, num_pc=numpc)
-      ts_eigen = dt.datetime.now()
-      neigh = engine.neighbours(index)
-      ts_probe = dt.datetime.now()
-      if len(neigh) == 0:
-        miss += 1
-        continue
-      else:
-        clust_i = np.zeros(5)
-        count_i = np.zeros(5)
-        for n in neigh[1:]:
-          nnkey = n[1]
-          distance = n[2]
-          nn_state = int(nnkey[0])
-          count_i[nn_state] += 1
-          clust_i[nn_state] += abs(1/distance)
-
-        clust_i = clust_i/np.sum(clust_i)
-        order = np.argsort(clust_i)[::-1]
-        A = order[0]
-        B = A if clust_i[A] > theta else order[1]
-        bucket[(A, B)] += 1
-
-        if win[num].state == A:
-          hit += 1
-        elif win[num].state == B:
-          nearmiss += 1
-        else:
+    try:
+      if num % skip == 0:
+        total += 1
+        start = dt.datetime.now()
+        traj = loadDEShawTraj(num)
+        ts_load = dt.datetime.now()
+        eg, ev = LA.eigh(distmatrix(traj.xyz[frame:frame+winsize]))
+        index = makeIndex(eg, ev, num_pc=numpc)
+        ts_eigen = dt.datetime.now()
+        neigh = engine.neighbours(index)
+        ts_probe = dt.datetime.now()
+        if len(neigh) == 0:
           miss += 1
+          continue
+        else:
+          clust_i = np.zeros(5)
+          count_i = np.zeros(5)
+          for n in neigh[1:]:
+            nnkey = n[1]
+            distance = n[2]
+            nn_state = int(nnkey[0])
+            count_i[nn_state] += 1
+            clust_i[nn_state] += abs(1/distance)
 
-        loadtime  += timediff(start, ts_load)
-        eigentime += timediff(ts_load, ts_eigen)
-        probetime += timediff(ts_eigen, ts_probe)
+          clust_i = clust_i/np.sum(clust_i)
+          order = np.argsort(clust_i)[::-1]
+          A = order[0]
+          B = A if clust_i[A] > theta else order[1]
+          bucket[(A, B)] += 1
 
+          if win[num].state == A:
+            hit += 1
+          elif win[num].state == B:
+            nearmiss += 1
+          else:
+            miss += 1
 
+          loadtime  += timediff(start, ts_load)
+          eigentime += timediff(ts_load, ts_eigen)
+          probetime += timediff(ts_eigen, ts_probe)
+    except KeyboardInterrupt as ex:
+      print ("Halting Benchmark...\n")
+      break
+
+  logging.info("\nBenchmark Complete")
   logging.info("Results:")
-  logging.info("  Total   :    %4d", total)
-  logging.info("  Hit     :    %4d  (%2.1f%%)", hit, 100*hit/total)
-  logging.info("  NearMiss:    %4d  (%2.1f%%)", nearmiss, 100*nearmiss/total)
-  logging.info("  Miss    :    %4d  (%2.1f%%)", miss, 100*miss/total)
+  logging.info("  Total                   :    %4d", total)
+  logging.info("  Hit (labeled state)     :    %4d  (%2.1f%%)", hit, 100*hit/total)
+  logging.info("  NearMiss (detect x-tion):    %4d  (%2.1f%%)", nearmiss, 100*nearmiss/total)
+  logging.info("  Miss                    :    %4d  (%2.1f%%)", miss, 100*miss/total)
   logging.info("")
-  logging.info("Benchmarking:")
+  logging.info("Timing Benchmarking:")
   logging.info("  MDLoad:     %3.2f sec,  (%0.2f idx/sec)", loadtime, loadtime/total)
   logging.info("  Eigen :     %3.2f sec,  (%0.2f idx/sec)", eigentime, eigentime/total)
   logging.info("  Probe :     %3.2f sec,  (%0.2f idx/sec)", probetime, probetime/total)

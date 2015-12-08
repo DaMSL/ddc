@@ -227,9 +227,8 @@ def init_control(catalog, archive):
 
 def reindex(archive, size=10):
   indexsize = int(archive.get('indexSize').decode())
-
   redis_storage = RedisStorage(archive)
-  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_rbphash_*')]
+  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_'+DEFAULT.HASH_NAME+'_*')]
   indexlist = []
   logging.debug("Pulling  keys")
   for h in hashkeys:
@@ -250,7 +249,8 @@ def reindex(archive, size=10):
   logging.debug("Cleared Buckets. Storing.....")
 
   for idx in indexlist:
-    engine.store_vector(idx[0].astype(np.float32), idx[1])
+    if len(idx[1]) == 10:
+      engine.store_vector(idx[0].astype(np.float32), idx[1])
 
   logging.debug("Vectors Stored. Hash Config follows:")
 

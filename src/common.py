@@ -94,6 +94,8 @@ class systemsettings:
   
     # Potentailly Dynamic
     self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
+    self.BUILD_ARCHIVE = 'build_archive' in ini and ini['build_archive'].lower() in ['true', 'yes', 'on']
+
 
 
     # Config Schema -- placed here for now (TODO: Split????)    

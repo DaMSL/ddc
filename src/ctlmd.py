@@ -106,6 +106,7 @@ ENDMOL''' % params
 
 def makeLogisticFunc (maxval, steep, midpt):
   return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
+
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
 
@@ -347,9 +348,10 @@ class controlJob(macrothread):
           statdata[sourceJC][frame]['clust'] = clust.tolist()
 
           # BUILD ARCHIVE ONLINE:
-          label = '%d %s-%s' % (state, sourceJC, frame)
-          logging.info("ADDING new Index to the Archive:  %s", label)
-          engine.store_vector(index, label)
+          if DEFAULT.BUILD_ARCHIVE:
+            label = '%d %s-%s' % (state, sourceJC, frame)
+            logging.info("ADDING new Index to the Archive:  %s", label)
+            engine.store_vector(index, label)
 
           # Increment the transition matrix  
           #  (NOTE: SHOULD WE IGNORE 1ST INDEX IN A TRAJECTORY, since it doesn't describe a transition?)
@@ -368,7 +370,6 @@ class controlJob(macrothread):
       # transitionBins = kv2DArray(archive, 'transitionBins', mag=5, dtype=str, init=[])      # Should this load here (from archive) or with other state data from catalog?
 
 
-      logging.debug("Delta Observation Matrix:\n" + str(delta_tmat))
 
       #  Theta is calculated as the probability of staying in 1 state (from observed data)
       theta = .6  #self.data['observation_counts'][1] / sum(self.data['observation_counts'])
@@ -453,17 +454,37 @@ class controlJob(macrothread):
       totalBins = numLabels ** 2
 
       # 1. Calc "preference" part of the weight
+      logging.debug("Getting/Merging Observations...")
       obsMat_Store = kv2DArray(self.catalog, 'observations')
+      observe_before = obsMat_Store.get()
       obsMat_Store.merge(delta_tmat)
       observe = obsMat_Store.get()
+
+      # Calc convergence on probability distro (before & after)
+      logging.debug("Calculating Probability Distributions for each state...")
+      probDistro_before = np.zeros(shape=(numLabels, numLabels))
+      probDistro        = np.zeros(shape=(numLabels, numLabels))
+      for n in range(numLabels):
+        numTrans_before = np.sum(observe_before[n]) - observe_before[n][n]
+        probDistro_before[n] = observe_before[n] / numTrans_before
+        probDistro_before[n][n] = 0
+        numTrans = np.sum(observe[n]) - observe[n][n]
+        probDistro[n] = observe[n] / numTrans
+        probDistro[n][n] = 0
+      delta        = np.zeros(shape=(numLabels, numLabels))
+      delta = abs(probDistro - probDistro_before)
+
+      bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
+
+      logging.debug("Calculating transition rarity...")
         #  Isolate rare events (s.t. rare event seen less than mean)
       rareObserve = np.choose(np.where(observe.flatten() < np.mean(observe)), observe.flatten())
 
-        #  Est. mid point of logisitc curve by accounting for distribution skew
+        #  Est. mid point of logistic curve by accounting for distribution skew
       midptObs = np.mean(observe) * skew(observe) + np.median(observe)
 
         #  Create the function
-      prefFunc = makeLogisticFunc(1, 1 / np.std(rareObserve), midptObs)
+      rarityFunc = makeLogisticFunc(1, 1 / np.std(rareObserve), midptObs)
 
       # 2. Fatigue portion based on # times each bin was "launched"
       launchMat_Store = kv2DArray(self.catalog, 'launch')
@@ -471,39 +492,28 @@ class controlJob(macrothread):
       launch = launchMat_Store.get()
       quota = np.sum(launch) / totalBins
 
-      bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
       # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
 
       #  3. Apply constants. This can be user influenced
       alpha = self.data['weight_alpha']
       beta = self.data['weight_beta']
 
-
       # 4. Calculate weight (note: follow 2 are retained for debugging only)
 
-      pref = np.zeros(shape=(numLabels, numLabels))
-      fatigue = np.zeros(shape=(numLabels, numLabels))
+      #  UPDATED:  Weights CALC as a factor of rare events & instability in delta calc
+      rarity = np.zeros(shape=(numLabels, numLabels))
+      # fatigue = np.zeros(shape=(numLabels, numLabels))
+      logging.debug("Calculating control weights...")
       weight = {}
       for i in range(5):
         for j in range(5):
-          pref[i][j] = prefFunc(observe[i][j] - midptObs)
-          fatigue[i][j] = min((launch[i][j] / quota**2), 1)
-          weight[(i,j)] =  alpha * pref[i][j] + beta * (1 - fatigue[i][j])
+          rarity[i][j] = rarityFunc(observe[i][j] - midptObs)
+          weight[(i,j)] =  0 if i == j else alpha * rarity[i][j] + beta * delta[i][j]
  
       # totalObservations = np.sum(tmat)
       # tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
       # quota = max(totalObservations / len(tmat_distro.keys()), len(tmat_distro.keys()))
       # pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
-
-      logging.debug("UPDATED Pref:")
-      for i in range(5):
-        logging.debug("  %s", str(['%0.5f'% pref[(i,k)] for k in range(5)]))
-      logging.debug("UPDATED Fatigue:")
-      for i in range(5):
-        logging.debug("  %s", str(['%0.5f'% fatigue[(i,k)] for k in range(5)]))
-      logging.debug("UPDATED WEIGHTS:")
-      for i in range(5):
-        logging.debug("  %s", str(['%0.5f'% weight[(i,k)] for k in range(5)]))
 
       updatedWeights = sorted(weight.items(), key=lambda x: x[1], reverse=True)
 
@@ -602,7 +612,8 @@ class controlJob(macrothread):
 
               # Finally, pick any start point from the initial state (assume that state had a candidate)
               for z in range(5):
-                candidatePool.extend(self.data[candidPoolKey(A, z)])
+                if a != z:
+                  candidatePool.extend(self.data[candidPoolKey(A, z)])
 
           logging.debug('Final Candidate Pool has  %d  candidates', len(candidatePool))
 
@@ -673,46 +684,71 @@ class controlJob(macrothread):
 
 
       # CONVERGENCE CALCUALTION  -------------------------------------
-      logging.debug("============================  <CONVEGENCE>  =============================")
+      logging.debug("============================  <CONVERGENCE -- CALC W/WEIGHTS>  =============================")
 
-      totalObservations = np.sum(observe)
-      totalLaunches = np.sum(launch)
-      fanout = totalObservations / totalLaunches
+      logging.debug("OBS_MATRIX_DELTA:\n" + str(delta_tmat))
+      logging.debug("OBS_MATRIX_UPDATED:\n" + str(observe))
+      logging.debug("CONVERGENCE_PROB_DISTRO:\n" + str(probDistro))
+      logging.debug("OBS_RARITY:\n" + str(rarity))
+      logging.debug("CONV_DELTA:\n" + str(delta))
+      logging.debug("CTL_WEIGHT:")
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% weight[(i,k)] for k in range(5)]))
 
-      # 1. Calc current covergence "score" as: sum(f*l_ij(f*l_ij - o_ij)) / max(o_ij, 1) 
-      curConvergeScore = 0
-      for i in range(numLabels):
-        for j in range(numLabels):
-          flij = fanout * launch[i][j]
-          oij  = observe[i][j]
+      globalconvergence = np.sum(abs(probDistro - probDistro_before))
+      logging.info("GLOBAL_CONVERGENCE: %f", globalconvergence)
+      for i in range(5):
+        logging.info("STATE_CONVERGENCE for %d: %f", i, np.sum(delta[i]))
 
-          #  Should we square the denom here ????
-          curConvergeScore += (flij* (flij - oij)) / max(oij, 1)
-
-      # 2. Get current coverg list and sort it (or default to 0)
-      clist = [json.loads(val.decode()) for val in self.catalog.lrange('globalconvergelist', 0, -1)]
-      if len(clist) == 0:
-        lastConvergeScore = 0
-        lastGlobalConverge = 1.
-      else:
-        lastConvergeScore = max(clist, key=lambda x: x['timestep'])['cscore']
-        lastGlobalConverge = max(clist, key=lambda x: x['timestep'])['cglobal']
-
-      # 3. Calc global convergenance and post to catalog
-      globalConverge = (curConvergeScore - lastConvergeScore)
-      clist_entry = {'timestep': self.data['timestep'], 'cscore': curConvergeScore, 'cglobal': globalConverge}
+      clist_entry = {'timestep': self.data['timestep'], 'convg': globalconvergence, 'convs': str([np.sum(delta[i]) for i in range(5)])}
       self.catalog.rpush('globalconvergelist', json.dumps(clist_entry))
 
-      logging.info("OBSERVATION_Matrix:\n" + str(observe))
 
-      logging.info("LAUNCH_Matrix:\n" + str(launch))
+      # totalObservations = np.sum(observe)
+      # # totalLaunches = np.sum(launch)
+      # # fanout = totalObservations / totalLaunches
 
-      logging.info('\nLast Convergence:  %0.6f', lastGlobalConverge)
-      logging.info("\nGLOBAL Convergence:  %0.6f\n", globalConverge)
+      # # 1. Calc current covergence "score" as: sum(f*l_ij(f*l_ij - o_ij)) / max(o_ij, 1) 
+      # probDistro = np.zeros(shape=(numLabels, numLabels))
+      # for n in range(numLabels):
+      #   numTrans = np.sum(observe[n]) - observe[n][n]
+      #   probDistro[n] = observe[n] / numTrans
+      #   probDistro[n][n] = 0
 
-      if abs(globalConverge) < 0.0001:
-        self.catalog.set('terminate', 'CONVERGED')
-        logging.debug("***TEMINTION CONDITION met for GLOBAL CONVERGENCE")
+
+
+
+      # curConvergeScore = 0
+      # for i in range(numLabels):
+      #   for j in range(numLabels):
+      #     flij = fanout * launch[i][j]
+      #     oij  = observe[i][j]
+
+      #     #  Should we square the denom here ????
+      #     curConvergeScore += (flij* (flij - oij)) / max(oij, 1)
+
+      # # 2. Get current coverg list and sort it (or default to 0)
+      # clist = [json.loads(val.decode()) for val in self.catalog.lrange('globalconvergelist', 0, -1)]
+      # if len(clist) == 0:
+      #   lastConvergeScore = 0
+      #   lastGlobalConverge = 1.
+      # else:
+      #   lastConvergeScore = max(clist, key=lambda x: x['timestep'])['cscore']
+      #   lastGlobalConverge = max(clist, key=lambda x: x['timestep'])['cglobal']
+
+      # # 3. Calc global convergenance and post to catalog
+      # globalConverge = (curConvergeScore - lastConvergeScore)
+
+      # logging.info("OBSERVATION_Matrix:\n" + str(observe))
+
+      # logging.info("LAUNCH_Matrix:\n" + str(launch))
+
+      # logging.info('\nLast Convergence:  %0.6f', lastGlobalConverge)
+      # logging.info("\nGLOBAL Convergence:  %0.6f\n", globalConverge)
+
+      # if abs(globalConverge) < 0.0001:
+      #   self.catalog.set('terminate', 'CONVERGED')
+      #   logging.debug("***TEMINTION CONDITION met for GLOBAL CONVERGENCE")
 
       self.data['JCQueue'] = list(jcqueue)
       # Update Each new job with latest convergence score and save to catalog(TODO: save may not be nec'y)
