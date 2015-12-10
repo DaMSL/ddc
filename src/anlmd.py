@@ -13,45 +13,10 @@ import redisCatalog
 from common import *
 from macrothread import macrothread
 from slurm import slurm
+from indexing import *
 
 import logging
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
-
-
-def distmatrix(traj):
-  n_frames = traj.shape[0]
-  n_atoms  = traj.shape[1]
-  mean = np.mean(traj, axis=0)
-  dist = np.zeros(shape = (n_atoms, n_atoms), dtype=np.float32)
-  for A in range(n_atoms):
-    for B in range(A, n_atoms):
-      delta = LA.norm(mean[A] - mean[B])
-      dist[A][B] = delta
-      dist[B][A] = delta
-  return dist
-
-
-def covmatrix(traj):
-  n_frames = traj.shape[0]
-  n_atoms = traj.shape[1]*3
-  A = traj.reshape(n_frames, n_atoms)
-  a = A - np.mean(A, axis=0)
-  cov = np.dot(a.T, a)/n_frames
-  return cov
-
-
-def makeIndex(eg, ev, num_pc=3):
-  num_var = len(eg)
-  index_size = num_var * num_pc
-  index = np.zeros(index_size)
-  eigorder = np.argsort(abs(eg))[::-1]
-  norm = LA.norm(eg, ord=1)
-  # np.copyto(index[:num_var], ev[i][:,-1] * eg[i][-1])    # FOr only 1 eigvector
-  for n, eig in enumerate(eigorder[:num_pc]):
-    # direction = -1 if eg[eig] < 0 else 1
-    # np.copyto(index[n*num_var:n*num_var+num_var], direction * ev[:,eig])
-    np.copyto(index[n*num_var:n*num_var+num_var], ev[:,eig] * eg[eig] / norm)
-  return index
 
 
 class analysisJob(macrothread):

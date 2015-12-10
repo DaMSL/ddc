@@ -1,5 +1,4 @@
 import logging
-
 import os
 import shutil
 import uuid
@@ -12,8 +11,6 @@ import sys
 import random
 import string
 import json
-
-from collections import namedtuple
 
 
 def singleton(cls):
@@ -94,8 +91,8 @@ class systemsettings:
   
     # Potentailly Dynamic
     self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
-    self.BUILD_ARCHIVE = 'build_archive' in ini and ini['build_archive'].lower() in ['true', 'yes', 'on']
-
+    self.BUILD_ARCHIVE = False #'build_archive' in ini and ini['build_archive'].lower() in ['true', 'yes', 'on']
+    self.PARTITION = ini.get('partition', 'shared')
 
 
     # Config Schema -- placed here for now (TODO: Split????)    
@@ -127,8 +124,6 @@ class systemsettings:
 
   # INDEX_LOCKFILE = os.path.join(WORKDIR, 'index.lock')
 
-
-    # DATA_LABEL_FILE = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
 
   # Catalog Params
   # TODO: Move this from a file to the archive!
@@ -210,55 +205,6 @@ def executecmd(cmd):
   return stdout.decode()
 
 
-
-
-label =namedtuple('window', 'time state')
-
-def loadLabels(fn=None):
-  if fn is None:
-    fn = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
-  label =namedtuple('window', 'time state')
-  win = []
-  with open(fn) as f:
-    for line in f.readlines():
-      t, s = line.split()
-      win.append(label(float(t), int(s)))
-  return win
-
-def getLabelList(labels):
-  labelset = set()
-  for lab in labels:
-    labelset.add(lab.state)
-  return sorted(list(labelset))
-
-
-def getNearpyEngine(archive, indexSize):
-  redis_storage = RedisStorage(archive)
-  config = redis_storage.load_hash_configuration('rbphash')
-  if not config:
-    logging.error("LSHash not configured")
-    sys.exit(0)
-
-  logging.debug("CONFIG:")
-  for k,v in config.items():
-    logging.debug("%s,  %s", str(k), str(v))
-
-  # Create empty lshash and load stored hash
-  eucl = EuclideanDistance()
-  lshash = DEFAULT.getEmptyHash()
-  lshash.apply_config(config)
-
-  if config['dim'] is None:
-    logging.debug("NO DIM SET IN HASH. RESETTING TO 10")
-    lshash.reset(10)
-    redis_storage.store_hash_configuration(lshash)
-    logging.debug("HASH SAVED")
-
-
-  logging.debug("INDEX SIZE = %d:  ", indexSize)
-  engine = nearpy.Engine(indexSize, distance=eucl, lshashes=[lshash], storage=redis_storage)
-
-  return engine
 
 
 

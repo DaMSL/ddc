@@ -1,6 +1,8 @@
 from simmd import *
 from anlmd import *
 from ctlmd import *
+from deshaw import *
+from indexing import *
 import math
 import json
 
@@ -38,6 +40,7 @@ def init_catalog(catalog):
   if os.path.exists('catalog.lock'):
     os.remove('catalog.lock')
 
+# TODO: For use when migrating schema into catalog
 def create_schema(catalog, schema):
   dtype_map = {}
   for k, v in schema.items():
@@ -82,27 +85,14 @@ def init_archive(archive, hashsize=8):
 
   logging.debug("Initialization complete\n")
 
-def loadDEShawTraj(start, end=-1):
-  if end == -1:
-    end = start +1
-  trajectory = None
-  bptidir = DEFAULT.RAW_ARCHIVE + '/'
-  for dcdfile in range(start, end):
-    f = 'bpti-all-%03d.dcd' % dcdfile if dcdfile<1000 else 'bpti-all-%04d.dcd' % dcdfile
-    if not os.path.exists(bptidir + f):
-      logging.info('%s   File not exists. Continuing with what I got', f)
-      break
-    logging.info("LOADING:  %s", f)
-    traj = md.load(bptidir + f, top=DEFAULT.PDB_FILE)
-    filt = traj.top.select_atom_indices(selection='heavy')
-    traj.atom_slice(filt, inplace=True)
-    trajectory = trajectory.join(traj) if trajectory else traj
-  return trajectory
+
 
 def index_DEShaw(catalog, archive, start, num, winsize, slide):
-    winperfile = 1000 // slide
+    # winperfile = 1000 // slide
+    winperfile = 1000
     totalidx = winperfile * num
-    end = 1 + start + num + math.ceil(slide // 1000)
+    # end = 1 + start + num + math.ceil(slide // 1000)
+    end = start + num
     logging.info("LOADING D.E.Shaw index as follows:")
     logging.info('  Start        %d', start)
     logging.info('  End          %d', end)
@@ -117,19 +107,31 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
     n_var = trajectory.xyz.shape[1]
     if DO_COV_MAT:
       n_var *= 3
-    egm = np.zeros(shape=(num * 1000//slide, n_var), dtype=np.float32)
-    evm = np.zeros(shape=(num * 1000//slide, n_var, n_var), dtype=np.float32)
+    # egm = np.zeros(shape=(num * 1000//slide, n_var), dtype=np.float32)
+    # evm = np.zeros(shape=(num * 1000//slide, n_var, n_var), dtype=np.float32)
+    egm = np.zeros(shape=(num * 1000, n_var), dtype=np.float32)
+    evm = np.zeros(shape=(num * 1000, n_var, n_var), dtype=np.float32)
     logging.info("Traj Shapes: " + str(egm.shape) + " " + str(evm.shape))
 
     # Slide window & calc eigens
-    for k, w in enumerate(range(0, len(trajectory.xyz) - winsize+1, slide)):
-      if k == totalidx or w + winsize > len(trajectory.xyz):
-        break
-      logging.info("Trajectory  %d:   %d - %d", start+(k//winperfile), w, w+winsize)
-      if DO_COV_MAT:
-        eg, ev = LA.eigh(covmatrix(trajectory.xyz[w:w+winsize]))
-      else:
-        eg, ev = LA.eigh(distmatrix(trajectory.xyz[w:w+winsize]))
+    # for k, w in enumerate(range(0, len(trajectory.xyz) - winsize+1, slide)):
+    for k, frame in enumerate(trajectory.xyz):
+      # if k == totalidx or w + winsize > len(trajectory.xyz):
+      #   break
+      if k % 10 == 0:
+        logging.info("Trajectory  %d:   %d", start+(k//1000), k%1000)
+      # sys.exit(0)
+      distmat =  np.zeros(shape=(n_var,n_var))
+      for A in range(n_var):
+        for B in range(A, n_var):
+          delta = LA.norm(frame[A] - frame[B])
+          distmat[A][B] = delta
+          distmat[B][A] = delta
+      eg, ev = LA.eigh(distmat)
+      # if DO_COV_MAT:
+      #   eg, ev = LA.eigh(covmatrix(trajectory.xyz[w:w+winsize]))
+      # else:
+      #   eg, ev = LA.eigh(distmatrix(trajectory.xyz[w:w+winsize]))
       np.copyto(egm[k], eg)
       np.copyto(evm[k], ev)
 
@@ -156,12 +158,14 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
 
     engine = getNearpyEngine(archive, indexSize)
 
-    win = loadLabels()
+    # win = loadLabels()
     for i in range(len(egm)):
       index = makeIndex(egm[i], evm[i])
       seqnum = start + i//winperfile
-      state = win[seqnum].state
-      datalabel = '%d %04d-%03d' % (state, seqnum, slide*(i%winperfile))
+      frame  = i % winperfile
+      # state = win[seqnum].state
+      # datalabel = '%d %04d-%03d' % (state, seqnum, slide*(i%winperfile))
+      datalabel = '%04d-%03d' % (seqnum, frame)
       logging.debug("Storing Index:  %s", datalabel)
       engine.store_vector(index, datalabel)
 
@@ -226,17 +230,8 @@ def init_control(catalog, archive):
   launchMat_Store = kv2DArray(catalog, 'launch')
 
 def reindex(archive, size=10):
-  indexsize = int(archive.get('indexSize').decode())
-  redis_storage = RedisStorage(archive)
-  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_'+DEFAULT.HASH_NAME+'_*')]
-  indexlist = []
-  logging.debug("Pulling  keys")
-  for h in hashkeys:
-    bucket = redis_storage.get_bucket(DEFAULT.HASH_NAME, h)
-    for b in bucket:
-      indexlist.append(b)
-  logging.debug("Pulled %d keys", len(indexlist))
-
+  indexsize = 1362 #int(archive.get('indexSize').decode())
+  indexlist = getindexlist(archive, DEFAULT.HASH_NAME)
     # engine = getNearpyEngine(archive, indexsize)
   eucl = EuclideanDistance()
     # lshash = UniBucket(DEFAULT.HASH_NAME)
@@ -244,15 +239,18 @@ def reindex(archive, size=10):
     # lshash = RandomBinaryProjections(None, None)
     # lshash = PCABinaryProjections(None, None, None)
 
+  redis_storage = RedisStorage(archive)
   engine = nearpy.Engine(indexsize, distance=eucl, lshashes=[lshash], storage=redis_storage)
   engine.clean_all_buckets()
   logging.debug("Cleared Buckets. Storing.....")
 
+  count = 0
   for idx in indexlist:
     if len(idx[1]) == 10:
       engine.store_vector(idx[0].astype(np.float32), idx[1])
+      count += 1
 
-  logging.debug("Vectors Stored. Hash Config follows:")
+  logging.debug("%d Vectors Stored. Hash Config follows:", count)
 
   config = lshash.get_config()
   for k,v in config.items():
@@ -345,9 +343,8 @@ def seedJob(catalog, num=None):
 
 
   for tbin, num in jobs:
-    fname = 'bpti-all-%03d.dcd' if num < 1000 else 'bpti-all-%04d.dcd'
-    archiveFile = os.path.join(DEFAULT.RAW_ARCHIVE, fname % num)
-    pdbfile = DEFAULT.PDB_FILE
+
+    pdbfile, archiveFile = getHistoricalTrajectory(num)
 
     # Generate new set of params/coords
     jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM)

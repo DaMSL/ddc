@@ -64,7 +64,7 @@ class macrothread(object):
     self.slurmParams = {'time':'6:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
-              'partition':'parallel', 
+              'partition':DEFAULT.PARTITION, 
               'job-name':self.name,
               'workdir' : os.getcwd()}
 
