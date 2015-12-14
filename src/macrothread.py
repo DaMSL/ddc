@@ -17,8 +17,9 @@ from collections import namedtuple
 # For now: use redis catalog
 import redisCatalog
 
-import logging, logging.handlers
-logger = setLogger("MT")
+# import logging, logging.handlers
+# logger = setLogger("MT")
+logger = logging.getLogger(__name__)
 
 
 class macrothread(object):

@@ -15,9 +15,9 @@ from macrothread import macrothread
 from slurm import slurm
 from indexing import *
 
-import logging
-logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
-
+# import logging
+# logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class analysisJob(macrothread):
     def __init__(self, fname):
@@ -76,6 +76,9 @@ class analysisJob(macrothread):
       # 2. Load raw data from trajectory file
       traj = md.load(dcd, top=pdb)
       traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
+
+      # 3. Set DEShaw Reference point
+      traj.superpose(deshawReference())
 
       logging.debug('Trajectory Loaded: %s - %s', jobnum, str(traj))
 

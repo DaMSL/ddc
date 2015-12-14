@@ -2,9 +2,13 @@ from initialize import *
 from anlmd import *
 from ctlmd import *
 from deshaw import *
-from indexer import *
+from indexing import *
 
 import datetime as dt
+import time
+import redis
+import mdtraj as md
+from deshaw import *
 
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
@@ -41,7 +45,7 @@ def savePCAPoints(archive, start):
 # index[1135][400].pca[2]
 
 
-def makePlot():
+def makePlot(S):
   labels = loadLabels()
   pts = []
   for i in range(0, 4100, 100):
@@ -63,22 +67,76 @@ def makePlot():
 
   color = ['red', 'green', 'blue', 'cyan', 'black']
   fig = plt.figure()
-  ax = fig.add_subplot(111, projection='3d')
+  # ax = fig.add_subplot(111, projection='3d')
+  ax = fig.add_subplot(111)
   for i, x in enumerate(X):
-      ax.scatter(x[0], x[1], x[2], c=color[state[i]])
+    if state[i] == S and i % 10 ==0:
+      ax.scatter(x[0], x[1], c=color[state[i]])
+      # ax.scatter(x[0], x[1], x[2], c=color[state[i]])
 
   ax.set_xlabel('PC0')
   ax.set_ylabel('PC1')
-  ax.set_zlabel('PC2')
-  plt.savefig('plot.png')
+  # ax.set_zlabel('PC2')
+  plt.savefig('plot_%d.png'%S)
   plt.close(fig)
 
 
 
+def probe(engine, dcd, pdb, frame=-1, selfprobe=False):
+  theta = .6
+  traj = md.load(dcd, top=pdb)
+  traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
+
+  if frame == -1:
+    frame = traj.n_frames//2
+  eg, ev = LA.eigh(distmatrix(traj.xyz[frame:frame+1]))
+  index = makeIndex(eg, ev)
+  neigh = engine.neighbours(index)
+  if len(neigh) == 0:
+    A = B = -1
+  else:
+    clust = np.zeros(5)
+    count = np.zeros(5)
+    first = 1 if selfprobe else 0
+    for n in neigh[first:]:
+      nnkey = n[1]
+      distance = n[2]
+      nn_state = int(nnkey[0])
+      count[nn_state] += 1
+      clust[nn_state] += abs(1/distance)
+    clust = clust/np.sum(clust)
+    order = np.argsort(clust)[::-1]
+    A = order[0]
+    B = A if clust[A] > theta else order[1]
+  return A, B
+
+
+
+def checkseltraj(archive):
+  with open('select_traj') as src:
+    source = src.read().strip().split('\n')
+  engine = getNearpyEngine(archive, 1362)
+
+  start = []
+  print(' infile:frame    target   select   actual')
+  for i, s in enumerate(source[1000:]):
+    if i % 20 == 1:
+      data = s.split('@')
+      target = eval(data[1].strip())
+      select = eval(data[2].strip())
+      infile = data[3].strip()
+      frame = int(data[4].strip())
+      if infile.isdigit():
+        dcd = os.path.join(DEFAULT.RAW_ARCHIVE, 'bpti-all-%03d.dcd'%int(infile) if int(infile) < 1000 else 'bpti-all-%04d.dcd'%int(infile))
+        pdb = DEFAULT.PDB_FILE
+      else:
+        dcd, pdb = tuple(map(lambda x: os.path.join(DEFAULT.JOBDIR, infile, "%s.%s" % (infile, x)), ['dcd', 'pdb']))
+      actual = probe(engine, dcd, pdb, frame)
+      print('%9s:%03d    t%s   s%s   a%s' % (infile,frame, str(target), str(select), str(actual)))
+
 
 
 def getDEShawIndex(archive, num, frame=400, winsize=200):
-
   start = dt.datetime.now()
   indexSize = int(archive.get('indexSize').decode())
   numpc = int(archive.get('num_pc').decode())
@@ -126,7 +184,6 @@ def getDEShawIndex(archive, num, frame=400, winsize=200):
     logging.info("  MDLoad:     %0.3f", timediff(ts_index, ts_load))
     logging.info("  Eigen :     %0.3f", timediff(ts_load, ts_eigen))
     logging.info("  Probe :     %0.3f", timediff(ts_nearpy, ts_probe))
-
 
 
 def benchmarkDEShaw(archive, theta=.6, winsize=200):
@@ -216,16 +273,68 @@ def benchmarkDEShaw(archive, theta=.6, winsize=200):
     logging.info(" %s  %4d", str(k), v)
 
 
+def selflabeldeshaw(archive):
+  theta = .6
+  indexsize = int(archive.get('indexSize').decode())
+  redis_storage = RedisStorage(archive)
+  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_'+DEFAULT.HASH_NAME+'_*')]
+  ilist = []
+  logging.debug("Pulling  keys")
+  for h in hashkeys:
+    bucket = redis_storage.get_bucket(DEFAULT.HASH_NAME, h)
+    for b in bucket:
+      idx, label = b
+      state = label[0]
+      window = label[2:]
+      ilist.append((idx, window, state))
+  logging.debug("Pulled %d keys", len(ilist))
+  engine = getNearpyEngine(archive, indexsize)
+
+  indexlist = sorted(ilist, key=lambda x: x[1])
+
+  with open('relabel.dat', 'w') as out:
+    out.write('window,deshawlabel,probestateA,probestateB\n')
+  buf = ''
+  for num, i in enumerate(indexlist):
+      idx, window, state = i
+      neigh = engine.neighbours(idx)
+      if len(neigh) == 0:
+        A = B = -1
+      else:
+        clust = np.zeros(5)
+        count = np.zeros(5)
+        for n in neigh[1:]:
+          nnkey = n[1]
+          distance = n[2]
+          trajectory, seqNum = nnkey[2:].split('-')
+
+          # CHANGED: Grab state direct from label (assume state is 1 char, for now)
+          nn_state = int(nnkey[0])  #labels[int(trajectory)].state
+          # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
+          count[nn_state] += 1
+          clust[nn_state] += abs(1/distance)
+
+        # Classify this index with a label based on the highest weighted observed label among neighbors
+        clust = clust/np.sum(clust)
+        order = np.argsort(clust)[::-1]
+        A = order[0]
+        B = A if clust[A] > theta else order[1]
+        buf += '%s,%s,%d,%d\n' % (window, state, A, B)
+      if num % 100 == 0:
+        with open('relabel.dat', 'a') as out:
+          out.write (buf)
+        buf = ''
+
 
 def checkarchive(archive, state=-1):
   theta = .6
   indexsize = int(archive.get('indexSize').decode())
   redis_storage = RedisStorage(archive)
-  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_'+DEFAULT.HASH_NAME+'_*')]
+  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_rbphash_*')]
   indexlist = []
   logging.debug("Pulling  keys")
   for h in hashkeys:
-    bucket = redis_storage.get_bucket(DEFAULT.HASH_NAME, h)
+    bucket = redis_storage.get_bucket('rbphash', h)
     for b in bucket:
       indexlist.append(b)
   logging.debug("Pulled %d keys", len(indexlist))
@@ -257,14 +366,13 @@ def checkarchive(archive, state=-1):
   logging.debug('idx:  SelfChk: NN CL CNT  LabNN  LabCL    Counts')
   maxcounts = np.zeros(5)
 
-  for x in range(6, len(indexlist), ):
+  for x in range(len(indexlist)):
     if total == 500:
       break
     idx = indexlist[x]
     idx_state = int(idx[1][0])
     maxcounts[idx_state] += 1
     if (state > 0 and idx_state != state) or (state == -1 and maxcounts[idx_state] > 100):
-      # print(idx[1][0])
       continue
     total += 1
     neigh = engine.neighbours(idx[0])
@@ -329,8 +437,6 @@ def checkarchive(archive, state=-1):
           labelB = nn_B
           asterisk = '****'
           badindex += 1
-
-
 
       refinedLabel = (labelA, labelB)
       statecount[idx_state] += 1
@@ -427,17 +533,19 @@ if __name__ == '__main__':
   parser.add_argument('--testindex', type=int)
   parser.add_argument('--testarchive', nargs='?', const=-1)
   parser.add_argument('--benchmark', action='store_true')
+  parser.add_argument('--selflabel', action='store_true')
   parser.add_argument('--makeplot', action='store_true')
+  parser.add_argument('--checkseltraj', action='store_true')
   parser.add_argument('--num', type=int, default=10)
   parser.add_argument('--pcaplot', type=int)
   args = parser.parse_args()
 
   DEFAULT = systemsettings()
-  DEFAULT.applyConfig('debug.conf')
 
-  archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
 
   if args.testindex is not None:
+    DEFAULT.applyConfig('default.conf')
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     getDEShawIndex(archive, args.testindex)
     sys.exit(0)
 
@@ -445,12 +553,29 @@ if __name__ == '__main__':
     benchmarkDEShaw(archive)
     sys.exit(0)
 
+  if args.checkseltraj:
+    DEFAULT.applyConfig('cpool.json')
+    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+    checkseltraj(archive)
+
+  if args.selflabel:
+    logging.info('Starting local redis server')
+    executecmd('module load redis')
+    #executecmd('redis-server archself.conf')
+    #time.sleep(5)
+    #ping = executecmd('redis-cli -p 16380')
+    #logging.info('Checking local server: %s', ping)
+    archive = redis.StrictRedis(host='login-node04', port=16380)
+    selflabeldeshaw(archive)
+
   if args.pcaplot is not None:
     savePCAPoints(archive, args.pcaplot)
 
   if args.makeplot:
-    makePlot()
+    for i in range(5):
+      makePlot(i)
 
   if args.testarchive:
+    archive = redis.StrictRedis(port=6380)
     checkarchive(archive, int(args.testarchive))
     sys.exit(0)

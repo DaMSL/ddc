@@ -5,8 +5,11 @@ from macrothread import macrothread
 import datetime as dt
 
 
-import logging
-logging.basicConfig(format='[%(module)s]: %(message)s', level=logging.DEBUG)
+# import logging
+# logging.basicConfig(format='[%(module)s]: %(message)s', level=logging.DEBUG)
+
+logger = logging.getLogger(__name__)
+
 
 class garbageCollect(macrothread):
   def __init__(self, fname):

@@ -2,12 +2,17 @@ import time
 import subprocess as proc
 from common import *
 
-import logging
-logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
-
 
 from collections import namedtuple
 slurmJob = namedtuple('slurmJob', 'jobid, partition, name, user, state, time, time_limit, nodes, nodelist')
+
+
+
+def chmodX(path):
+    mode = os.stat(path).st_mode
+    mode |= (mode & 0o444) >> 2 
+    os.chmod(path, mode)
+
 
 
 class slurm:

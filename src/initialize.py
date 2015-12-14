@@ -189,26 +189,26 @@ def init_control(catalog, archive):
   pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
   candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
 
-  # init first and last
-  pools[labels[0].state].append(0)
-  pools[labels[-1].state].append(len(labels))
+  # # init first and last
+  # pools[labels[0].state].append(0)
+  # pools[labels[-1].state].append(len(labels))
 
-  logging.info("Scanning labellist for potential candidates")
-  for i in range(1, len(labels)-1):
-    if labels[i-1].state == labels[i].state == labels[i+1].state:
-      pools[labels[i].state][labels[i].state].append(i)
-    elif labels[i-1].state == labels[i].state:
-      pools[labels[i].state][labels[i+1].state].append(i)
-    else:
-      pools[labels[i-1].state][labels[i].state].append(i)
+  # logging.info("Scanning labellist for potential candidates")
+  # for i in range(1, len(labels)-1):
+  #   if labels[i-1].state == labels[i].state == labels[i+1].state:
+  #     pools[labels[i].state][labels[i].state].append(i)
+  #   elif labels[i-1].state == labels[i].state:
+  #     pools[labels[i].state][labels[i+1].state].append(i)
+  #   else:
+  #     pools[labels[i-1].state][labels[i].state].append(i)
 
-  logging.info("Creating candidate pools")
-  for i in range(numLabels):
-    for j in range(numLabels):
-      if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
-        candidates[i][j] = pools[i][j]
-      else:    
-        candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
+  # logging.info("Creating candidate pools")
+  # for i in range(numLabels):
+  #   for j in range(numLabels):
+  #     if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
+  #       candidates[i][j] = pools[i][j]
+  #     else:    
+  #       candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
     
   pipe = catalog.pipeline()  
   logging.info("Deleting existing candidate pools")
@@ -216,7 +216,30 @@ def init_control(catalog, archive):
     for j in range(numLabels):
       pipe.delete(candidPoolKey(i, j))
 
-  logging.info("Loading candidate pools")
+  logging.info("Loading DEShaw RMS Values")
+  rms = np.load('rms.out')
+  nn = []
+  cpools = {(i,j):[] for i in range(numLabels) for j in range(numLabels)}
+  logging.info("Creating candidate pools")
+  for i, traj in enumerate(rms):
+    for f, conform in enumerate(traj):
+      ordc = np.argsort(conform)
+      relproximity = conform[ordc[0]] / (conform[ordc[0]] + conform[ordc[1]])
+      nn.append((i, f, ordc[0], ordc[1], relproximity))
+      if relproximity > .49:
+        cpools[(ordc[0], ordc[1])].append((i,f, .5 - relproximity))
+
+  candidatepools = {k:sorted(v, key=lambda x : x[2]) for k,v in cpools.items()}
+
+  for i in range(numLabels):
+    for j in range(numLabels):
+      if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
+        candidates[i][j] = pools[i][j]
+      else:    
+        candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
+
+
+
   for i in range(numLabels):
     for j in range(numLabels):
       for c in candidates[i][j]:
@@ -225,7 +248,7 @@ def init_control(catalog, archive):
 
 
   # Initialize observations matrix
-  obsMat_Store = kv2DArray(catalog, 'observation')
+  obsMat_Store = kv2DArray(catalog, 'observations')
   selMat_Store = kv2DArray(catalog, 'selection')
   launchMat_Store = kv2DArray(catalog, 'launch')
 

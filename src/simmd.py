@@ -8,8 +8,9 @@ from common import *
 from macrothread import macrothread
 from slurm import slurm
 
-import logging
-logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+# import logging
+# logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 

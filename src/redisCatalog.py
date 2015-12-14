@@ -10,9 +10,9 @@ from common import *
 from catalog import catalog
 from threading import Thread, Event
 
-import logging
-logger = setLogger()
-
+# import logging
+# logger = setLogger()
+logger=logging.getLogger('__name__')
 
 terminationFlag = Event()
 

@@ -22,7 +22,7 @@ def singleton(cls):
     return getinstance
 
 
-logger = None
+# logger = None
 
 
 # archiveConfig = dict(name='archive', port=6380)
@@ -160,20 +160,20 @@ class systemsettings:
     # return PCABinaryProjections(None, None, None)
 
 
-DEFAULT = systemsettings()
+@singleton
+def setLogger(name='', logfile=None):
+  # global logger
 
-
-def setLogger(name=""):
-  global logger
-
-  if logger is None:
+  # if logger is None:
     # log_fmt = logging.Formatter(fmt='[%(asctime)s %(levelname)-5s %(name)s] %(message)s',datefmt='%H:%M:%S')
-    log_fmt = logging.Formatter(fmt= '[%(module)s] %(message)s',datefmt='%H:%M:%S')
-    logger = logging.getLogger("")
-    log_console = logging.StreamHandler()
-    log_console.setFormatter(log_fmt)
-    logger.setLevel(logging.DEBUG)
+  log_fmt = logging.Formatter(fmt= '[%(module)s] %(message)s',datefmt='%H:%M:%S')
+  logger = logging.getLogger(name)
+  log_console = logging.StreamHandler()
+  log_console.setFormatter(log_fmt)
+  logger.setLevel(logging.DEBUG)
     # logger.addHandler(log_console)
+  logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
+  logging.info("LOGGING IS SET UP")
 
   return logger
 
@@ -192,11 +192,6 @@ def unwrapKey(key):
   return key[key.find('_')+1:] if '_' in key else key
 
 
-def chmodX(path):
-    mode = os.stat(path).st_mode
-    mode |= (mode & 0o444) >> 2 
-    os.chmod(path, mode)
-
 
 def executecmd(cmd):
   task = proc.Popen(cmd, shell=True,
@@ -206,6 +201,7 @@ def executecmd(cmd):
 
 
 
-
+DEFAULT = systemsettings()
+logger=setLogger('')  # Set Top Level Logger For formatting
 
 

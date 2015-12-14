@@ -24,8 +24,8 @@ from random import choice, randint
 from deshaw import *
 from indexing import *
 
-import logging
-logging.basicConfig(format='%(message)s', level=logging.DEBUG)
+# import logging
+# logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
 
 
