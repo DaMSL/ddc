@@ -23,6 +23,11 @@ def get2DKeys(key, X, Y):
 
 
 
+
+
+
+
+
 class dataStore(redis.StrictRedis, catalog):
   def __init__(self, name, host='localhost', port=6379, db=0, persist=True, connect=True):
 
@@ -265,6 +270,141 @@ class dataStore(redis.StrictRedis, catalog):
 
 
 
+  # Retrieve data stored for each key in data & store into data 
+  def load(self, data):
+
+    # Support single item data retrieval:
+    deferredload = []
+    keys = data.keys()
+    pipe = self.pipeline()
+    for key in keys:
+      tp = ''
+      if isinstance(data[key], list):
+        pipe.lrange(key, 0, -1)
+        tp = 'LIST'
+      elif isinstance(data[key], dict):
+        pipe.hgetall(key)
+        tp = 'DICT'
+      elif isinstance(data[key], np.ndarray):
+        deferredload.append(key)
+      else:
+        pipe.get(key)
+        tp = 'VAL'
+      # logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
+
+
+    vals = pipe.execute()
+
+    for key in deferredload:
+      if isinstance(data[key], np.ndarray):
+        logging.debug("Loading NDArray, %s", key)
+        data[key] = self.loadNPArray(key)
+
+    #  Data Conversion
+    # TODO:  MOVE TO JSON BASED RETRIEVAL
+
+    i = 0
+    for key in keys:
+      try:
+        # logger.debug('Caching:  ' + key)
+        if key in deferredload:
+          continue
+        if isinstance(data[key], list):
+          tmp = [val.decode() for val in vals[i]]
+          try:
+            if len(tmp) == 0:
+              data[key] = []
+            elif tmp[0].isdigit():
+              data[key] = [int(val) for val in tmp]
+            else:
+              data[key] = [float(val) for val in tmp]
+          except ValueError as ex:
+            data[key] = tmp
+        elif isinstance(data[key], dict):
+          # logging.debug("Hash Loader")
+          for k,v in vals[i].items():
+            try:
+              subkey = k.decode()
+              subval = v.decode()
+              # logging.debug("   %s:  %s", k, (str(v)))
+              if v.isdigit():
+                data[key][subkey] = int(subval)
+              else:
+                data[key][subkey] = float(subval)
+            except ValueError as ex:
+              data[key][subkey] = subval
+        elif isinstance(data[key], int):
+          data[key] = int(vals[i].decode())
+        elif isinstance(data[key], float):
+          data[key] = float(vals[i].decode())
+        elif vals[i] is None:
+          data[key] = None
+        else:
+          data[key] = vals[i].decode()
+        i += 1
+      except (AttributeError, KeyError) as ex:
+        logging.error("BAD KEY:  %s", key)
+        logging.error("Trace:  %s", str(ex))
+        sys.exit(0)
+
+  # Slice off data in-place. Asssume key stores a list
+  def slice(self, key, num):
+    data = self.lrange(key, 0, num-1)
+    self.ltrim(key, num, -1)
+    return [d.decode() for d in data]
+
+  # Remove specific items from a list
+  #  Given: a list and a set of indices into that list
+  def removeItems(self, key, itemlist):
+    nullvalue = getUID()
+
+    pipe = self.pipeline()
+    for index in itemlist:
+      pipe.lset(key, index, nullvalue)
+
+    pipe.lrem(key, 0, nullvalue)
+    pipe.execute()
+
+
+  def append(self, key, itemlist):
+    self.rpush(key, *tuple(itemlist))
+
+  # Check if key exists in db
+  def check(self, key):
+    if self.type(key).decode() == 'none':
+      return False
+    else:
+      return True
+
+
+  def storeNPArray(self, arr, key):
+    #  Force numpy version 1.0 formatting
+    header = {'shape': arr.shape,
+              'fortran_order': arr.flags['F_CONTIGUOUS'],
+              'dtype': np.lib.format.dtype_to_descr(np.dtype(arr.dtype))}
+    self.hmset(key, {'header': json.dumps(header), 'data': bytes(arr)})
+
+  def loadNPArray(self, key):
+    elm = {k.decode(): v for k, v in self.hgetall(key).items()}
+    if elm == {}:
+      return None
+    header = json.loads(elm['header'].decode())
+    arr = np.fromstring(elm['data'], dtype=header['dtype'])
+    return arr.reshape(header['shape'])
+
+
+
+
+
+  # TODO:  Additional notification logic, as needed
+  def notify(self, key, state):
+    if state == 'ready':
+      self.set(key, state)
+
+
+
+
+
   # def append(self, data):
   #   """
   #   Append Only updates to the catalog data
@@ -357,106 +497,3 @@ class dataStore(redis.StrictRedis, catalog):
   #       logging.error("BAD KEY:  %s", key)
   #       logging.error("Trace:  %s", str(ex))
   #       sys.exit(0)
-
-  # Retrieve data stored for each key in data & store into data 
-  def load(self, data):
-
-    # Support single item data retrieval:
-    keys = data.keys()
-    pipe = self.pipeline()
-    for key in keys:
-      tp = ''
-      if isinstance(data[key], list):
-        pipe.lrange(key, 0, -1)
-        tp = 'LIST'
-      elif isinstance(data[key], dict):
-        pipe.hgetall(key)
-        tp = 'DICT'
-      else:
-        pipe.get(key)
-        tp = 'VAL'
-      # logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
-
-
-    vals = pipe.execute()
-
-    #  Data Conversion
-    # TODO:  MOVE TO JSON BASED RETRIEVAL
-
-    for i, key in enumerate(keys):
-      try:
-        # logger.debug('Caching:  ' + key)
-        if isinstance(data[key], list):
-          tmp = [val.decode() for val in vals[i]]
-          try:
-            if len(tmp) == 0:
-              data[key] = []
-            elif tmp[0].isdigit():
-              data[key] = [int(val) for val in tmp]
-            else:
-              data[key] = [float(val) for val in tmp]
-          except ValueError as ex:
-            data[key] = tmp
-        elif isinstance(data[key], dict):
-          # logging.debug("Hash Loader")
-          for k,v in vals[i].items():
-            try:
-              subkey = k.decode()
-              subval = v.decode()
-              # logging.debug("   %s:  %s", k, (str(v)))
-              if v.isdigit():
-                data[key][subkey] = int(subval)
-              else:
-                data[key][subkey] = float(subval)
-            except ValueError as ex:
-              data[key][subkey] = subval
-        elif isinstance(data[key], int):
-          data[key] = int(vals[i].decode())
-        elif isinstance(data[key], float):
-          data[key] = float(vals[i].decode())
-        elif vals[i] is None:
-          data[key] = None
-        else:
-          data[key] = vals[i].decode()
-      except (AttributeError, KeyError) as ex:
-        logging.error("BAD KEY:  %s", key)
-        logging.error("Trace:  %s", str(ex))
-        sys.exit(0)
-
-  # Slice off data in-place. Asssume key stores a list
-  def slice(self, key, num):
-    data = self.lrange(key, 0, num-1)
-    self.ltrim(key, num, -1)
-    return [d.decode() for d in data]
-
-  # Remove specific items from a list
-  #  Given: a list and a set of indices into that list
-  def removeItems(self, key, itemlist):
-    nullvalue = getUID()
-
-    pipe = self.pipeline()
-    for index in itemlist:
-      pipe.lset(key, index, nullvalue)
-
-    pipe.lrem(key, 0, nullvalue)
-    pipe.execute()
-
-
-  def append(self, key, itemlist):
-    self.rpush(key, *tuple(itemlist))
-
-  # Check if key exists in db
-  def check(self, key):
-    if self.type(key).decode() == 'none':
-      return False
-    else:
-      return True
-
-
-
-
-  # TODO:  Additional notification logic, as needed
-  def notify(self, key, state):
-    if state == 'ready':
-      self.set(key, state)
-

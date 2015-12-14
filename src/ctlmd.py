@@ -115,27 +115,12 @@ candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
 
 
 
-def storeNPArray(store, arr, key):
-  #  Force numpy version 1.0 formatting
-  header = {'shape': arr.shape,
-            'fortran_order': arr.flags['F_CONTIGUOUS'],
-            'dtype': np.lib.format.dtype_to_descr(np.dtype(arr.dtype))}
-  store.hmset(key, {'header': json.dumps(header), 'data': bytes(arr)})
-
-def loadNPArray(store, key):
-  elm = {k.decode(): v for k, v in store.hgetall(key).items()}
-  if elm == {}:
-    return None
-  header = json.loads(elm['header'].decode())
-  arr = np.fromstring(elm['data'], dtype=header['dtype'])
-  return arr.reshape(header['shape'])
 
 
 
 
 
-
-def generateNewJC(rawfile, pdbfile, topo, parm, debugstring=None):
+def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
 
     logging.debug("Generating new simulation coordinates from:  %s", rawfile)
 
@@ -163,7 +148,9 @@ def generateNewJC(rawfile, pdbfile, topo, parm, debugstring=None):
     
     #  For now, pick a random frame from this trajectory
     #  TODO:  ID specific window reference point
-    frame = randint(0, traj.n_frames)
+    if frame is None:
+      frame = randint(0, traj.n_frames)
+
     coord = traj.slice(frame)
 
     logging.debug("  Source trajectory: %s   (frame # %d)", str(coord), frame)
@@ -172,6 +159,7 @@ def generateNewJC(rawfile, pdbfile, topo, parm, debugstring=None):
 
     # Save this as a temp file to set up simulation input file
     coord.save_pdb(coordFile)
+
 
     newsimJob = dict(workdir=jobdir,
         coord = coordFile,
@@ -198,7 +186,7 @@ class controlJob(macrothread):
     def __init__(self, fname):
       macrothread.__init__(self, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
-      self.setStream('LDIndexList', None)
+      self.setStream('completesim', None)
       self.setState('JCQueue', 'indexSize', 'timestep', 'num_var', 
                     'converge', 'ctlSplitParam', 'ctlDelay', 'num_pc',
                     *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
@@ -218,70 +206,134 @@ class controlJob(macrothread):
 
     def split(self):
 
-      catalog = self.getCatalog()
+      # catalog = self.getCatalog()
 
       # TODO:  Provide better organization/sorting of the input queue based on weights
       # For now: just take the top N
-      split = self.data['ctlSplitParam']
-      immed = self.data['LDIndexList'][:split]
-      return immed,split
+      # split = self.data['ctlSplitParam']
+      # immed = self.data['LDIndexList'][:split]
+      immed = [] if len(self.data['completesim']) == 0 else ['completesim']
+      return immed,None
 
     def fetch(self, i):
-      return {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(wrapKey('idx', i)).items()}
+      # return {k.decode():np.fromstring(v, dtype=np.float64) for k, v in self.catalog.hgetall(wrapKey('idx', i)).items()}
+      # return {i: loadNPArray(self.catalog, wrapKey('idx', i))}
+      # FOR NOW Get all jobs available
+
+      pipe = self.catalog.pipeline()
+      pipe.lrange('completesim', 0, -1)
+      pipe.delete('completesim')
+      vals = pipe.execute()
+      return [v.decode() for v in vals[0]]
+
+
       
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
 
 
-    def execute(self, ld_index):
-      logging.debug('CTL MT')
-
-      logging.debug("============================  <PRE-PROCESS>  =============================")
+    def oldcode():
+      pass
       # TODO:  Treat Archive as an overlay service. For now, wrap inside here and connect to it
 
-      # Increment the timestep
-      self.data['timestep'] += 1
-      logging.info('TIMESTEP: %d', self.data['timestep'])
 
-      archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-      redis_storage = RedisStorage(archive)
-      config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
-      if not config:
-        logging.error("LSHash not configured")
-        #TODO: Gracefully exit
-        return []
+      # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+      # redis_storage = RedisStorage(archive)
+      # config = redis_storage.load_hash_configuration(DEFAULT.HASH_NAME)
+      # if not config:
+      #   logging.error("LSHash not configured")
+      #   #TODO: Gracefully exit
+      #   return []
 
-      # Create empty lshash and load stored hash
-      lshash = DEFAULT.getEmptyHash()
-      lshash.apply_config(config)
-      indexSize = self.data['num_var'] * self.data['num_pc']
-      logging.debug("INDEX SIZE = %d:  ", indexSize)
-      engine = nearpy.Engine(indexSize, 
-            lshashes=[lshash], 
-            storage=redis_storage)
+      # # Create empty lshash and load stored hash
+      # lshash = DEFAULT.getEmptyHash()
+      # lshash.apply_config(config)
+      # indexSize = self.data['num_var'] * self.data['num_pc']
+      # logging.debug("INDEX SIZE = %d:  ", indexSize)
+      # engine = nearpy.Engine(indexSize, 
+      #       lshashes=[lshash], 
+      #       storage=redis_storage)
 
       # Load current set of known states
       #  TODO:  Injection Point for clustering. If clustering were applied
       #    this would be much more dynamic (static fileload for now)
-      labels = loadLabels()
-      labelNames = getLabelList(labels)
-      numLabels = len(labelNames)
+      # labels = loadLabels()
+      # labelNames = getLabelList(labels)
+      # numLabels = len(labelNames)
 
  
       # PROBE   ------------------------
-      logging.debug("============================  <PROBE>  =============================")
+      # logging.debug("============================  <PROBE>  =============================")
 
       # Set initial params for index calculations
-      prevState = -1    # To track each state transition
-      prevTrajectory = None   # To check for unique trajectories
-      decisionHistory = {}    # Holds Decision History data from source JC used to create the data
-      observationDistribution = {}   #  distribution of observed states (for each input trajectory)
-      observationCount = {}
-      statdata = {}
-      newvectors = []
-      delta_tmat = np.zeros(shape=(numLabels, numLabels))
-      # observationSet = set()  # To track the # of unique observations (for each input trajectory)
+      # prevState = -1    # To track each state transition
+      # prevTrajectory = None   # To check for unique trajectories
+      # decisionHistory = {}    # Holds Decision History data from source JC used to create the data
+      # observationDistribution = {}   #  distribution of observed states (for each input trajectory)
+      # observationCount = {}
+      # statdata = {}
+      # newvectors = []
+      # delta_tmat = np.zeros(shape=(numLabels, numLabels))
+
+
+      # ### UPDATED USING RMS as probe function
+
+
+      # for sourceJC in rms_list.keys():
+      #   config = {}
+      #   self.catalog.load({wrapKey('jc', sourceJC): config})  #TODO: Load these up front
+      #   for k, v in config.items():
+      #     logging.debug("  %s:  %s", k, str(v))
+      #   decisionHistory[sourceJC] = config
+      #   if 'state' not in config:
+      #     logging.info("New Index to analyze, %s: NO Historical State Data", sourceJC)
+      #     prevState = None  # Do not count transition into first probed index
+      #   else:
+      #     logging.debug("New Index to analyze, %s: Source JC was previously in state %d", sourceJC, prevState)
+      #     prevState = config['state']
+
+      #   sourceJCKey = wrapKey('jc', sourceJC)
+      #   self.addToState(sourceJCKey, config)
+      #   # statdata[sourceJC] = {}
+
+
+      #   # Analyze Each conform (Should this move to anlmd execute)
+      #   logging.info('Checking RMS for each conform of %d length trajectory', len(rms_list[sourceJC]))
+      #   for num, rms in enumerate(rms_list[sourceJC]):
+
+      #     #  Check proximity to nearest 2 centroids
+      #     #  TODO: Account for proximity to more than 2 (may be "interesting" data point)
+
+
+
+      #   state = A
+      #   labeledBin = (A, B)
+      #   statdata[sourceJC]['bin'] = str(labeledBin)
+      #   statdata[sourceJC]['count'] = count.tolist()
+      #   statdata[sourceJC]['clust'] = clust.tolist()
+
+
+      #     # Increment the transition matrix  
+      #     #  (NOTE: SHOULD WE IGNORE 1ST INDEX IN A TRAJECTORY, since it doesn't describe a transition?)
+      #     # if prevState == None:
+      #     #   prevState = state
+      #     logging.debug("    Index classified in bin:  (%d, %d)", A, B)
+      #     if prevState is None:
+      #       logging.debug("    First Index in Traj")
+      #     else:
+      #       logging.debug("    Transition (%d, %d)", prevState, state)
+      #     logging.debug("      Clustered at: %s", str(clust/np.sum(clust)))
+      #     logging.debug("      Counts:       %s", str(count))
+      #     logging.debug("      NN Index:     %s", neigh[0][1])
+
+      #     # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
+      #     prevState = state
+
+
+
+
+
 
       # NOTE: ld_index is a list of indexed trajectories. They may or may NOT be from
       #   the same simulation (allows for grouping of multiple downstream data into 
@@ -289,191 +341,191 @@ class controlJob(macrothread):
       #   trajectories IOT track state changes. 
 
       #  Theta is calculated as the probability of staying in 1 state (from observed data)
-      theta = .6  #self.data['observation_counts'][1] / sum(self.data['observation_counts'])
-      logging.debug("  THETA  = %0.3f   (static for now)", theta)
+      # theta = .6  #self.data['observation_counts'][1] / sum(self.data['observation_counts'])
+      # logging.debug("  THETA  = %0.3f   (static for now)", theta)
 
-      for key in sorted(ld_index.keys()):
+      # for key in sorted(ld_index.keys()):
 
-        index = np.array(ld_index[key])   # Get actual Index for this window
-        sourceJC, frame = key.split(':')  # Assume colon separator
-        # logging.info(' Index Loaded from %s:   Shape=%s,  Type=%s', sourceJC, str(index.shape), str(index.dtype))
+      #   index = np.array(ld_index[key])   # Get actual Index for this window
+      #   sourceJC, frame = key.split(':')  # Assume colon separator
+      #   # logging.info(' Index Loaded from %s:   Shape=%s,  Type=%s', sourceJC, str(index.shape), str(index.dtype))
 
-        # Get Decision History for the index IF its a new index not previously processed
-        #  and initialize observation distribution to zeros
-        if sourceJC != prevTrajectory:
-          observationDistribution[sourceJC] = np.zeros(5)
-          observationCount[sourceJC] = np.zeros(5)
+      #   # Get Decision History for the index IF its a new index not previously processed
+      #   #  and initialize observation distribution to zeros
+      #   if sourceJC != prevTrajectory:
+      #     observationDistribution[sourceJC] = np.zeros(5)
+      #     observationCount[sourceJC] = np.zeros(5)
 
-          #  TODO: Load indices up front with source history
-          config = {}
-          self.catalog.load({wrapKey('jc', sourceJC): config})  #TODO: Load these up front
-          for k, v in config.items():
-            logging.debug("  %s:  %s", k, str(v))
-          decisionHistory[sourceJC] = config
-          if 'state' not in config:
-            logging.info("New Index to analyze, %s: NO Historical State Data", sourceJC)
-          else:
-            logging.debug("New Index to analyze, %s: Source JC was previously in state %d", sourceJC, prevState)
+      #     #  TODO: Load indices up front with source history
+      #     config = {}
+      #     self.catalog.load({wrapKey('jc', sourceJC): config})  #TODO: Load these up front
+      #     for k, v in config.items():
+      #       logging.debug("  %s:  %s", k, str(v))
+      #     decisionHistory[sourceJC] = config
+      #     if 'state' not in config:
+      #       logging.info("New Index to analyze, %s: NO Historical State Data", sourceJC)
+      #     else:
+      #       logging.debug("New Index to analyze, %s: Source JC was previously in state %d", sourceJC, prevState)
 
-          prevState = None  # Do not count transition into first probed index
+      #     prevState = None  # Do not count transition into first probed index
 
-          sourceJCKey = wrapKey('jc', sourceJC)
-          self.addToState(sourceJCKey, config)
-          prevTrajectory = sourceJC
-          statdata[sourceJC] = {}
+      #     sourceJCKey = wrapKey('jc', sourceJC)
+      #     self.addToState(sourceJCKey, config)
+      #     prevTrajectory = sourceJC
+      #     statdata[sourceJC] = {}
 
-          # Note:  Other Decision History is loaded here
+      #     # Note:  Other Decision History is loaded here
 
-        logging.info("  Probing `%s` window at frame # %s  (state %s)", sourceJC, frame, str(prevState))
-        statdata[sourceJC][frame] = {}
+      #   logging.info("  Probing `%s` window at frame # %s  (state %s)", sourceJC, frame, str(prevState))
+      #   statdata[sourceJC][frame] = {}
 
-        # Probe historical index
-        neigh = engine.neighbours(index)
-        if len(neigh) == 0:
-          logging.info ("    Found no near neighbors for %s", key)
-        else:
-          logging.debug ("    Found %d neighbours:", len(neigh))
+      #   # Probe historical index
+      #   neigh = engine.neighbours(index)
+      #   if len(neigh) == 0:
+      #     logging.info ("    Found no near neighbors for %s", key)
+      #   else:
+      #     logging.debug ("    Found %d neighbours:", len(neigh))
 
-          #  Track the weighted count (a.k.a. cluster) for this index's nearest neighbors
-          clust = np.zeros(5)
-          count = np.zeros(5)
-          for n in neigh:
-            nnkey = n[1]
-            distance = n[2]
-            trajectory, seqNum = nnkey[2:].split('-')
+      #     #  Track the weighted count (a.k.a. cluster) for this index's nearest neighbors
+      #     clust = np.zeros(5)
+      #     count = np.zeros(5)
+      #     for n in neigh:
+      #       nnkey = n[1]
+      #       distance = n[2]
+      #       trajectory, seqNum = nnkey[2:].split('-')
 
-            # CHANGED: Grab state direct from label (assume state is 1 char, for now)
-            nn_state = int(nnkey[0])  #labels[int(trajectory)].state
-            # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
-            count[nn_state] += 1
-            clust[nn_state] += abs(1/distance)
+      #       # CHANGED: Grab state direct from label (assume state is 1 char, for now)
+      #       nn_state = int(nnkey[0])  #labels[int(trajectory)].state
+      #       # logging.info ("    NN:  %s   dist = %f    state=%d", nnkey, distance, nn_state)
+      #       count[nn_state] += 1
+      #       clust[nn_state] += abs(1/distance)
 
-            # Add total to the original input trajectory (for historical and feedback decisions)
-            observationCount[sourceJC][nn_state] += 1
-            observationDistribution[sourceJC][nn_state] += abs(1/distance)
+      #       # Add total to the original input trajectory (for historical and feedback decisions)
+      #       observationCount[sourceJC][nn_state] += 1
+      #       observationDistribution[sourceJC][nn_state] += abs(1/distance)
 
-          # Classify this index with a label based on the highest weighted observed label among neighbors
-          clust = clust/np.sum(clust)
-          order = np.argsort(clust)[::-1]
-          A = order[0]
-          B = A if clust[A] > theta else order[1]
-          delta_tmat[A][B] += 1
+      #     # Classify this index with a label based on the highest weighted observed label among neighbors
+      #     clust = clust/np.sum(clust)
+      #     order = np.argsort(clust)[::-1]
+      #     A = order[0]
+      #     B = A if clust[A] > theta else order[1]
+      #     delta_tmat[A][B] += 1
 
-          state = A
-          labeledBin = (A, B)
-          statdata[sourceJC][frame]['state'] = str(state)
-          statdata[sourceJC][frame]['bin'] = str(labeledBin)
-          statdata[sourceJC][frame]['count'] = count.tolist()
-          statdata[sourceJC][frame]['clust'] = clust.tolist()
+      #     state = A
+      #     labeledBin = (A, B)
+      #     statdata[sourceJC][frame]['state'] = str(state)
+      #     statdata[sourceJC][frame]['bin'] = str(labeledBin)
+      #     statdata[sourceJC][frame]['count'] = count.tolist()
+      #     statdata[sourceJC][frame]['clust'] = clust.tolist()
 
 
-          # Increment the transition matrix  
-          #  (NOTE: SHOULD WE IGNORE 1ST INDEX IN A TRAJECTORY, since it doesn't describe a transition?)
-          # if prevState == None:
-          #   prevState = state
-          logging.debug("    Index classified in bin:  (%d, %d)", A, B)
-          if prevState is None:
-            logging.debug("    First Index in Traj")
-          else:
-            logging.debug("    Transition (%d, %d)", prevState, state)
-          logging.debug("      Clustered at: %s", str(clust/np.sum(clust)))
-          logging.debug("      Counts:       %s", str(count))
-          logging.debug("      NN Index:     %s", neigh[0][1])
+      #     # Increment the transition matrix  
+      #     #  (NOTE: SHOULD WE IGNORE 1ST INDEX IN A TRAJECTORY, since it doesn't describe a transition?)
+      #     # if prevState == None:
+      #     #   prevState = state
+      #     logging.debug("    Index classified in bin:  (%d, %d)", A, B)
+      #     if prevState is None:
+      #       logging.debug("    First Index in Traj")
+      #     else:
+      #       logging.debug("    Transition (%d, %d)", prevState, state)
+      #     logging.debug("      Clustered at: %s", str(clust/np.sum(clust)))
+      #     logging.debug("      Counts:       %s", str(count))
+      #     logging.debug("      NN Index:     %s", neigh[0][1])
 
-          # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
-          prevState = state
+      #     # TODO: Consistency Decision. When does the transition matrix get updated and snych's with other control jobs????
+      #     prevState = state
 
 
       # Build Decision History Data for the Source JC's from the indices
       # transitionBins = kv2DArray(archive, 'transitionBins', mag=5, dtype=str, init=[])      # Should this load here (from archive) or with other state data from catalog?
                 # BUILD ARCHIVE ONLINE:
-          if DEFAULT.BUILD_ARCHIVE:
-            label = '%d %s-%s' % (state, sourceJC, frame)
-            newvectors.append((index, label))
+      #     if DEFAULT.BUILD_ARCHIVE:
+      #       label = '%d %s-%s' % (state, sourceJC, frame)
+      #       newvectors.append((index, label))
 
-      if DEFAULT.BUILD_ARCHIVE:
-        for vect in newvectors:
-          logging.info("ADDING new Index to the Archive:  %s", vect[1])
-          engine.store_vector(vect[0], vect[1])
-      else:
-        logging.debug('BUILD Archive is off (not storing)')
+      # if DEFAULT.BUILD_ARCHIVE:
+      #   for vect in newvectors:
+      #     logging.info("ADDING new Index to the Archive:  %s", vect[1])
+      #     engine.store_vector(vect[0], vect[1])
+      # else:
+      #   logging.debug('BUILD Archive is off (not storing)')
 
       #  DECISION HISTORY  --------------------------
-      logging.debug("============================  <DECISION HIST>  =============================")
+      # logging.debug("============================  <DECISION HIST>  =============================")
 
 
       #  Process output data for each unque input trajectory (as produced by a single simulation)
-      launch_delta = np.zeros(shape=(numLabels, numLabels))
-      for sourceJC, cluster in observationDistribution.items():
-        logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point here for better classification and/or move to analysis)", sourceJC)
-        if sum(observationDistribution[sourceJC]) == 0:
-          logging.debug(" No observed data for, %s", sourceJC)
-          continue
+      # launch_delta = np.zeros(shape=(numLabels, numLabels))
+      # for sourceJC, cluster in observationDistribution.items():
+      #   logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point here for better classification and/or move to analysis)", sourceJC)
+      #   if sum(observationDistribution[sourceJC]) == 0:
+      #     logging.debug(" No observed data for, %s", sourceJC)
+      #     continue
 
-        #  TODO: Another injection point for better classification. Here, the classification is for the input trajectory
-        #     as a whole for future job candidate selection. 
+      #   #  TODO: Another injection point for better classification. Here, the classification is for the input trajectory
+      #   #     as a whole for future job candidate selection. 
 
-        logging.debug("  Observations:      %s", str(observationCount[sourceJC]))
-        logging.debug("  Cluster weights:   %s", str(cluster/np.sum(cluster)))
-        index_distro = cluster / sum(cluster)
-        # logging.debug("Observations for input index, %s\n  %s", sourceJC, str(distro))
-        sortedLabels = np.argsort(index_distro)[::-1]    # Should this be normaized to check theta????? or is theta a global calc?
-        statelist = [int(statdata[sourceJC][f]['state']) for f in sorted(statdata[sourceJC].keys())]
+      #   logging.debug("  Observations:      %s", str(observationCount[sourceJC]))
+      #   logging.debug("  Cluster weights:   %s", str(cluster/np.sum(cluster)))
+      #   index_distro = cluster / sum(cluster)
+      #   # logging.debug("Observations for input index, %s\n  %s", sourceJC, str(distro))
+      #   sortedLabels = np.argsort(index_distro)[::-1]    # Should this be normaized to check theta????? or is theta a global calc?
+      #   statelist = [int(statdata[sourceJC][f]['state']) for f in sorted(statdata[sourceJC].keys())]
 
-        stateA = statelist[0]
-                # idxcount = np.zeros(len(numLabels))
-        stateB = None
-        transcount = 0
-        for n in statelist[1:]:
-          transcount += 1
-          if stateA != n:
-            stateB = n
-            logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", sourceJC, stateA, stateB)
-            break
-        if stateB is None:
-          logging.debug(" Trajectory `%s`  classified as staying in state :  %d", sourceJC, stateA)
-          stateB = stateA
-          # idxcount[n] += 1
-        # sortedLabels = np.argsort(idxcount)[::-1]    # Should this be normaized to check theta????? or is theta a global calc?
+      #   stateA = statelist[0]
+      #           # idxcount = np.zeros(len(numLabels))
+      #   stateB = None
+      #   transcount = 0
+      #   for n in statelist[1:]:
+      #     transcount += 1
+      #     if stateA != n:
+      #       stateB = n
+      #       logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", sourceJC, stateA, stateB)
+      #       break
+      #   if stateB is None:
+      #     logging.debug(" Trajectory `%s`  classified as staying in state :  %d", sourceJC, stateA)
+      #     stateB = stateA
+      #     # idxcount[n] += 1
+      #   # sortedLabels = np.argsort(idxcount)[::-1]    # Should this be normaized to check theta????? or is theta a global calc?
 
-        # stateA = sortedLabels[0]
-        # stateB = sortedLabels[1] if idxcount[sortedLabels[1]] > 0 else stateA
+      #   # stateA = sortedLabels[0]
+      #   # stateB = sortedLabels[1] if idxcount[sortedLabels[1]] > 0 else stateA
 
 
-        # Source Trajectory spent most of its time in 1 state
-        # if max(index_distro) > theta: 
-        #   logging.debug(" Trajectory `%s`  classified as staying in state :  %d", sourceJC, stateA)
-        #   stateB = stateA
+      #   # Source Trajectory spent most of its time in 1 state
+      #   # if max(index_distro) > theta: 
+      #   #   logging.debug(" Trajectory `%s`  classified as staying in state :  %d", sourceJC, stateA)
+      #   #   stateB = stateA
 
-        # # Observation showed some transition 
-        # else:
-        #   stateB = sortedLabels[1]
-        #   logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", sourceJC, stateA, stateB)
+      #   # # Observation showed some transition 
+      #   # else:
+      #   #   stateB = sortedLabels[1]
+      #   #   logging.debug(" Trajectory `%s`  classified as in-between states :  %d  &  %d", sourceJC, stateA, stateB)
 
-        #  Add this candidate to list of potential pools (FIFO: popleft if pool at max size):
-        if len(self.data[candidPoolKey(stateA, stateB)]) >= DEFAULT.CANDIDATE_POOL_SIZE:
-          del self.data[candidPoolKey(stateA, stateB)][0] 
-        logging.info("BUILD_CANDID_POOL: Added `%s` to candidate pool (%d, %d)", sourceJC, stateA, stateB)
-        self.data[candidPoolKey(stateA, stateB)].append(sourceJC)
+      #   #  Add this candidate to list of potential pools (FIFO: popleft if pool at max size):
+      #   if len(self.data[candidPoolKey(stateA, stateB)]) >= DEFAULT.CANDIDATE_POOL_SIZE:
+      #     del self.data[candidPoolKey(stateA, stateB)][0] 
+      #   logging.info("BUILD_CANDID_POOL: Added `%s` to candidate pool (%d, %d)", sourceJC, stateA, stateB)
+      #   self.data[candidPoolKey(stateA, stateB)].append(sourceJC)
 
-        outputBin = str((stateA, stateB))
-        if 'targetBin' in self.data[wrapKey('jc', sourceJC)]:
-          inputBin  = self.data[wrapKey('jc', sourceJC)]['targetBin']
-          a, b = eval(inputBin)
+      #   outputBin = str((stateA, stateB))
+      #   if 'targetBin' in self.data[wrapKey('jc', sourceJC)]:
+      #     inputBin  = self.data[wrapKey('jc', sourceJC)]['targetBin']
+      #     a, b = eval(inputBin)
 
-          #  INCREMENT "LAUNCH" Counter
-          launch_delta[a][b] += 1
+      #     #  INCREMENT "LAUNCH" Counter
+      #     launch_delta[a][b] += 1
 
-          logging.info("  Original Target Bin was       :  %s", inputBin) 
-          logging.info("  Actual Trajectory classified  :  %s", outputBin) 
-          logging.debug("    TODO: ID difference, update ML weights, provonance, etc..... (if desired)")
+      #     logging.info("  Original Target Bin was       :  %s", inputBin) 
+      #     logging.info("  Actual Trajectory classified  :  %s", outputBin) 
+      #     logging.debug("    TODO: ID difference, update ML weights, provonance, etc..... (if desired)")
 
-        # Update other History Data
-        key = wrapKey('jc', sourceJC)
-        self.data[key]['actualBin'] = outputBin
-        self.data[key]['application'] = DEFAULT.APPL_LABEL
-        logging.debug("%s", str(statdata[sourceJC]))
-        self.data[key]['indexList'] = json.dumps(statdata[sourceJC])
+      #   # Update other History Data
+      #   key = wrapKey('jc', sourceJC)
+      #   self.data[key]['actualBin'] = outputBin
+      #   self.data[key]['application'] = DEFAULT.APPL_LABEL
+      #   logging.debug("%s", str(statdata[sourceJC]))
+      #   self.data[key]['indexList'] = json.dumps(statdata[sourceJC])
 
       ####   This is end of processing a single Job Candidate and here begins the cycle of finding next set of JC's
       #  Everything above  could actually co-locate with the analysis thread whereby the output of the analysis
@@ -481,6 +533,31 @@ class controlJob(macrothread):
 
 
       #  WEIGHT CALCULATION ---------------------------
+
+      # Increment the timestep
+
+
+    # def execute(self, ld_index):
+    def execute(self, job_list):
+      logging.debug('CTL MT')
+
+      logging.debug("============================  <PRE-PROCESS>  =============================")
+
+      self.data['timestep'] += 1
+      logging.info('TIMESTEP: %d', self.data['timestep'])
+
+      numLabels = int(self.data['numLabels'])
+
+      delta_tmat = np.zeros(shape=(numLabels, numLabels))
+      for job in job_list:
+        key = wrapKey('jc', job)
+        history = {}
+        self.catalog.load({key: history})
+        delta  = self.catalog.loadNPArray(wrapKey('delta', job))
+        delta_tmat += delta
+
+      logging.debug('Delta Matrix: %s\n%s', job, str(delta_tmat))
+
       logging.debug("============================  <WEIGHT CALC>  =============================")
 
  
@@ -530,7 +607,6 @@ class controlJob(macrothread):
 
       # 2. Fatigue portion based on # times each bin was "launched"
       launchMat_Store = kv2DArray(self.catalog, 'launch')
-      launchMat_Store.merge(launch_delta)
       launch = launchMat_Store.get()
       quota = np.sum(launch) / (totalBins - numLabels)
 
@@ -691,8 +767,8 @@ class controlJob(macrothread):
           # selectedBins.append((A, B))
 
           # Pick a random trajectory from the bin
-          sourceTraj = choice(candidatePool)
-          dstring = "####SELECT_TRAJ@ %s @ %s @ %s " % (str(targetBin[0]), str(selectedbin), str(sourceTraj))
+          sourceTraj, srcFrame = choice(candidatePool).split(':')
+          dstring = "####SELECT_TRAJ@ %s @ %s @ %s @ %s" % (str(targetBin[0]), str(selectedbin), sourceTraj, srcFrame)
 
 
           # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
@@ -706,7 +782,7 @@ class controlJob(macrothread):
             pdbfile     = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.pdb' % sourceTraj)
 
           # Generate new set of params/coords
-          jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, debugstring=dstring)
+          jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, int(srcFrame), debugstring=dstring)
 
           # TODO: DERIVE RUNTIME HERE
 
@@ -714,6 +790,7 @@ class controlJob(macrothread):
           jcConfig = dict(params,
               name    = jcID,
               runtime = DEFAULT.RUNTIME,
+              interval = 500,
               temp    = 310,
               state   = A,
               weight  = targetBin[1],

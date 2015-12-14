@@ -3,6 +3,7 @@ import os
 import shutil
 import uuid
 import subprocess as proc
+import numpy as np
 import nearpy
 from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections, UniBucket
 from nearpy.distances import EuclideanDistance
@@ -70,10 +71,6 @@ class systemsettings:
     self.HASH_NAME             = ini.get('hash_name', 'rbphash')  #TODO CHANGE NAME
 
     # Simulation & Analysis Protein Settings
-    raw = ini.get('raw_archive','bpti')
-    self.RAW_ARCHIVE = raw if raw.startswith('/') else os.path.join(self.WORKDIR, raw)
-    pdb = ini.get('pdb','bpti-all.pdb')
-    self.PDB_FILE = pdb if pdb.startswith('/') else os.path.join(self.RAW_ARCHIVE, pdb)
     self.TOPO       = ini.get('topo') 
     self.PARM       = ini.get('parm') 
     self.NUM_PCOMP  = ini.get('num_pcomp', 3)
@@ -104,6 +101,7 @@ class systemsettings:
     #     synchronize between threads thru the catalog
 
     self.schema = defaults['schema']
+    self.schema['centroid'] = np.zeros(1)
 
     # make_config_file = 'default.conf'
 

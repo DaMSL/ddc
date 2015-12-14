@@ -465,7 +465,7 @@ def showMatrices():
   logging.debug("============================  <CONVEGENCE>  =============================")
 
   # Load Transition Matrix (& TODO: Historical index state labels)
-  tmat = loadNPArray(self.catalog, 'transitionmatrix')
+  tmat = catalog.loadNPArray('transitionmatrix')
   if tmat is None:
     tmat = np.zeros(shape=(5,5))    # TODO: Move to init
   tmat_before = np.zeros(shape=tmat.shape)
@@ -473,19 +473,19 @@ def showMatrices():
   logging.debug("TMAT BEFORE\n" + str(tmat_before))
 
   # Load Selection Matrix
-  smat = loadNPArray(self.catalog, 'selectionmatrix')
+  smat = catalog.loadNPArray('selectionmatrix')
   if smat is None:
     smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
   logging.debug("SMAT:\n" + str(smat))
 
   # Load Convergence Matrix
-  cmat = loadNPArray(self.catalog, 'convergencematrix')
+  cmat = catalog.loadNPArray('convergencematrix')
   if cmat is None:
     cmat = np.full((5,5), 0.04)    # TODO: Move to init
   logging.debug("CMAT:\n" + str(cmat))
 
   #  1. Load current fatigue values
-  fatigue = loadNPArray(self.catalog, 'fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
+  fatigue = catalog.loadNPArray('fatigue')   # TODO: Move to self.data(??) and/or abstract the NP load/save
   if fatigue is None:
     fatigue = np.full((5,5), 0.04)    # TODO: Move to init
 

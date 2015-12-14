@@ -39,6 +39,9 @@ class kvadt(object):
 
 
 
+
+
+
 def fromByte(dataType):
   if dataType == int:
     return lambda x: int(x.decode())

@@ -5,6 +5,7 @@ from deshaw import *
 from indexing import *
 import math
 import json
+import bisect
 
 DO_COV_MAT = False
 
@@ -35,10 +36,6 @@ def init_catalog(catalog):
   # Load DEShaw meta-data
   # histo = np.load('histogram.npy')
 
-  logging.debug("Stopping the catalog.")
-  catalog.stop()
-  if os.path.exists('catalog.lock'):
-    os.remove('catalog.lock')
 
 # TODO: For use when migrating schema into catalog
 def create_schema(catalog, schema):
@@ -180,12 +177,10 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
     #   np.save(evfile, evm)
     #   np.save(egfile, egm)
 
-def init_control(catalog, archive):
+def init_control(catalog):
   
   # Initialize Candidate Pools
-  labels = loadLabels()
-  labelList = getLabelList(labels)
-  numLabels  = len(labelList)
+  numLabels  = int(catalog.get('numLabels').decode())
   pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
   candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
 
@@ -210,42 +205,59 @@ def init_control(catalog, archive):
   #     else:    
   #       candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
     
+  #  Create Candidate Pools from RMSD for all source DEShaw data
   pipe = catalog.pipeline()  
-  logging.info("Deleting existing candidate pools")
+  logging.info("Deleting existing candidates and controids")
+  pipe.delete('centroid')
   for i in range(numLabels):
     for j in range(numLabels):
       pipe.delete(candidPoolKey(i, j))
 
   logging.info("Loading DEShaw RMS Values")
-  rms = np.load('rms.out')
+  rms = np.load('rmsd.npy')
   nn = []
   cpools = {(i,j):[] for i in range(numLabels) for j in range(numLabels)}
   logging.info("Creating candidate pools")
+  wpools = [[] for i in range(numLabels)]
   for i, traj in enumerate(rms):
     for f, conform in enumerate(traj):
       ordc = np.argsort(conform)
-      relproximity = conform[ordc[0]] / (conform[ordc[0]] + conform[ordc[1]])
-      nn.append((i, f, ordc[0], ordc[1], relproximity))
+      A = ordc[0]
+      relproximity = conform[A] / (conform[A] + conform[ordc[1]])
+      nn.append((i, f, A, ordc[1], relproximity))
       if relproximity > .49:
-        cpools[(ordc[0], ordc[1])].append((i,f, .5 - relproximity))
+        cpools[(A, ordc[1])].append((.5 - relproximity, i,f))
+      elif len(wpools[A]) == 0 or relproximity > wpools[A][0][0]:
+        bisect.insort(wpools[A], (relproximity, i, f))
+        if len(wpools[A]) == 1000:
+          del wpools[A][0]
 
+  logging.info("All Candidates Found! Breakdown by bin:")
   candidatepools = {k:sorted(v, key=lambda x : x[2]) for k,v in cpools.items()}
 
   for i in range(numLabels):
     for j in range(numLabels):
-      if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
-        candidates[i][j] = pools[i][j]
-      else:    
-        candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
+      if i == j:
+        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in wpools[i]]
+      else:
+        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in cpools[(i,j)]]
+      logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
 
+      # if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
+      #   candidates[i][j] = pools[i][j]
+      # else:    
+      #   candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
 
-
+  logging.info("Updating Catalog")
   for i in range(numLabels):
     for j in range(numLabels):
       for c in candidates[i][j]:
         pipe.rpush(candidPoolKey(i, j), c)
   pipe.execute()
 
+
+  centroid = np.load('centroid_heavy.npy')
+  catalog.storeNPArray(centroid, 'centroid')
 
   # Initialize observations matrix
   obsMat_Store = kv2DArray(catalog, 'observations')
@@ -336,60 +348,51 @@ def seedData(catalog):
     catalog.hdel(key, 'actualBin')
 
 
-def seedJob(catalog, num=None):
+def seedJob(catalog, num=1):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
   """
-
-  # TODO:  do 1 job (or custom list)
-  if num is None:
-    jobs = [((0, 1), 3391),
-    ((0, 2), 240),
-    ((0, 3), 3374),
-    ((0, 4), 1698),
-    ((1, 0), 2261),
-    ((1, 2), 137),
-    ((2, 0), 1420),
-    ((2, 1), 2246),
-    ((2, 3), 3257),
-    ((3, 0), 3383),
-    ((3, 2), 3259),
-    ((4, 0), 1755),
-    ((0, 0), 2649),
-    ((1, 1), 542),
-    ((2, 2), 3736),
-    ((3, 3), 3316),
-    ((4, 4), 1726)]
-  else:
-    jobs = [num]
+  numLabels  = int(catalog.get('numLabels').decode())
 
 
+  #  1 Loop to create pipeline
+  pipe = catalog.pipeline()  
+  logging.info("Getting candidate pools")
+  for i in range(numLabels):
+    for j in range(numLabels):
+      pipe.lrange(candidPoolKey(i, j), 0, -1)
+  pools = pipe.execute()
 
-  for tbin, num in jobs:
+  idx = 0
+  for i in range(numLabels):
+    for j in range(numLabels):
+      for k in range(num):
+        src, frame = choice(pools[idx]).decode().split(':')
+        logging.debug("(%d,%d) Selected: BPTI %s, frame: %s", i, j, src, frame)
+        pdbfile, archiveFile = getHistoricalTrajectory(int(src))
 
-    pdbfile, archiveFile = getHistoricalTrajectory(num)
+        # Generate new set of params/coords
+        jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, frame=int(frame))
 
-    # Generate new set of params/coords
-    jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM)
-
-    # Update Additional JC Params and Decision History, as needed
-    config = dict(params,
-        name    = jcID,
-        runtime = DEFAULT.RUNTIME,
-        temp    = 310,
-        state   = tbin[0],
-        weight  = 0.,
-        timestep = 0,
-        gc      = 1,
-        application   = DEFAULT.APPL_LABEL,
-        converge = 0.,
-        targetBin  = str(tbin))
-    logging.info("New Simulation Job Created: %s", jcID)
-    for k, v in config.items():
-      logging.debug("   %s:  %s", k, str(v))
-    catalog.rpush('JCQueue', jcID)
-    catalog.hmset(wrapKey('jc', jcID), config)
-
+        # Update Additional JC Params and Decision History, as needed
+        config = dict(params,
+            name    = jcID,
+            runtime = DEFAULT.RUNTIME,
+            temp    = 310,
+            state   = i,
+            weight  = 0.,
+            timestep = 0,
+            interval = 500,
+            gc      = 1,
+            application   = DEFAULT.APPL_LABEL,
+            converge = 0.,
+            targetBin  = str((i,j)))
+        logging.info("New Simulation Job Created: %s", jcID)
+        for k, v in config.items():
+          logging.debug("   %s:  %s", k, str(v))
+        catalog.rpush('JCQueue', jcID)
+        catalog.hmset(wrapKey('jc', jcID), config)
+        idx += 1      
 
 
 if __name__ == '__main__':
@@ -411,10 +414,10 @@ if __name__ == '__main__':
   confile = args.conf
   DEFAULT = systemsettings()
   DEFAULT.applyConfig(confile)
+  catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
 
   if args.initcatalog:
     DEFAULT.envSetup()
-    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     init_catalog(catalog)
 
   if args.initarchive:
@@ -424,29 +427,29 @@ if __name__ == '__main__':
     sys.exit(0)
 
   if args.loadindex is not None:
-    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+    # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     index_DEShaw(catalog, archive, args.loadindex, args.num, args.winsize, args.slide)
     sys.exit(0)
 
   if args.reindex:
-    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+    # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     reindex(archive, args.reindex)
 
 
   if args.initcontrol:
-    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    init_control(catalog, archive)
+    # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+    init_control(catalog)
 
   if args.seedjob:
-    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     seedJob(catalog)
 
 
   if args.seeddata:
-    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     seedData(catalog)
 
+  logging.debug("Stopping the catalog.")
+  catalog.stop()
+  if os.path.exists('catalog.lock'):
+    os.remove('catalog.lock')
 
 
