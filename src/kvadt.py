@@ -74,12 +74,8 @@ class kv2DArray(kvadt):
     else:
       # Initialize the array
       self.mag = mag
-      pipe = self.db.pipeline()
-      pipe.set(self.name + '_magnitude', mag)
-      for x in range(mag):
-        for y in range(mag):
-          pipe.set(self.name + '_%d_%d' % (x, y), init)
-      pipe.execute()
+      self.set(init)
+
 
   def __get__(self):
     return self._value
@@ -107,6 +103,20 @@ class kv2DArray(kvadt):
         arr[x][y] = float(vals[v])
         v += 1
     return arr
+
+
+  def set(self, value):
+    if isinstance(value, np.ndarray):
+      data = value
+    elif isinstance(value, int) or isinstance(value, float):
+      data = np.full((self.mag, self.mag), value)
+    pipe = self.db.pipeline()
+    pipe.set(self.name + '_magnitude', self.mag)
+    for x in range(self.mag):
+      for y in range(self.mag):
+        pipe.set(self.name + '_%d_%d' % (x, y), data[x][y])
+    pipe.execute()
+
 
   def merge (self, arr):
     pipe = self.db.pipeline()

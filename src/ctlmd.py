@@ -113,13 +113,6 @@ skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
 
 
-
-
-
-
-
-
-
 def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
 
     logging.debug("Generating new simulation coordinates from:  %s", rawfile)
@@ -180,24 +173,18 @@ def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
     return jcuid, newsimJob
 
 
-
-
 class controlJob(macrothread):
     def __init__(self, fname):
       macrothread.__init__(self, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('completesim', None)
-      self.setState('JCQueue', 'indexSize', 'timestep', 'num_var', 
-                    'converge', 'ctlSplitParam', 'ctlDelay', 'num_pc',
+      self.setState('jcqueue', 'timestep', 'converge', 'ctlSplitParam', 'ctlDelay',
                     *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
 
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
 
       self.modules.add('namd')
-
-      self.addImmut('num_var')
-      self.addImmut('num_pc')
 
 
     def term(self):
@@ -212,9 +199,6 @@ class controlJob(macrothread):
       # For now: just take the top N
       # split = self.data['ctlSplitParam']
       # immed = self.data['LDIndexList'][:split]
-
-      # FOR DEBUGGING:
-      return ['completesim'], None      
 
       immed = [] if len(self.data['completesim']) == 0 else ['completesim']
       return immed,None
@@ -580,7 +564,7 @@ class controlJob(macrothread):
 
       # 1. Calc "preference" part of the weight
       logging.debug("Getting/Merging Observations...")
-      obsMat_Store = kv2DArray(self.catalog, 'observations')
+      obsMat_Store = kv2DArray(self.catalog, 'observe')
       observe_before = obsMat_Store.get()
       obsMat_Store.merge(delta_tmat)
       observe = obsMat_Store.get()
@@ -652,9 +636,9 @@ class controlJob(macrothread):
       #  5. Load JC Queue and all items within to get respective weights and projected target bins
       #   TODO:  Pipeline cur queue  and/or load all up front
       curqueue = []
-      logging.debug("Loading Current Queue of %d items", len(self.data['JCQueue']))
+      logging.debug("Loading Current Queue of %d items", len(self.data['jcqueue']))
       debug = True
-      for i in self.data['JCQueue']:
+      for i in self.data['jcqueue']:
         key = wrapKey('jc', i)
         config = {}
         self.catalog.load({key: config})
@@ -908,11 +892,11 @@ class controlJob(macrothread):
       #   self.catalog.set('terminate', 'CONVERGED')
       #   logging.debug("***TEMINTION CONDITION met for GLOBAL CONVERGENCE")
 
-      self.data['JCQueue'] = list(jcqueue)
+      self.data['jcqueue'] = list(jcqueue)
 
-      logging.debug("   JCQUEUE:  %s", str(self.data['JCQueue']))
+      logging.debug("   JCQUEUE:  %s", str(self.data['jcqueue']))
       # Update Each new job with latest convergence score and save to catalog(TODO: save may not be nec'y)
-      logging.debug("Updated Job Queue length:  %d", len(self.data['JCQueue']))
+      logging.debug("Updated Job Queue length:  %d", len(self.data['jcqueue']))
       for jcid, config in newJobCandidate.items():
         config['converge'] = self.data['converge']
         jckey = wrapKey('jc', jcid)

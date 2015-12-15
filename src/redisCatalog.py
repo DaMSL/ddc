@@ -5,10 +5,12 @@ import time
 import os
 import subprocess as proc
 import abc
+import json
 
 from common import *
 from catalog import catalog
 from threading import Thread, Event
+from kvadt import kv2DArray
 
 # import logging
 # logger = setLogger()
@@ -17,15 +19,84 @@ logger=logging.getLogger('__name__')
 terminationFlag = Event()
 
 
+class DType:
+
+  types = dict(int = int,
+    float = float,
+    num = float,
+    list = list,
+    dict = dict,
+    str = str,
+    ndarray = np.ndarray,
+    matrix = kv2DArray)
+
+  @classmethod
+  def get(cls, t):
+    if t not in cls.types:
+      logging.error("Type `%s` not a valid type") 
+      return None
+
+    return cls.types[t]
+
+
+  @classmethod
+  def cmp(cls, this, other):
+    return this.__name__ == other.__name__
+
+
+
+
+
 
 def get2DKeys(key, X, Y):
   return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
 
 
 
+def decodevalue(value):
+  print("DECODING", value)
+  data = None
+  if isinstance(value, list):
+    tmp = [val.decode() for val in value]
+    try:
+      if len(tmp) == 0:
+        data = []
+      elif tmp[0].isdigit():
+        data = [int(val) for val in tmp]
+      else:
+        data = [float(val) for val in tmp]
+    except ValueError as ex:
+      data = tmp
+  elif isinstance(value, dict):
+    # logging.debug("Hash Loader")
+    data = {}
+    for k,v in value.items():
+      try:
+        subkey = k.decode()
+        subval = v.decode()
+        # logging.debug("   %s:  %s", k, (str(v)))
+        if v.isdigit():
+          data[subkey] = int(subval)
+        else:
+          data[subkey] = float(subval)
+      except ValueError as ex:
+        data[subkey] = subval
+  elif value is None:
+    data = None
+  else:
+    val = value.decode()
+    print(value, val, type(val))
+    try:
+      if val.isdigit():
+        data = int(val)
+      else:
+        data = float(val)
+    except ValueError as ex:
+      data = val
 
+  logging.debug("Decoded value:  %s  ->  %s  %s", str(value), str(data), str(type(data)))
 
-
+  return data
 
 
 class dataStore(redis.StrictRedis, catalog):
@@ -247,105 +318,176 @@ class dataStore(redis.StrictRedis, catalog):
 
 
   def loadSchema(self, keys):
-    self.schema = self.hgetall('META_schema')
+    self.schema = {k.decode(): v.decode() for k, v in self.hgetall('META_schema').items()}
+
 
   def save(self, data):
+    deferredsave = []
     pipe = self.pipeline()
     for key, value in data.items():
-      #  Lists are removed and updated enmasse
-      if isinstance(value, list):
+      if key not in self.schema.keys():
+        logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading")
+        deferredsave.append(key)
+        continue
+
+      dt = DType.get(self.schema[key])
+
+      if dt is list:
         pipe.delete(key)
         for val in value:
           pipe.rpush(key, val)
-      elif isinstance(value, dict):
+      elif dt is dict:
         pipe.hmset(key, value)
+      elif dt is kv2DArray:
+        deferredsave.append(key)
+      elif dt is np.ndarray:
+        deferredsave.append(key)
       else:
         pipe.set(key, value)
-      logger.debug("  Saving data elm  `%s` of type `%s`" % (key, type(data[key])))
-
-      # TODO:  handle other datatypes beside list
+      logger.debug("  Saving data elm  `%s`" % (key, type(data[key])))
 
     pipe.execute()
+
+    for key in deferredsave:
+      if key not in self.schema.keys():
+        logging.warning("Trying dynamic save for KEY `%s`", key)
+        if isinstance(data[key],list):
+          self.delete(key)
+          for elm in data[key]:
+            self.rpush(key, elm)
+        elif isinstance(data[key], dict):
+          self.hmset(key, data[key])
+        else:
+          self.set(key, data[key])
+
+        logging.debug("Dynamically save %s = %s. Updating schema", key, data[key])
+
+      elif DType.get(self.schema[key]) is np.ndarray:
+        self.storeNPArray(data[key])
+      elif DType.get(self.schema[key]) is kv2DArray:
+        matrix = kv2DArray(self, key)
+        matrix.set(data[key])
+
+
 
 
 
 
   # Retrieve data stored for each key in data & store into data 
-  def load(self, data):
+  def load(self, keylist):
 
-    # Support single item data retrieval:
+    if isinstance(keylist, dict):
+      logging.error("NOT ACCEPTING DICT HERE")
+      sys.exit(0)
+
+    keys = keylist if isinstance(keylist, list) else [keylist]
+    data = {}
     deferredload = []
-    keys = data.keys()
+    # Pipeline native data type
     pipe = self.pipeline()
     for key in keys:
-      tp = ''
-      if isinstance(data[key], list):
+      if key not in self.schema.keys():
+        logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading", key)
+        deferredload.append(key)
+        continue
+      dt = DType.get(self.schema[key])
+      if dt is list:
         pipe.lrange(key, 0, -1)
-        tp = 'LIST'
-      elif isinstance(data[key], dict):
+      elif dt is dict:
         pipe.hgetall(key)
-        tp = 'DICT'
-      elif isinstance(data[key], np.ndarray):
+      elif dt is kv2DArray:
+        deferredload.append(key)
+      elif dt is np.ndarray:
         deferredload.append(key)
       else:
         pipe.get(key)
-        tp = 'VAL'
-      # logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
-
 
     vals = pipe.execute()
 
+    #  Deferred load for retrieval of non-native data types
+    retrievaloplist = lambda k: [self.lrange(k, 0, -1), self.hgetall(k), self.get(k)]
+
     for key in deferredload:
-      if isinstance(data[key], np.ndarray):
-        logging.debug("Loading NDArray, %s", key)
+      if key not in self.schema.keys():
+        logging.warning("Trying dynamic load for KEY `%s`")
+        for op in retrievaloplist(key):
+          try:
+            value = op(key).decode()
+          except redis.ResponseError as ex:
+            pass
+        logging.debug("Dynamically loaded %s = %s. Updating schema", key, str(value))
+        data[key] = decodevalue(value)
+        self.schema[key] = type(value)
+
+      elif DType.get(self.schema[key]) is np.ndarray:
         data[key] = self.loadNPArray(key)
+      
+      elif DType.get(self.schema[key]) is kv2DArray:
+        matrix = kv2DArray(self, key)
+        data[key] = matrix.get()
 
     #  Data Conversion
     # TODO:  MOVE TO JSON BASED RETRIEVAL
 
     i = 0
+
     for key in keys:
       try:
         # logger.debug('Caching:  ' + key)
         if key in deferredload:
           continue
-        if isinstance(data[key], list):
-          tmp = [val.decode() for val in vals[i]]
-          try:
-            if len(tmp) == 0:
-              data[key] = []
-            elif tmp[0].isdigit():
-              data[key] = [int(val) for val in tmp]
-            else:
-              data[key] = [float(val) for val in tmp]
-          except ValueError as ex:
-            data[key] = tmp
-        elif isinstance(data[key], dict):
-          # logging.debug("Hash Loader")
-          for k,v in vals[i].items():
-            try:
-              subkey = k.decode()
-              subval = v.decode()
-              # logging.debug("   %s:  %s", k, (str(v)))
-              if v.isdigit():
-                data[key][subkey] = int(subval)
-              else:
-                data[key][subkey] = float(subval)
-            except ValueError as ex:
-              data[key][subkey] = subval
-        elif isinstance(data[key], int):
-          data[key] = int(vals[i].decode())
-        elif isinstance(data[key], float):
-          data[key] = float(vals[i].decode())
-        elif vals[i] is None:
-          data[key] = None
-        else:
-          data[key] = vals[i].decode()
+        data[key] = decodevalue(vals[i])
+        if data[key] is None:
+          if DType.get(self.schema[key]) is list:
+            data[key] = []
+          elif DType.get(self.schema[key]) is dict:
+            data[key] = {}
         i += 1
       except (AttributeError, KeyError) as ex:
         logging.error("BAD KEY:  %s", key)
         logging.error("Trace:  %s", str(ex))
         sys.exit(0)
+
+    return data
+
+
+  def append(self, data):
+    deferredappend = []
+    pipe = self.pipeline()
+    for key, value in data.items():
+      if key not in self.schema.keys():
+        logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading")
+        deferredsave.append(key)
+      elif DType[self.schema[key]] is int:
+        pipe.incr(key, value)
+      elif DType[self.schema[key]] is float:
+        pipe.incrbyfloat(key, value)
+      elif DType[self.schema[key]] is list:
+        for val in value:
+          pipe.rpush(key, val)
+      elif DType[self.schema[key]] is dict:
+        for k, v in value:
+          pipe.hset(key, k, v)
+      elif DType[self.schema[key]] is kv2DArray:
+        deferredappend.append(key)
+      elif DType[self.schema[key]] is np.ndarray:
+        deferredappend.append(key)
+      else:
+        pipe.set(key, value)
+      logger.debug("  Saving data elm  `%s`" % (key, type(data[key])))
+
+    pipe.execute()
+
+    for key in deferredload:
+      if DType[self.schema[key]] is np.ndarray:
+        self.storeNPArray(data[key])
+      elif DType[self.schema[key]] is kv2DArray:
+        matrix = kv2DArray(self, key)
+        matrix.set(data[key])
+
+
+
+
 
   # Slice off data in-place. Asssume key stores a list
   def slice(self, key, num):
@@ -367,7 +509,7 @@ class dataStore(redis.StrictRedis, catalog):
 
 
   def append(self, key, itemlist):
-    logger.debug("  APPENDING %d items to data elm  `%s`" % (len(itemlist), key)))
+    logger.debug("  APPENDING %d items to data elm  `%s`" % (len(itemlist), key))
     self.rpush(key, *tuple(itemlist))
 
   # Check if key exists in db
@@ -498,3 +640,82 @@ class dataStore(redis.StrictRedis, catalog):
   #       logging.error("BAD KEY:  %s", key)
   #       logging.error("Trace:  %s", str(ex))
   #       sys.exit(0)
+
+
+
+
+    # def load(self, keyslisdt):
+
+    # # Support single item data retrieval:
+    # deferredload = []
+    # keys = data.keys()
+    # pipe = self.pipeline()
+    # for key in keys:
+    #   tp = ''
+    #   if isinstance(data[key], list):
+    #     pipe.lrange(key, 0, -1)
+    #     tp = 'LIST'
+    #   elif isinstance(data[key], dict):
+    #     pipe.hgetall(key)
+    #     tp = 'DICT'
+    #   elif isinstance(data[key], np.ndarray):
+    #     deferredload.append(key)
+    #   else:
+    #     pipe.get(key)
+    #     tp = 'VAL'
+    #   # logger.debug("Loading data elm  `%s` of type %s, `%s`" % (key, tp, type(data[key])))
+
+
+    # vals = pipe.execute()
+
+    # for key in deferredload:
+    #   if isinstance(data[key], np.ndarray):
+    #     logging.debug("Loading NDArray, %s", key)
+    #     data[key] = self.loadNPArray(key)
+
+    # #  Data Conversion
+    # # TODO:  MOVE TO JSON BASED RETRIEVAL
+
+    # i = 0
+    # for key in keys:
+    #   try:
+    #     # logger.debug('Caching:  ' + key)
+    #     if key in deferredload:
+    #       continue
+    #     if isinstance(data[key], list):
+    #       tmp = [val.decode() for val in vals[i]]
+    #       try:
+    #         if len(tmp) == 0:
+    #           data[key] = []
+    #         elif tmp[0].isdigit():
+    #           data[key] = [int(val) for val in tmp]
+    #         else:
+    #           data[key] = [float(val) for val in tmp]
+    #       except ValueError as ex:
+    #         data[key] = tmp
+    #     elif isinstance(data[key], dict):
+    #       # logging.debug("Hash Loader")
+    #       for k,v in vals[i].items():
+    #         try:
+    #           subkey = k.decode()
+    #           subval = v.decode()
+    #           # logging.debug("   %s:  %s", k, (str(v)))
+    #           if v.isdigit():
+    #             data[key][subkey] = int(subval)
+    #           else:
+    #             data[key][subkey] = float(subval)
+    #         except ValueError as ex:
+    #           data[key][subkey] = subval
+    #     elif isinstance(data[key], int):
+    #       data[key] = int(vals[i].decode())
+    #     elif isinstance(data[key], float):
+    #       data[key] = float(vals[i].decode())
+    #     elif vals[i] is None:
+    #       data[key] = None
+    #     else:
+    #       data[key] = vals[i].decode()
+    #     i += 1
+    #   except (AttributeError, KeyError) as ex:
+    #     logging.error("BAD KEY:  %s", key)
+    #     logging.error("Trace:  %s", str(ex))
+    #     sys.exit(0)

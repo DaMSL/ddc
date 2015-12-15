@@ -35,6 +35,9 @@ class systemsettings:
     self._configured = False
     self._confile = confile
 
+  def configured(self):
+    return self._configured
+
   def applyConfig(self, ini_file=None):
 
     if ini_file is not None:
@@ -101,7 +104,10 @@ class systemsettings:
     #     synchronize between threads thru the catalog
 
     self.schema = defaults['schema']
-    self.schema['centroid'] = np.zeros(1)
+    # self.schema['centroid'] = np.zeros(1)
+
+    self.init = defaults['init']
+
 
     # make_config_file = 'default.conf'
 
@@ -111,10 +117,10 @@ class systemsettings:
     #     f.write(json.dumps(data, sort_keys=True, indent=4))
 
 
-    candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
-    for i in range(5):
-      for j in range(5):
-        self.schema[candidPoolKey(i,j)] = []
+    # candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
+    # for i in range(5):
+    #   for j in range(5):
+    #     self.schema[candidPoolKey(i,j)] = 'list'
 
     self._configured = True
 

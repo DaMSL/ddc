@@ -25,7 +25,7 @@ class analysisJob(macrothread):
       macrothread.__init__(self, fname,  'anl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('rawoutput', 'completesim')
-      self.setState('JCComplete', 'processed', 'anlSplitParam', 'anlDelay', 'indexSize')
+      self.setState('anlSplitParam', 'anlDelay')
 
       self.modules.add('redis')
 

@@ -20,9 +20,13 @@ class simulationJob(macrothread):
     macrothread.__init__(self, fname, 'sim')
 
     # State Data for Simulation MacroThread -- organized by state
-    self.setStream('JCQueue', 'rawouput')
-    self.setState('JCComplete', 'JCTotal', 'simSplitParam', 'simDelay', 'terminate')
+    self.setStream('jcqueue', 'rawoutput')
+    self.addImmut('simSplitParam')
+    self.addImmut('simDelay')
+    self.addImmut('terminate')
+    self.addImmut('sim_conf_template')
 
+    self.addAppend('launch')
     # Local Data to this running instance
     self.cpu = 1
     self.numnodes = 1
@@ -32,7 +36,6 @@ class simulationJob(macrothread):
     self.modules.add('redis')
     # self.slurmParams['share'] = None
 
-    self.addImmut('sim_conf_template')
 
   def term(self):
     # jccomplete = self.data['JCComplete']
@@ -43,8 +46,11 @@ class simulationJob(macrothread):
       return False
 
   def split(self):
+
+    if len(self.data['jcqueue']) == 0:
+      return [], None
     split = int(self.data['simSplitParam'])
-    immed = self.data['JCQueue'][:split]
+    immed = self.data['jcqueue'][:split]
     return immed, split
 
   def configElasPolicy(self):
@@ -61,12 +67,11 @@ class simulationJob(macrothread):
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
 
-    self.addToState(key, params)
+    self.addMut(key, params)
 
     # Increment launch count
     A, B = eval(params['targetBin'])
-    launch = kv2DArray(self.catalog, 'launch')
-    launch.incr(A, B)
+    self.data['launch'][A][B] += 1
 
     return params
 
@@ -89,7 +94,7 @@ class simulationJob(macrothread):
     cmd = 'namd2 %s > %s' % (conFile, logFile)
     logging.debug("Executing Simulation:\n   %s\n", cmd)
 
-    stdout = executecmd(cmd)
+    logging.debug("DEBUG!!!!!!!      stdout = executecmd(cmd)")
 
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     logging.info(stdout)

@@ -6,6 +6,7 @@ import subprocess as proc
 import argparse
 import abc
 import redis
+import copy
 # from retrying import retry
 
 from common import * 
@@ -37,18 +38,22 @@ class macrothread(object):
 
     self.config = args.config
     DEFAULT.applyConfig(self.config)
-    # System-wide meta-data TODO: (part loaded from file, part from catalog)
-    self._immut = {}
 
+
+    # System-wide meta-data TODO: (part loaded from file, part from catalog)
     # Thread State
+    self._mut = []
+    self._immut = []
+    self._append = []
+
     self._state = {}
-    self.data = DEFAULT.schema
+    self.data = {}
+    self.origin = {}
     self.upstream = None
     self.downstream = None
 
     # Elasticity
     self.delay = None
-
 
     self.catalog = None
     self.localCatalogServer = None
@@ -71,34 +76,44 @@ class macrothread(object):
 
 
 
-  def addImmut(self, key, default=None):
-    self._immut[key] = default
+  def addMut(self, key, value=None):
+    self._mut.append(key)
+    if value is not None:
+      self.data[key] = value
+      self.origin = copy.deepcopy(value)
 
-  # TODO:  Eventually we may want multiple up/down streams
+  def addImmut(self, key, value=None):
+    self._immut.append(key)
+
+  def addAppend(self, key, value=None):
+    self._append.append(key)
+    if value is not None:
+      self.data[key] = value
+      self.origin = copy.deepcopy(value)
+
+
+  # # TODO:  Eventually we may want multiple up/down streams
   def setStream(self, upstream, downstream):
-    if upstream is None or upstream not in self.data.keys():
-      logger.warning("Upstream data `%s` not defined in schema", upstream)
-    else:
-      self.upstream = upstream
+    if upstream is None:
+      logger.info("Upstream data `%s` not defined", upstream)
+    self.upstream = upstream
 
-    if downstream is None or downstream not in self.data.keys():
+    if downstream is None:
       logger.warning("Downstream data `%s` not defined in schema", downstream)
-    else:
-      self.downstream = downstream
+    self.downstream = downstream
 
-  def setState(self, *arg):
+  # def setState(self, *arg):
 
-    for a in arg:
-      self._state[a] = self.data[a]
-    # self._state['id_' + self.name] = 0
+  #   for a in arg:
+  #     self._state[a] = self.data[a]
+  #   # self._state['id_' + self.name] = 0
 
-  def addToState(self, key, value):
-    self._state[key] = value
-    self.data[key] = value
+  # def addToState(self, key, value):
+  #   self._state[key] = value
+  #   self.data[key] = value
 
   def setCatalog(self, catalog):
     self.catalog = catalog
-    #  TODO: COnnection logic
 
   def getCatalog(self):
     return self.catalog
@@ -134,22 +149,74 @@ class macrothread(object):
     return isinstance(ex, redis.ConnectionError)
 
 
-  def load(self, state):
+  def load(self, *keylists):
     """
     Load state from remote catalog to local cache
     """
+    keys = []
+    for k in keylists:
+      if isinstance(k, list):
+        keys.extend(k)
+      elif isinstance(k, str):
+        keys.append(k)
+      else:
+        logging.error("Key Loading error: %s", str(k))
     # pass expeected data types (interim solution)
-    self.catalog.load(state)
-    for key, value in state.items():
-      self.data[key] = value
 
-  def save(self, state):
+    data = self.catalog.load(keys)
+    logging.debug("Loaded state")
+    for k,v in data.items():
+      self.data[k] = v
+      print("  state:  ", k, v)
+
+  def save(self, *keylist):
     """
     Save state to remote catalog
     """
-    for key, value in state.items():
-      state[key]      = self.data[key]
+    state = {}
+    keys = []
+    for k in keylist:
+      if isinstance(k, list):
+        keys.extend(k)
+      elif isinstance(k, str):
+        keys.append(k)
+      else:
+        logging.error("Key Loading error: %s", str(k))
+    for key in keys:
+      if key not in self.data:
+        logging.error("KEY ERROR. %s not found in current state", key)
+      else:
+        state[key] = self.data[key]    
     self.catalog.save(state)
+
+
+  def append(self, *keylist):
+    """
+    Save state to remote catalog
+    """
+    state = {}
+    keys = []
+    for k in keylists:
+      if isinstance(k, list):
+        keys.extend(k)
+      elif isinstance(k, str):
+        keys.append(k)
+      else:
+        logging.error("Key Loading error: %s", str(k))
+    for key in keys:
+      if key not in self.data:
+        logging.error("KEY ERROR. %s not found in current state", key)
+      else:
+        if type(self.data[key]) in [int, float, np.ndarray]:
+          state[key] = self.data[key] - self.origin[key]
+        elif isinstance(self.data, list):
+          state[key] = [x for x in self.data[key] if x not in self.origin[key]]
+        elif isinstance(self.data, dict):
+          state[key] = {k:v for k.v in self.data[key].items if k not in self.origin[key].keys()}
+        else:
+          logging.error("CANNOT APPEND data `%s` of type of %s", key, str(type(self.data[key])))
+    self.catalog.append(state)
+
 
 
 
@@ -157,32 +224,30 @@ class macrothread(object):
 
     logger.debug("\n==========================\n  MANAGER:  %s", self.name)
 
-    # Catalog Service Check here
-    if not self.catalog:
-      self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    self.localcatalogserver = self.catalog.conn()
-
-    self.load(self._immut)
+    # # Catalog Service Check here
+    # if not self.catalog:
+    #   self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+    # self.localcatalogserver = self.catalog.conn()
 
     # Check global termination:
-    term_flag = self.catalog.get('terminate')
+    term_flag = self.data['terminate']
     if term_flag and term_flag.lower() in ['halt', 'stop', 'now']:
       logger.info('RECEIVED TERMINATION FLAG. Shutting down')
       sys.exit(0)
 
     # Load Data from Thread's State and Upstream thread
-    self.load(self._state)
     if self.upstream:
-      self.load({self.upstream:[]})
+      logging.debug("Loading upstream data: %s", self.upstream)
+      self.load(self.upstream)
+
+    for k,v in self.data.items():
+      print("  mngrstate:  ", k, v, type(v))
+
 
     # Check for termination  
     if self.term():
       logger.info('TERMINATION condition for ' + self.name)
       # sys.exit(0)
-
-    # # Split input data set
-    # self.load(self._split)
-    # self.load(self._input)
 
     # Set Elasticity Policy
     self.configElasPolicy()
@@ -209,16 +274,13 @@ class macrothread(object):
     immed, defer  = self.split()
 
     # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
-    # jobid = int(catalog.load('id_' + self.name))
-    # logger.debug("Loaded ID = %d" % jobid)
     myid = 'id_%s' % self.name
     jobid = int(self.catalog.get(myid).decode())
     self.catalog.incr(myid)
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
-
-      delay = self.delay
+      delay = int(self.delay)
       logger.debug("MANAGER %s: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
       self.slurmParams['begin'] = 'now+%d' % delay
 
@@ -267,7 +329,10 @@ class macrothread(object):
 
     # Other interal thread state is saved back to catalog
     #  TODO: For now the manager ONLY updates the job ID
-    self.save({myid: jobid})
+    self.catalog.save({myid: jobid})
+
+    self.save(self._mut)
+    self
     
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
@@ -288,14 +353,8 @@ class macrothread(object):
     #  catalog.notify(i, "active")
 
     # Catalog Service Check here. Ensure catalog is available and then retrieve all data up front
-    if not self.catalog:
-      self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    self.localcatalogserver = self.catalog.conn()
 
 
-    logger.info("WORKER Loading Thread State for from catalog:")
-    self.load(self._immut)
-    self.load(self._state)
     logger.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
     jobInput = self.fetch(i)      # TODO: Manage job Input w/multiple input items, for now just pass it
 
@@ -341,7 +400,13 @@ class macrothread(object):
 
 
     if self.downstream is not None and len(result) > 0:
-      self.catalog.append(self.downstream, result)
+      self.catalog.append({self.downstream: result})
+
+    logging.debug("Updating all append-only state items")
+    self.append(self._append)
+
+    logging.debug("Saving all mutable state items")
+    self.save(self._mut)
 
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Worker is running the catalog. Waiting on local service to terminate...")
@@ -365,11 +430,10 @@ class macrothread(object):
   def run(self):
     args = self.parser.parse_args()
 
+    settings = systemsettings()
+
     logging.info("APPLICATION:    %s", DEFAULT.APPL_LABEL)
     logging.info("WORKDIR:  %s", DEFAULT.WORKDIR)
-
-    # Apply Schema  (TODO:  Eventually pull this from the catalog)
-    self.data = DEFAULT.schema
 
     if args.debug:
       logging.debug("DEBUGGING: %s", self.name)
@@ -385,7 +449,22 @@ class macrothread(object):
       initialize(catalog, archive)
       sys.exit(0)
 
-    # self.setCatalog(catalog)
+    # Both Worker & Manager need catalog to run; load it here and import schema
+
+    if not self.catalog:
+      self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+    self.localcatalogserver = self.catalog.conn()
+
+    self.catalog.loadSchema(settings.schema)   # Should this be called from within the catalog module?
+
+    # Load data from Catalog
+    logger.info("Loading Thread State for from catalog:")
+    self.load(self._mut, self._immut, self._append)
+
+    #  Store original data for append only:
+    for key in self._append:
+      self.origin[key] = copy.deepcopy(self.data[key])
+
 
     if args.workinput:
       logger.debug("Running worker.")

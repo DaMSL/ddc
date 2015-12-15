@@ -38,10 +38,23 @@ def init_catalog(catalog):
 
 
 # TODO: For use when migrating schema into catalog
-def create_schema(catalog, schema):
+def create_schema(catalog):
+  settings = systemsettings()
+  if not settings.configured():
+    settings.applyConfig()
+
   dtype_map = {}
-  for k, v in schema.items():
-    dtype_map[k] = type(v).__name__
+  for k, v in settings.schema.items():
+    logging.debug('items %s, %s', str(k), str(v))
+    dtype_map[k] = str(v)
+
+  for k, v in settings.init.items():
+    if k not in dtype_map:
+      dtype_map[k] = type(v).__name__
+
+  for k, v in dtype_map.items():
+    logging.info('Setting schema:    %s  %s', k, str(v))
+
   catalog.hmset("META_schema", dtype_map)
 
 
@@ -390,7 +403,7 @@ def seedJob(catalog, num=1):
         logging.info("New Simulation Job Created: %s", jcID)
         for k, v in config.items():
           logging.debug("   %s:  %s", k, str(v))
-        catalog.rpush('JCQueue', jcID)
+        catalog.rpush('jcqueue', jcID)
         catalog.hmset(wrapKey('jc', jcID), config)
         idx += 1      
 
@@ -412,9 +425,11 @@ if __name__ == '__main__':
 
 
   confile = args.conf
-  DEFAULT = systemsettings()
-  DEFAULT.applyConfig(confile)
+  settings = systemsettings()
+  settings.applyConfig(confile)
   catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+
+  create_schema(catalog)
 
   if args.initcatalog:
     DEFAULT.envSetup()

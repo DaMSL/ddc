@@ -30,7 +30,6 @@ class catalog(object):
     pass
 
 
-
   @abc.abstractmethod
   def load(self, key):
     """
@@ -43,6 +42,14 @@ class catalog(object):
   def save(self, key):
     """
     Save a data element
+    """
+    pass
+
+
+  @abc.abstractmethod
+  def loadSchema(self):
+    """
+    Load and return schema as a dictionary
     """
     pass
 
