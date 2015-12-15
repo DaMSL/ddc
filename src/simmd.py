@@ -78,12 +78,12 @@ class simulationJob(macrothread):
       source = template.read()
 
     # Prepare working directory, input/output files
-    conFile = os.path.join(self.data[job]['workdir'], unwrapKey(self.data[job]['name']) + '.conf')
+    conFile = os.path.join(job['workdir'], job['name'] + '.conf')
     logFile = conFile.replace('conf', 'log')      # log in same place as config file
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
 
     with open(conFile, 'w') as config:
-      config.write(source % self.data[job])
+      config.write(source % job)
       logging.info(" Config written to: " + conFile)
 
     cmd = 'namd2 %s > %s' % (conFile, logFile)
@@ -94,11 +94,11 @@ class simulationJob(macrothread):
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     logging.info(stdout)
     
-    self.data[job]['dcd'] = dcdFile
+    key = wrapKey('jc', job['name'])
+    self.data[key]['dcd'] = dcdFile
+    # self.catalog.hset()
 
-    self.catalog.hset()
-
-    return [job]
+    return [job['name']]
 
 
 

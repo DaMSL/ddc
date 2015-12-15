@@ -90,7 +90,7 @@ class analysisJob(macrothread):
       intransition = False
       numtransitions = 0
       dwell = 0
-      stepsize = 500 if 'interval' not in config else config['interval']
+      stepsize = 500 if 'interval' not in config else int(config['interval'])
       conformlist = []
       uniquebins = set()
       delta_tmat = np.zeros(shape=(numLabels, numLabels))
@@ -99,7 +99,7 @@ class analysisJob(macrothread):
 
       # 4. Calc RMS for each conform to all centroids
       for num, conform in enumerate(traj.xyz):
-        dwell += stepsize
+        dwell += int(stepsize)
 
         #  Calc RMSD to each centroid
         rms = np.array([LA.norm(conform-cent) for cent in self.data['centroid']])

@@ -367,6 +367,7 @@ class dataStore(redis.StrictRedis, catalog):
 
 
   def append(self, key, itemlist):
+    logger.debug("  APPENDING %d items to data elm  `%s`" % (len(itemlist), key)))
     self.rpush(key, *tuple(itemlist))
 
   # Check if key exists in db

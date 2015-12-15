@@ -212,6 +212,10 @@ class controlJob(macrothread):
       # For now: just take the top N
       # split = self.data['ctlSplitParam']
       # immed = self.data['LDIndexList'][:split]
+
+      # FOR DEBUGGING:
+      return ['completesim'], None      
+
       immed = [] if len(self.data['completesim']) == 0 else ['completesim']
       return immed,None
 
@@ -549,7 +553,9 @@ class controlJob(macrothread):
       numLabels = int(self.data['numLabels'])
 
       delta_tmat = np.zeros(shape=(numLabels, numLabels))
+      logging.debug("Processing output from %d  simulations", len(job_list))
       for job in job_list:
+        logging.debug("  Loading data for simulation: %s", job)
         key = wrapKey('jc', job)
         history = {}
         self.catalog.load({key: history})
@@ -846,7 +852,13 @@ class controlJob(macrothread):
       for i in range(5):
         logging.info("STATE_CONVERGENCE for %d: %f", i, np.sum(delta[i]))
 
-      clist_entry = {'timestep': self.data['timestep'], 'convg': globalconvergence, 'convs': str([np.sum(delta[i]) for i in range(5)])}
+      globalconvergence_rate = globalconvergence / len(job_list)
+      logging.info("GLOBAL_CONVERGENCE_RATE: %f", globalconvergence_rate)
+      for i in range(5):
+        logging.info("STATE_CONVERGENCE_RATE for %d: %f", i, np.sum(delta[i])/len(job_list))
+
+
+      clist_entry = {'timestep': self.data['timestep'], 'numjobs': len(job_list), 'convg': globalconvergence, 'convs': str([np.sum(delta[i]) for i in range(5)])}
       self.catalog.rpush('globalconvergelist', json.dumps(clist_entry))
 
 
@@ -897,6 +909,8 @@ class controlJob(macrothread):
       #   logging.debug("***TEMINTION CONDITION met for GLOBAL CONVERGENCE")
 
       self.data['JCQueue'] = list(jcqueue)
+
+      logging.debug("   JCQUEUE:  %s", str(self.data['JCQueue']))
       # Update Each new job with latest convergence score and save to catalog(TODO: save may not be nec'y)
       logging.debug("Updated Job Queue length:  %d", len(self.data['JCQueue']))
       for jcid, config in newJobCandidate.items():
