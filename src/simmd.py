@@ -61,8 +61,7 @@ class simulationJob(macrothread):
     # Load parameters from catalog
 
     key = wrapKey('jc', i)
-    inputs = self.catalog.hgetall(key)
-    params = {k.decode():v.decode() for k,v in inputs.items()}
+    params = self.catalog.hgetall(key)
     logging.debug(" Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
@@ -71,7 +70,10 @@ class simulationJob(macrothread):
 
     # Increment launch count
     A, B = eval(params['targetBin'])
-    self.data['launch'][A][B] += 1
+    lkey = kv2DArray.key('launch', A, B)
+    logging.debug("Increment Launch count for %s", lkey)
+    self.catalog.incrbyfloat(lkey, 1.0)
+    # self.data['launch'][A][B] += 1
 
     return params
 
@@ -94,7 +96,7 @@ class simulationJob(macrothread):
     cmd = 'namd2 %s > %s' % (conFile, logFile)
     logging.debug("Executing Simulation:\n   %s\n", cmd)
 
-    logging.debug("DEBUG!!!!!!!      stdout = executecmd(cmd)")
+    stdout = executecmd(cmd)
 
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     logging.info(stdout)

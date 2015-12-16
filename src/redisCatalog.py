@@ -52,47 +52,39 @@ def get2DKeys(key, X, Y):
   return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
 
 
+def infervalue(value):
+  try:
+    castedval = None
+    if value.isdigit():
+      castedval = int(value)
+    else:
+      castedval = float(value)
+  except ValueError as ex:
+    castedval = value
+  return castedval
+
 
 def decodevalue(value):
-  print("DECODING", value)
   data = None
   if isinstance(value, list):
-    tmp = [val.decode() for val in value]
     try:
-      if len(tmp) == 0:
+      if len(value) == 0:
         data = []
-      elif tmp[0].isdigit():
-        data = [int(val) for val in tmp]
+      elif value[0].isdigit():
+        data = [int(val) for val in value]
       else:
-        data = [float(val) for val in tmp]
+        data = [float(val) for val in value]
     except ValueError as ex:
-      data = tmp
+      data = value
   elif isinstance(value, dict):
     # logging.debug("Hash Loader")
     data = {}
     for k,v in value.items():
-      try:
-        subkey = k.decode()
-        subval = v.decode()
-        # logging.debug("   %s:  %s", k, (str(v)))
-        if v.isdigit():
-          data[subkey] = int(subval)
-        else:
-          data[subkey] = float(subval)
-      except ValueError as ex:
-        data[subkey] = subval
+      data[k] = infervalue(v)
   elif value is None:
     data = None
   else:
-    val = value.decode()
-    print(value, val, type(val))
-    try:
-      if val.isdigit():
-        data = int(val)
-      else:
-        data = float(val)
-    except ValueError as ex:
-      data = val
+    data = infervalue(value)
 
   logging.debug("Decoded value:  %s  ->  %s  %s", str(value), str(data), str(type(data)))
 
@@ -102,7 +94,7 @@ def decodevalue(value):
 class dataStore(redis.StrictRedis, catalog):
   def __init__(self, name, host='localhost', port=6379, db=0, persist=True, connect=True):
 
-    redis.StrictRedis.__init__(self, host=host, port=port)
+    redis.StrictRedis.__init__(self, host=host, port=port, decode_responses=True)
 
     self.lockfile = name + '.lock'
     self.config = name + '_db.conf'
@@ -139,7 +131,7 @@ class dataStore(redis.StrictRedis, catalog):
         logging.debug('Data Store Lock File, `%s` DETECTED on %s, port=%s', self.name, self.host, self.port)
 
       # Check connection string -- F/T in case connection dies, using loaded params & self as hostname
-      self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
+      self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database, decode_responses=True)
       if self.exists():
         logging.debug('Data Store, `%s` ALIVE on %s, port=%s', self.name, self.host, self.port)
         serviceAlive = True
@@ -156,7 +148,7 @@ class dataStore(redis.StrictRedis, catalog):
     # Connect to redis as client
     try:
       logging.debug("\nSetting new connection_pool for client: %s, %d, %d", self.host, self.port, self.database)
-      self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database)
+      self.connection_pool = redis.ConnectionPool(host=self.host, port=self.port, db=self.database, decode_responses=True)
       logging.debug("     ...Connection Updated... Trying to Ping!")
 
       if self.ping():
@@ -312,13 +304,11 @@ class dataStore(redis.StrictRedis, catalog):
       os.remove(self.lockfile)
 
 
+  def loadSchema(self):
+    logging.debug("Loading system schema")
 
-      # TODO:  Implementation of list vs queue (append vs update)
-
-
-
-  def loadSchema(self, keys):
-    self.schema = {k.decode(): v.decode() for k, v in self.hgetall('META_schema').items()}
+    self.schema = self.hgetall('META_schema')
+    for k, v in self.schema.items(): print("  ",k, v)
 
 
   def save(self, data):
@@ -326,32 +316,27 @@ class dataStore(redis.StrictRedis, catalog):
     pipe = self.pipeline()
     for key, value in data.items():
       if key not in self.schema.keys():
-        logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading")
         deferredsave.append(key)
         continue
 
-      dt = DType.get(self.schema[key])
-
-      if dt is list:
+      if self.schema[key] == 'list':
         pipe.delete(key)
         for val in value:
           pipe.rpush(key, val)
-      elif dt is dict:
+      elif self.schema[key] == 'dict':
         pipe.hmset(key, value)
-      elif dt is kv2DArray:
-        deferredsave.append(key)
-      elif dt is np.ndarray:
+      elif self.schema[key] in ['matrix', 'ndarray']:
         deferredsave.append(key)
       else:
         pipe.set(key, value)
-      logger.debug("  Saving data elm  `%s`" % (key, type(data[key])))
+      logger.debug("  Saving data elm  `%s` as %s ", key, type(data[key]))
 
     pipe.execute()
 
     for key in deferredsave:
       if key not in self.schema.keys():
         logging.warning("Trying dynamic save for KEY `%s`", key)
-        if isinstance(data[key],list):
+        if isinstance(data[key], list):
           self.delete(key)
           for elm in data[key]:
             self.rpush(key, elm)
@@ -359,14 +344,16 @@ class dataStore(redis.StrictRedis, catalog):
           self.hmset(key, data[key])
         else:
           self.set(key, data[key])
-
         logging.debug("Dynamically save %s = %s. Updating schema", key, data[key])
 
-      elif DType.get(self.schema[key]) is np.ndarray:
+      elif self.schema[key] == 'ndarray':
         self.storeNPArray(data[key])
-      elif DType.get(self.schema[key]) is kv2DArray:
-        matrix = kv2DArray(self, key)
-        matrix.set(data[key])
+      elif self.schema[key] == 'matrix':
+        if isinstance(data[key], np.ndarray):
+          matrix = kv2DArray(self, key)
+          matrix.set(data[key])
+        else:
+          matrix = kv2DArray(self, key, )
 
 
 
@@ -383,21 +370,18 @@ class dataStore(redis.StrictRedis, catalog):
     keys = keylist if isinstance(keylist, list) else [keylist]
     data = {}
     deferredload = []
+
     # Pipeline native data type
     pipe = self.pipeline()
     for key in keys:
       if key not in self.schema.keys():
-        logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading", key)
         deferredload.append(key)
         continue
-      dt = DType.get(self.schema[key])
-      if dt is list:
+      if self.schema[key] == 'list':
         pipe.lrange(key, 0, -1)
-      elif dt is dict:
+      elif self.schema[key] == 'dict':
         pipe.hgetall(key)
-      elif dt is kv2DArray:
-        deferredload.append(key)
-      elif dt is np.ndarray:
+      elif self.schema[key] in ['matrix', 'ndarray']:
         deferredload.append(key)
       else:
         pipe.get(key)
@@ -405,42 +389,45 @@ class dataStore(redis.StrictRedis, catalog):
     vals = pipe.execute()
 
     #  Deferred load for retrieval of non-native data types
-    retrievaloplist = lambda k: [self.lrange(k, 0, -1), self.hgetall(k), self.get(k)]
-
     for key in deferredload:
       if key not in self.schema.keys():
-        logging.warning("Trying dynamic load for KEY `%s`")
-        for op in retrievaloplist(key):
+        logging.warning("Trying dynamic load for KEY `%s`", key)
+        try:
+          print('A')
+          value = self.lrange(key, 0, -1)
+        except redis.ResponseError as ex:
+          logging.debug("CAUGHT Exception")
           try:
-            value = op(key).decode()
+            print('B')
+            value = self.hgetall(key)
           except redis.ResponseError as ex:
-            pass
+            print('C')
+            value = self.get(key)
         logging.debug("Dynamically loaded %s = %s. Updating schema", key, str(value))
         data[key] = decodevalue(value)
-        self.schema[key] = type(value)
+        self.schema[key] = type(value).__name__
 
-      elif DType.get(self.schema[key]) is np.ndarray:
+      elif self.schema[key] == 'ndarray':
         data[key] = self.loadNPArray(key)
       
-      elif DType.get(self.schema[key]) is kv2DArray:
+      elif self.schema[key] == 'matrix':
         matrix = kv2DArray(self, key)
         data[key] = matrix.get()
 
     #  Data Conversion
-    # TODO:  MOVE TO JSON BASED RETRIEVAL
+    # TODO:  MOVE TO JSON or pickel BASED RETRIEVAL (???)
 
     i = 0
 
     for key in keys:
       try:
-        # logger.debug('Caching:  ' + key)
         if key in deferredload:
           continue
         data[key] = decodevalue(vals[i])
         if data[key] is None:
-          if DType.get(self.schema[key]) is list:
+          if self.schema[key] == 'list':
             data[key] = []
-          elif DType.get(self.schema[key]) is dict:
+          elif self.schema[key] == 'dict':
             data[key] = {}
         i += 1
       except (AttributeError, KeyError) as ex:
@@ -458,42 +445,37 @@ class dataStore(redis.StrictRedis, catalog):
       if key not in self.schema.keys():
         logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading")
         deferredsave.append(key)
-      elif DType[self.schema[key]] is int:
+      elif self.schema[key] == 'int':
         pipe.incr(key, value)
-      elif DType[self.schema[key]] is float:
+      elif self.schema[key] == 'float':
         pipe.incrbyfloat(key, value)
-      elif DType[self.schema[key]] is list:
+      elif self.schema[key] == 'list':
         for val in value:
           pipe.rpush(key, val)
-      elif DType[self.schema[key]] is dict:
+      elif self.schema[key] == 'dict':
         for k, v in value:
           pipe.hset(key, k, v)
-      elif DType[self.schema[key]] is kv2DArray:
-        deferredappend.append(key)
-      elif DType[self.schema[key]] is np.ndarray:
+      elif self.schema[key] in ['matrix', 'ndarray']:
         deferredappend.append(key)
       else:
         pipe.set(key, value)
-      logger.debug("  Saving data elm  `%s`" % (key, type(data[key])))
+      logger.debug("  Appending data elm  `%s` of type, %s" % (key, type(data[key])))
 
     pipe.execute()
 
-    for key in deferredload:
-      if DType[self.schema[key]] is np.ndarray:
+    for key in deferredappend:
+      if self.schema[key] == 'ndarray':
         self.storeNPArray(data[key])
-      elif DType[self.schema[key]] is kv2DArray:
+      elif self.schema[key] == 'matrix':
         matrix = kv2DArray(self, key)
         matrix.set(data[key])
-
-
-
 
 
   # Slice off data in-place. Asssume key stores a list
   def slice(self, key, num):
     data = self.lrange(key, 0, num-1)
     self.ltrim(key, num, -1)
-    return [d.decode() for d in data]
+    return data
 
   # Remove specific items from a list
   #  Given: a list and a set of indices into that list
@@ -508,18 +490,6 @@ class dataStore(redis.StrictRedis, catalog):
     pipe.execute()
 
 
-  def append(self, key, itemlist):
-    logger.debug("  APPENDING %d items to data elm  `%s`" % (len(itemlist), key))
-    self.rpush(key, *tuple(itemlist))
-
-  # Check if key exists in db
-  def check(self, key):
-    if self.type(key).decode() == 'none':
-      return False
-    else:
-      return True
-
-
   def storeNPArray(self, arr, key):
     #  Force numpy version 1.0 formatting
     header = {'shape': arr.shape,
@@ -528,16 +498,13 @@ class dataStore(redis.StrictRedis, catalog):
     self.hmset(key, {'header': json.dumps(header), 'data': bytes(arr)})
 
   def loadNPArray(self, key):
-    elm = {k.decode(): v for k, v in self.hgetall(key).items()}
+    print('NP KEY = ', key)
+    elm = self.hgetall(key)
     if elm == {}:
       return None
-    header = json.loads(elm['header'].decode())
+    header = json.loads(elm['header'])
     arr = np.fromstring(elm['data'], dtype=header['dtype'])
     return arr.reshape(header['shape'])
-
-
-
-
 
   # TODO:  Additional notification logic, as needed
   def notify(self, key, state):

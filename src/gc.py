@@ -38,14 +38,14 @@ class garbageCollect(macrothread):
     self.delay = self.data['gcDelay']
 
   def execute(self, params):
-    jclist = [key.decode() for key in self.catalog.keys('jc_*')]
+    jclist = self.catalog.keys('jc_*')
     dead = 0
     zombie = 0
     alive = 0
 
     start = dt.datetime.now()
     for job in jclist:
-      config = {k.decode(): v.decode() for k, v in self.catalog.hgetall(job).items()}
+      config = self.catalog.hgetall(job)
       # for k, v in config.items():
       #   logging.debug('%s, %s', k, str(v))
 

@@ -24,8 +24,14 @@ class analysisJob(macrothread):
     def __init__(self, fname):
       macrothread.__init__(self, fname,  'anl')
       # State Data for Simulation MacroThread -- organized by state
+
       self.setStream('rawoutput', 'completesim')
-      self.setState('anlSplitParam', 'anlDelay')
+
+      self.addImmut('anlSplitParam')
+      self.addImmut('anlDelay')
+      self.addImmut('centroid')
+      self.addImmut('numLabels')
+      self.addImmut('terminate')
 
       self.modules.add('redis')
 
@@ -55,9 +61,7 @@ class analysisJob(macrothread):
 
     def fetch(self, i):
 
-      self.data['centroid'] = self.catalog.loadNPArray('centroid')
-
-      params = {k.decode(): v.decode() for k, v in self.catalog.hgetall(wrapKey('jc', i)).items()}
+      params = self.catalog.hgetall(wrapKey('jc', i))
       for k, v in params.items():
         logging.debug('  %s :  %s', k, str(v))
       return params
@@ -142,7 +146,7 @@ class analysisJob(macrothread):
       logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point for classification)", config['name'])
       # TODO:  Feed all conforms into clustering algorithm & update centroid
 
-      logging.debug("  # Observations:      %d", len(conform))
+      logging.debug("  # Observations:      %d", len(conformlist))
       logging.debug("  # Transisions :      %d", numtransitions)
       logging.debug("  Bins Observed :      %s", str(uniquebins))
       logging.debug("  This Delta:\n%s", str(delta_tmat))
@@ -201,8 +205,6 @@ if __name__ == '__main__':
   mt.parser.add_argument('--winsize', type=int)
   mt.parser.add_argument('--slide', type=int)
   args = mt.parser.parse_args()
-  #  For archiving
-  # args = mt.addArgs().parse_args()
 
   if args.winsize:
     mt.winsize = args.winsize

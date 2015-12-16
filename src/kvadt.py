@@ -44,10 +44,10 @@ class kvadt(object):
 
 def fromByte(dataType):
   if dataType == int:
-    return lambda x: int(x.decode())
+    return lambda x: int(x)
   if dataType == float:
-    return lambda x: float(x.decode())
-  return lambda x: x.decode()
+    return lambda x: float(x)
+  return lambda x: x
 
 
 
@@ -69,13 +69,16 @@ class kv2DArray(kvadt):
     # Check if the array already exists
     stored_mag = self.db.get(self.name + '_magnitude')
     if stored_mag:
-      self.mag = int(stored_mag.decode())
+      self.mag = int(stored_mag)
       self._value = self.get()
     else:
       # Initialize the array
       self.mag = mag
       self.set(init)
 
+  @classmethod
+  def key(cls, name, x, y):
+    return name + '_%d_%d' % (x, y)
 
   def __get__(self):
     return self._value
@@ -83,9 +86,8 @@ class kv2DArray(kvadt):
   def __set__(self, value):
     self._value = value
 
-
   def _elmkey (self, x, y):
-    return self.name + '_%d_%d' % (x, y)
+    return self.key(self.name, x, y)
 
   def get (self, pipeline=None):
     arr = np.zeros(shape=(self.mag,self.mag))

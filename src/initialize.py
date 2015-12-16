@@ -9,36 +9,8 @@ import bisect
 
 DO_COV_MAT = False
 
-
-def init_catalog(catalog):
-
-  #  Create a "seed" job
-  logging.debug("System schema:")
-
-  # Loading schema and insert the start job into the queue
-  for k in sorted(DEFAULT.schema.keys()):
-    logging.info("  %15s:   %s", k, DEFAULT.schema[k])
-
-  # executecmd("shopt -s extglob | rm !(SEED.p*)")
-
-  # TODO:  Job ID Management
-  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
-
-  logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
-  catalog.clear()
-
-  logging.debug("Loading schema into catalog.")
-  catalog.save(ids)
-  catalog.save(DEFAULT.schema)
-
-  # TODO:  LOAD DEFAULT SETTINGS
-
-  # Load DEShaw meta-data
-  # histo = np.load('histogram.npy')
-
-
-# TODO: For use when migrating schema into catalog
-def create_schema(catalog):
+# For changes to schema
+def updateschema(catalog):
   settings = systemsettings()
   if not settings.configured():
     settings.applyConfig()
@@ -57,6 +29,87 @@ def create_schema(catalog):
 
   catalog.hmset("META_schema", dtype_map)
 
+
+def initializecatalog(catalog):
+  settings = systemsettings()
+  if not settings.configured():
+    settings.applyConfig()
+
+  # TODO:  Job ID Management
+  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
+  for k,v in ids.items():
+    settings.schema[k] = type(v).__name__
+
+  logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
+  catalog.clear()
+
+  logging.debug("Loading schema into catalog.")
+  updateschema(catalog)
+  catalog.loadSchema()
+
+  initvals = {i:settings.init[i] for i in settings.init.keys() if settings.schema[i] in ['int', 'float', 'list', 'dict', 'str']}
+  catalog.save(initvals)
+  for k, v in initvals.items():
+    logging.debug("Initializing data elm %s  =  %s", k, str(v))
+
+  # Initialize Candidate Pools
+  numLabels  = int(catalog.get('numLabels'))
+  pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
+  candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
+
+  #  Create Candidate Pools from RMSD for all source DEShaw data
+  logging.info("Loading DEShaw RMS Values")
+  rms = np.load('rmsd.npy')
+  nn = []
+  cpools = {(i,j):[] for i in range(numLabels) for j in range(numLabels)}
+  logging.info("Creating candidate pools")
+  wpools = [[] for i in range(numLabels)]
+  for i, traj in enumerate(rms):
+    for f, conform in enumerate(traj):
+      ordc = np.argsort(conform)
+      A = ordc[0]
+      relproximity = conform[A] / (conform[A] + conform[ordc[1]])
+      nn.append((i, f, A, ordc[1], relproximity))
+      if relproximity > .49:
+        cpools[(A, ordc[1])].append((.5 - relproximity, i,f))
+      elif len(wpools[A]) == 0 or relproximity > wpools[A][0][0]:
+        bisect.insort(wpools[A], (relproximity, i, f))
+        if len(wpools[A]) == 1000:
+          del wpools[A][0]
+
+  logging.info("All Candidates Found! Breakdown by bin:")
+  candidatepools = {k:sorted(v) for k,v in cpools.items()}
+
+  for i in range(numLabels):
+    for j in range(numLabels):
+      if i == j:
+        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in wpools[i]]
+      else:
+        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in cpools[(i,j)]]
+      logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
+
+  logging.info("Updating Catalog")
+
+  pipe = catalog.pipeline()  
+  logging.info("Deleting existing candidates and controids")
+  pipe.delete('centroid')
+  for i in range(numLabels):
+    for j in range(numLabels):
+      pipe.delete(kv2DArray.key('candidatePool', i, j))
+
+  for i in range(numLabels):
+    for j in range(numLabels):
+      for c in candidates[i][j]:
+        pipe.rpush(kv2DArray.key('candidatePool', i, j), c)
+  pipe.execute()
+
+  centroid = np.load('centroid_heavy.npy')
+  catalog.storeNPArray(centroid, 'centroid')
+
+  # Initialize observations matrix
+  observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
+  launch = kv2DArray(catalog, 'launch', mag=numLabels, init=0)
+  runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
 
 def init_archive(archive, hashsize=8):
 
@@ -94,8 +147,6 @@ def init_archive(archive, hashsize=8):
 
 
   logging.debug("Initialization complete\n")
-
-
 
 def index_DEShaw(catalog, archive, start, num, winsize, slide):
     # winperfile = 1000 // slide
@@ -161,7 +212,7 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
       logging.debug('  num_pc      %d', DEFAULT.NUM_PCOMP)
       logging.debug('  num_atoms   %d', trajectory.n_atoms)
     else:
-      indexSize = int(indexSize.decode())
+      indexSize = int(indexSize)
       logging.debug("Meta Data already configured:  Indexsize = %d", indexSize)
       if indexSize != (n_var * DEFAULT.NUM_PCOMP):
         logging.error("Inconsistent Index Size:  Setting %d x %d  but had %d stored", n_var, DEFAULT.NUM_PCOMP, indexSize)
@@ -189,93 +240,6 @@ def index_DEShaw(catalog, archive, start, num, winsize, slide):
     #   logging.info("Saving:  %s, %s", evfile, egfile) 
     #   np.save(evfile, evm)
     #   np.save(egfile, egm)
-
-def init_control(catalog):
-  
-  # Initialize Candidate Pools
-  numLabels  = int(catalog.get('numLabels').decode())
-  pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
-  candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
-
-  # # init first and last
-  # pools[labels[0].state].append(0)
-  # pools[labels[-1].state].append(len(labels))
-
-  # logging.info("Scanning labellist for potential candidates")
-  # for i in range(1, len(labels)-1):
-  #   if labels[i-1].state == labels[i].state == labels[i+1].state:
-  #     pools[labels[i].state][labels[i].state].append(i)
-  #   elif labels[i-1].state == labels[i].state:
-  #     pools[labels[i].state][labels[i+1].state].append(i)
-  #   else:
-  #     pools[labels[i-1].state][labels[i].state].append(i)
-
-  # logging.info("Creating candidate pools")
-  # for i in range(numLabels):
-  #   for j in range(numLabels):
-  #     if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
-  #       candidates[i][j] = pools[i][j]
-  #     else:    
-  #       candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
-    
-  #  Create Candidate Pools from RMSD for all source DEShaw data
-  pipe = catalog.pipeline()  
-  logging.info("Deleting existing candidates and controids")
-  pipe.delete('centroid')
-  for i in range(numLabels):
-    for j in range(numLabels):
-      pipe.delete(candidPoolKey(i, j))
-
-  logging.info("Loading DEShaw RMS Values")
-  rms = np.load('rmsd.npy')
-  nn = []
-  cpools = {(i,j):[] for i in range(numLabels) for j in range(numLabels)}
-  logging.info("Creating candidate pools")
-  wpools = [[] for i in range(numLabels)]
-  for i, traj in enumerate(rms):
-    for f, conform in enumerate(traj):
-      ordc = np.argsort(conform)
-      A = ordc[0]
-      relproximity = conform[A] / (conform[A] + conform[ordc[1]])
-      nn.append((i, f, A, ordc[1], relproximity))
-      if relproximity > .49:
-        cpools[(A, ordc[1])].append((.5 - relproximity, i,f))
-      elif len(wpools[A]) == 0 or relproximity > wpools[A][0][0]:
-        bisect.insort(wpools[A], (relproximity, i, f))
-        if len(wpools[A]) == 1000:
-          del wpools[A][0]
-
-  logging.info("All Candidates Found! Breakdown by bin:")
-  candidatepools = {k:sorted(v, key=lambda x : x[2]) for k,v in cpools.items()}
-
-  for i in range(numLabels):
-    for j in range(numLabels):
-      if i == j:
-        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in wpools[i]]
-      else:
-        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in cpools[(i,j)]]
-      logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
-
-      # if len(pools[i][j]) <= DEFAULT.CANDIDATE_POOL_SIZE:
-      #   candidates[i][j] = pools[i][j]
-      # else:    
-      #   candidates[i][j] = np.random.choice(pools[i][j], DEFAULT.CANDIDATE_POOL_SIZE, replace=False)
-
-  logging.info("Updating Catalog")
-  for i in range(numLabels):
-    for j in range(numLabels):
-      for c in candidates[i][j]:
-        pipe.rpush(candidPoolKey(i, j), c)
-  pipe.execute()
-
-
-  centroid = np.load('centroid_heavy.npy')
-  catalog.storeNPArray(centroid, 'centroid')
-
-  # Initialize observations matrix
-  obsMat_Store = kv2DArray(catalog, 'observations')
-  selMat_Store = kv2DArray(catalog, 'selection')
-  launchMat_Store = kv2DArray(catalog, 'launch')
 
 def reindex(archive, size=10):
   indexsize = 1362 #int(archive.get('indexSize').decode())
@@ -365,23 +329,19 @@ def seedJob(catalog, num=1):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
   """
-  numLabels  = int(catalog.get('numLabels').decode())
-
-
-  #  1 Loop to create pipeline
-  pipe = catalog.pipeline()  
-  logging.info("Getting candidate pools")
-  for i in range(numLabels):
-    for j in range(numLabels):
-      pipe.lrange(candidPoolKey(i, j), 0, -1)
-  pools = pipe.execute()
+  settings = systemsettings()
+  numLabels  = int(catalog.get('numLabels'))
 
   idx = 0
   for i in range(numLabels):
     for j in range(numLabels):
       for k in range(num):
-        src, frame = choice(pools[idx]).decode().split(':')
-        logging.debug("(%d,%d) Selected: BPTI %s, frame: %s", i, j, src, frame)
+        logging.debug('\nSeeding Job for bin (%d,%d) ', i, j)
+        start = catalog.lpop(kv2DArray.key('candidatePool', i, j))
+        src, frame = start.split(':')
+        catalog.rpush(kv2DArray.key('candidatePool', i, j), start)
+
+        logging.debug("   Selected: BPTI %s, frame: %s", src, frame)
         pdbfile, archiveFile = getHistoricalTrajectory(int(src))
 
         # Generate new set of params/coords
@@ -390,7 +350,7 @@ def seedJob(catalog, num=1):
         # Update Additional JC Params and Decision History, as needed
         config = dict(params,
             name    = jcID,
-            runtime = DEFAULT.RUNTIME,
+            runtime = settings.init['runtime'],
             temp    = 310,
             state   = i,
             weight  = 0.,
@@ -413,7 +373,7 @@ if __name__ == '__main__':
   parser.add_argument('-c', '--conf', default='default.conf')
   parser.add_argument('--initarchive', action='store_true')
   parser.add_argument('--initcatalog', action='store_true')
-  parser.add_argument('--initcontrol', action='store_true')
+  parser.add_argument('--updateschema', action='store_true')
   parser.add_argument('--seedjob', action='store_true')
   parser.add_argument('--seeddata', action='store_true')
   parser.add_argument('--reindex', nargs='?', const=10, type=int)
@@ -429,11 +389,9 @@ if __name__ == '__main__':
   settings.applyConfig(confile)
   catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
 
-  create_schema(catalog)
-
   if args.initcatalog:
-    DEFAULT.envSetup()
-    init_catalog(catalog)
+    settings.envSetup()
+    initializecatalog(catalog)
 
   if args.initarchive:
     archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
@@ -450,14 +408,12 @@ if __name__ == '__main__':
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     reindex(archive, args.reindex)
 
-
-  if args.initcontrol:
+  if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-    init_control(catalog)
+    updateschema(catalog)
 
   if args.seedjob:
     seedJob(catalog)
-
 
   if args.seeddata:
     seedData(catalog)

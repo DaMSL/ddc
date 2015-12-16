@@ -80,16 +80,16 @@ class macrothread(object):
     self._mut.append(key)
     if value is not None:
       self.data[key] = value
-      self.origin = copy.deepcopy(value)
 
   def addImmut(self, key, value=None):
     self._immut.append(key)
 
   def addAppend(self, key, value=None):
     self._append.append(key)
+    self.origin[key] = None
     if value is not None:
       self.data[key] = value
-      self.origin = copy.deepcopy(value)
+      self.origin[key] = copy.deepcopy(value)
 
 
   # # TODO:  Eventually we may want multiple up/down streams
@@ -149,12 +149,12 @@ class macrothread(object):
     return isinstance(ex, redis.ConnectionError)
 
 
-  def load(self, *keylists):
+  def load(self, *keylist):
     """
     Load state from remote catalog to local cache
     """
     keys = []
-    for k in keylists:
+    for k in keylist:
       if isinstance(k, list):
         keys.extend(k)
       elif isinstance(k, str):
@@ -164,10 +164,17 @@ class macrothread(object):
     # pass expeected data types (interim solution)
 
     data = self.catalog.load(keys)
-    logging.debug("Loaded state")
+    logging.debug("Loaded state for %s:", self.name)
     for k,v in data.items():
       self.data[k] = v
-      print("  state:  ", k, v)
+      logging.debug("  %10s: %s ", k, str(v))
+
+    logging.debug("Setting origin for append-only")
+    for k in keys:
+      if k in self._append:
+        self.origin[k] = copy.deepcopy(data[k])
+      logging.debug("  Setting Append only origin for: %s", k)
+
 
   def save(self, *keylist):
     """
@@ -196,7 +203,7 @@ class macrothread(object):
     """
     state = {}
     keys = []
-    for k in keylists:
+    for k in keylist:
       if isinstance(k, list):
         keys.extend(k)
       elif isinstance(k, str):
@@ -207,6 +214,10 @@ class macrothread(object):
       if key not in self.data:
         logging.error("KEY ERROR. %s not found in current state", key)
       else:
+        logging.debug("Current Origin Contents:")
+        for k, v in self.origin.items():
+          print("   ",k,v)
+        logging.debug("------")
         if type(self.data[key]) in [int, float, np.ndarray]:
           state[key] = self.data[key] - self.origin[key]
         elif isinstance(self.data, list):
@@ -275,7 +286,12 @@ class macrothread(object):
 
     # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
     myid = 'id_%s' % self.name
-    jobid = int(self.catalog.get(myid).decode())
+    curid = self.catalog.get(myid)
+    if curid is None:
+      self.catalog.set(myid, 0)
+      jobid = 0
+    else:
+      jobid = int(curid)
     self.catalog.incr(myid)
 
     # No Jobs to run.... Delay and then rerun later
@@ -286,14 +302,15 @@ class macrothread(object):
 
     # Dispatch Workers
     else:
+      workernum = 1
       for i in immed:
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
-        self.slurmParams['job-name'] = "%sW-%05d" % (self.name, jobid)
+        self.slurmParams['job-name'] = "%sW%d-%d" % (self.name[0], jobid, workernum)
         slurm.sbatch(taskid=self.slurmParams['job-name'],
             options = self.slurmParams,
             modules = self.modules,
             cmd = "python3 %s -c %s -w %s" % (self.fname, self.config, str(i)))
-        jobid += 1
+        workernum += 1
 
     # Reschedule Next Manager:
     # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
@@ -302,16 +319,15 @@ class macrothread(object):
     delay = self.delay  
     self.slurmParams['begin'] = 'now+%d' % delay
 
-    self.slurmParams['job-name'] = "%sM-%05d" % (self.name, jobid)
+    self.slurmParams['job-name'] = "%sM-%04d" % (self.name[0], jobid)
+    self.slurmParams['cpus-per-task'] = 1
     slurm.sbatch(taskid =self.slurmParams['job-name'],
               options   = self.slurmParams,
               modules   = self.modules,
               cmd = "python3 %s -c %s" % (self.fname, self.config))
-    jobid += 1
 
     # METHOD 2.  Trigger Based
     #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
-    self.data[myid] = jobid
 
 
     # Ensure the catalog is available. If not, start it for persistance and check
@@ -329,10 +345,8 @@ class macrothread(object):
 
     # Other interal thread state is saved back to catalog
     #  TODO: For now the manager ONLY updates the job ID
-    self.catalog.save({myid: jobid})
 
     self.save(self._mut)
-    self
     
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
@@ -366,15 +380,13 @@ class macrothread(object):
     logger.debug("Starting WORKER  Execution  ---->>")
     result = self.execute(jobInput)
     logger.debug("<<----  WORKER Execution Complete")
+
     # Ensure returned results are a list
     if type(result) != list:
       result = [result]
 
     #  CHECK CATALOG STATUS for saving data
     self.localcatalogserver = self.catalog.conn()
-
-    logger.info("WORKER Saving Thread State to catalog:")
-    self.save(self._state)
 
     #  catalog.notify(i, "complete")
     for r in result:
@@ -393,11 +405,6 @@ class macrothread(object):
       #     trigger flow bet streams is tuning action (e.g. assume 1:1 to start)
 
       logging.debug ("  WORKER output:   %s", r)  
-    
-    #  SIMULATING FOR NOW
-    # logging.debug(" SIMULATION ONLY ---- NOT SAVING")
-    # sys.exit(0)
-
 
     if self.downstream is not None and len(result) > 0:
       self.catalog.append({self.downstream: result})
@@ -455,16 +462,11 @@ class macrothread(object):
       self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
     self.localcatalogserver = self.catalog.conn()
 
-    self.catalog.loadSchema(settings.schema)   # Should this be called from within the catalog module?
+    self.catalog.loadSchema()   # Should this be called from within the catalog module?
 
     # Load data from Catalog
     logger.info("Loading Thread State for from catalog:")
     self.load(self._mut, self._immut, self._append)
-
-    #  Store original data for append only:
-    for key in self._append:
-      self.origin[key] = copy.deepcopy(self.data[key])
-
 
     if args.workinput:
       logger.debug("Running worker.")

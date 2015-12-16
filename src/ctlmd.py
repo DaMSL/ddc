@@ -110,7 +110,6 @@ def makeLogisticFunc (maxval, steep, midpt):
   return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
 
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
-candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
 
 
 def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
@@ -119,10 +118,8 @@ def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
 
     # Get a new uid
     jcuid = getUID()
-    # jcuid = 'DEBUG'
 
-    # Write out coords (TODO: should this go to catalog or to file?)
-    # tmpCoord = os.path.join(DEFAULT.COORD_FILE_DIR, '%s_tmp.pdb' % jcuid)
+    #  TODO:  Should coords be pre-fetched and pulled from pre-fetch location?
     jobdir = os.path.join(DEFAULT.JOBDIR,  jcuid)
     coordFile  = os.path.join(jobdir, '%s_coord.pdb' % jcuid)
     newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
@@ -131,16 +128,11 @@ def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
 
-    # Retrieve referenced file from storage
-    #   TODO: Set up historical archive for retrieval (this may need to be imported)
-    #   TODO: Use load_frame instead of loading entire trajectory
-
     #  Load in Historical Referenced trajectory file, filter out proteins & slice
     traj  = md.load(rawfile, top=pdbfile)
     traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
     
-    #  For now, pick a random frame from this trajectory
-    #  TODO:  ID specific window reference point
+    #  Pick a random frame from this trajectory if none is provided
     if frame is None:
       frame = randint(0, traj.n_frames)
 
@@ -153,9 +145,8 @@ def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
     # Save this as a temp file to set up simulation input file
     coord.save_pdb(coordFile)
 
-
     newsimJob = dict(workdir=jobdir,
-        coord = coordFile,
+        coord   = coordFile,
         pdb     = newPdbFile,
         psf     = newPsfFile,
         topo    = DEFAULT.TOPO,
@@ -178,8 +169,18 @@ class controlJob(macrothread):
       macrothread.__init__(self, fname, 'ctl')
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('completesim', None)
-      self.setState('jcqueue', 'timestep', 'converge', 'ctlSplitParam', 'ctlDelay',
-                    *tuple([candidPoolKey(i,j) for i in range(5) for j in range(5)]))
+
+      self.addMut('jcqueue')
+      self.addMut('converge')
+      self.addImmut('ctlSplitParam')
+      self.addImmut('ctlDelay')
+      self.addImmut('numLabels')
+      self.addImmut('launch')
+      self.addImmut('terminate')
+      self.addImmut('weight_alpha')
+      self.addImmut('weight_beta')
+      self.addAppend('timestep')
+      self.addAppend('observe')
 
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
@@ -212,17 +213,359 @@ class controlJob(macrothread):
       pipe.lrange('completesim', 0, -1)
       pipe.delete('completesim')
       vals = pipe.execute()
-      return [v.decode() for v in vals[0]]
-
-
-      
+      return vals[0]
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
 
 
-    def oldcode():
-      pass
+    # def execute(self, ld_index):
+    def execute(self, job_list):
+      logging.debug('CTL MT')
+
+      logging.debug("============================  <PRE-PROCESS>  =============================")
+
+      self.data['timestep'] += 1
+      logging.info('TIMESTEP: %d', self.data['timestep'])
+
+      numLabels = self.data['numLabels']
+
+      delta_tmat = np.zeros(shape=(numLabels, numLabels))
+      logging.debug("Processing output from %d  simulations", len(job_list))
+      for job in job_list:
+        logging.debug("  Loading data for simulation: %s", job)
+
+        #  Do we need jc info here (provonance or )
+        history = self.catalog.load(wrapKey('jc', job))
+        traj_delta  = self.catalog.loadNPArray(wrapKey('delta', job))
+        delta_tmat += traj_delta
+
+      logging.debug('Delta Matrix: \n%s', str(delta_tmat))
+
+      logging.debug("============================  <WEIGHT CALC>  =============================")
+
+ 
+      #  TODO:  Consistency
+      # Load Transition Matrix (& TODO: Historical index state labels)
+      # tmat = loadNPArray(self.catalog, 'transitionmatrix')
+      # if tmat is None:
+      #   tmat = np.zeros(shape=(5,5))    # TODO: Move to init
+      # tmat += delta_tmat
+
+
+      # Weight Calculation: create a logistic function using current observation distribution
+      totalBins = numLabels ** 2
+
+      # 1. Calc "preference" part of the weight
+      observe_before = np.copy(self.data['observe'])
+      self.data['observe'] += delta_tmat
+      observe = self.data['observe']
+
+      # Calc convergence on probability distro (before & after)
+      logging.debug("Calculating Probability Distributions for each state...")
+      probDistro_before = np.zeros(shape=(numLabels, numLabels))
+      probDistro        = np.zeros(shape=(numLabels, numLabels))
+      for n in range(numLabels):
+        numTrans_before = np.sum(observe_before[n]) - observe_before[n][n]
+        probDistro_before[n] = observe_before[n] / numTrans_before
+        probDistro_before[n][n] = 0
+        numTrans = np.sum(observe[n]) - observe[n][n]
+        probDistro[n] = observe[n] / numTrans
+        probDistro[n][n] = 0
+      delta        = np.zeros(shape=(numLabels, numLabels))
+      delta = abs(probDistro - probDistro_before)
+
+      bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
+
+      logging.debug("Calculating transition rarity...")
+        #  Isolate rare events (s.t. rare event seen less than mean)
+      rareObserve = np.choose(np.where(observe.flatten() < np.mean(observe)), observe.flatten())
+
+        #  Est. mid point of logistic curve by accounting for distribution skew
+      midptObs = np.mean(observe) * skew(observe) + np.median(observe)
+
+        #  Create the function
+      rarityFunc = makeLogisticFunc(1, 1 / np.std(rareObserve), midptObs)
+
+      # 2. Fatigue portion based on # times each bin was "launched"
+      launch = self.data['launch']
+      quota = np.sum(launch) / (totalBins - numLabels)
+
+      # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
+
+      #  3. Apply constants. This can be user influenced
+      alpha = self.data['weight_alpha']
+      beta = self.data['weight_beta']
+
+      # 4. Calculate weight (note: follow 2 are retained for debugging only)
+
+      #  UPDATED:  Weights CALC as a factor of rare events & instability in delta calc
+      rarity = np.zeros(shape=(numLabels, numLabels))
+      # fatigue = np.zeros(shape=(numLabels, numLabels))
+      logging.debug("Calculating control weights...")
+      weight = {}
+      quotasq = quota**2
+      for i in range(numLabels):
+        for j in range(numLabels):
+          rarity[i][j] = rarityFunc(observe[i][j] - midptObs)
+          weight[(i,j)] =  0 if i == j else alpha * rarity[i][j] + beta * delta[i][j]
+
+          # Apply a `fatigue` factor; bins are fatigued if run more than their quota
+          weight[(i,j)] *= 0 if launch[i][j] > quota else (quota - launch[i][j])**2/quotasq
+ 
+      # totalObservations = np.sum(tmat)
+      # tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
+      # quota = max(totalObservations / len(tmat_distro.keys()), len(tmat_distro.keys()))
+      # pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
+
+      updatedWeights = sorted(weight.items(), key=lambda x: x[1], reverse=True)
+
+
+      #  SCHEDULING   -----------------------------------------
+      logging.debug("============================  <SCHEDULING>  =============================")
+
+      #  5. Load JC Queue and all items within to get respective weights and projected target bins
+      curqueue = []
+      logging.debug("Loading Current Queue of %d items", len(self.data['jcqueue']))
+      debug = True
+      configlist = self.catalog.load([wrapKey('jc', job) for job in self.data['jcqueue']])
+      for config in configlist.values():
+
+        # Dampening Factor: proportional it currency (if no ts, set it to 1)
+        jc_ts = config['timestep'] if 'timestep' in config else 1
+
+        #  TODO: May want to consider incl convergence of sys at time job was created
+        w_before    = config['weight']
+        config['weight'] = config['weight'] * (jc_ts / self.data['timestep'])
+        logging.debug("Dampening Factor Applied (jc_ts = %d):   %0.5f  to  %05f", jc_ts, w_before, config['weight'])
+        curqueue.append(config)
+
+      #  5a. (PreProcess current queue) for legacy JC's
+      logging.debug("Loaded %d items", len(curqueue))
+      for jc in range(len(curqueue)):
+        if 'weight' not in curqueue[jc]:
+          curqueue[jc]['weight'] = 1.0
+
+        if 'gc' not in curqueue[jc]:
+          curqueue[jc]['gc'] = 1
+
+      #  6. Sort current queue
+      if len(curqueue) > 0:
+        existingQueue = deque(sorted(curqueue, key=lambda x: x['weight'], reverse=True))
+        eqwlow = 0 if np.isnan(existingQueue[0]['weight']) else existingQueue[0]['weight']
+        eqwhi  = 0 if np.isnan(existingQueue[-1]['weight']) else existingQueue[-1]['weight']
+        logging.debug("Existing Queue has %d items between weights: %0.5f - %0.5f", len(existingQueue), eqwlow, eqwhi)
+      else:
+        existingQueue = deque()
+        logging.debug("Existing Queue is empty.")
+
+      #  7. Det. potential set of  new jobs  (base on launch policy)
+      #     TODO: Set up as multiple jobs per bin, cap on a per-control task basis, or just 1 per bin
+      potentialJobs = deque(updatedWeights)
+      logging.debug("Potential Job Queue has %d items between weights: %0.5f - %0.5f", len(potentialJobs), potentialJobs[0][1], potentialJobs[-1][1])
+
+      #  7. Prepare a new queue (for output)
+      jcqueue = deque()
+
+      targetBin = potentialJobs.popleft()
+      oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
+      selectionTally = np.zeros(shape=(numLabels, numLabels))
+      newJobCandidate = {}
+
+      # Rank order list of observed transition bins for each state
+      rarityorderstate = np.argsort(observe.sum(axis=1))
+      rarityordertrans = np.zeros(shape=(numLabels,numLabels))
+      for i in range(numLabels):
+        np.copyto(rarityordertrans[i], np.argsort(observe[i]))
+   
+      while len(jcqueue) < DEFAULT.MAX_JOBS_IN_QUEUE:
+
+        if oldjob == None and targetBin == None:
+          logging.info("No more jobs to queue.")
+          break
+
+        if (targetBin == None) or (oldjob and oldjob['weight'] > targetBin[1]) or (oldjob and np.isnan(targetBin[1])):
+          jcqueue.append(oldjob['name'])
+          oldjob['weight'] = 0 if np.isnan(oldjob['weight']) else oldjob['weight']
+          logging.debug("Re-Queuing OLD JOB `%s`   weight= %0.5f", oldjob['name'], oldjob['weight'])
+          oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
+
+        else:
+          A, B = targetBin[0]
+          logging.debug("\n\nCONTROL: Target transition bin  %s  (new job #%d,  weight=%0.5f)", str((A, B)), len(newJobCandidate), targetBin[1])
+
+          # Identify a pool of starting points Start with Target Bin
+          cpool = kv2DArray.key('candidatePool', A, B)
+          selectedbin = (A,B)
+
+          # Flip direction of transition
+          if self.catalog.llen(cpool) == 0:
+            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking reverse direction", A, B)
+            cpool = kv2DArray.key('candidatePool', B, A)
+            selectedbin = (B,A)
+
+          if self.catalog.llen(cpool) == 0:
+            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking wells in this order: %s", B, A, str(rarityorderstate))
+            for RS in rarityorderstate:
+              cpool = kv2DArray.key('candidatePool', RS, RS)
+              if self.catalog.llen(cpool) == 0:
+                logging.info("No DEShaw reference for transition, (%d, %d) ", RS, RS)
+
+              else: 
+                logging.info("FOUND DEShaw start point from transition, (%d, %d) ", RS, RS)
+                selectedbin = (RS,RS)
+                break
+
+          logging.debug('Final Candidate Popped from Pool %s  of  %d  candidates', cpool, self.catalog.llen(cpool))
+
+          # Pick a random trajectory from the bin  TODO:  popleft this
+          candidate = self.catalog.lpop(cpool)
+          sourceTraj, srcFrame = candidate.split(':')
+          dstring = "####SELECT_TRAJ@ %s @ %s @ %s @ %s" % (str(targetBin[0]), str(selectedbin), sourceTraj, srcFrame)
+          self.catalog.rpush(cpool, candidate)
+
+          # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
+          #   or we have a pre-fetch algorithm to get the data
+          # Back-project  <--- Move to separate Function tied to decision history
+          # For now:
+          if isinstance(sourceTraj, int) or sourceTraj.isdigit():      # It's a DEShaw file
+            pdbfile, archiveFile = getHistoricalTrajectory(sourceTraj)
+          else:
+            archiveFile = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.dcd' % sourceTraj)
+            pdbfile     = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.pdb' % sourceTraj)
+
+          # Generate new set of params/coords
+          jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, int(srcFrame), debugstring=dstring)
+
+          # TODO: DERIVE RUNTIME HERE
+          runtime = self.catalog.get(kv2DArray.key('runtime', A, B))
+          # Update Additional JC Params and Decision History, as needed
+          jcConfig = dict(params,
+              name    = jcID,
+              runtime = runtime,
+              interval = 500,
+              temp    = 310,
+              state   = A,
+              weight  = targetBin[1],
+              timestep = self.data['timestep'],
+              gc      = 1,
+              application   = DEFAULT.APPL_LABEL,
+              targetBin  = str((A, B)))
+
+          logging.info("New Simulation Job Created: %s", jcID)
+          for k, v in jcConfig.items():
+            logging.debug("   %s:  %s", k, str(v))
+
+          #  Add to the output queue & save config info
+          jcqueue.append(jcID)
+          newJobCandidate[jcID] = jcConfig
+          selectionTally[A][B] += 1
+          logging.info("New Job Candidate Completed:  %s   #%d on the Queue", jcID, len(jcqueue))
+          
+          if len(potentialJobs) == 0 or len(newJobCandidate) == DEFAULT.MAX_NUM_NEW_JC:
+            targetBin = None
+          else:
+            targetBin = potentialJobs.popleft()
+
+
+      # Update the selection matrix
+      # selObs_Store = kv2DArray(self.catalog, 'selection')
+      # selObs_Store.merge(selectionTally)
+
+      # Mark obsolete jobs for garbage collection:
+      logging.info("Marking %d obsolete jobs for garbage collection", len(existingQueue))
+      while len(existingQueue) > 0:
+        config = existingQueue.popleft()
+        config['gc'] = 0
+
+        # Add gc jobs it to the state to write back to catalog (flags it for gc)
+        self.addMut(wrapKey('jc', config['name']), config)
+
+
+      # CONVERGENCE CALCUALTION  -------------------------------------
+      logging.debug("============================  <CONVERGENCE -- CALC W/WEIGHTS>  =============================")
+
+      logging.debug("OBS_MATRIX_DELTA:\n" + str(delta_tmat))
+      logging.debug("OBS_MATRIX_UPDATED:\n" + str(observe))
+      logging.debug("LAUNCH_MATRIX:\n" + str(launch))
+      logging.debug("CONVERGENCE_PROB_DISTRO:\n" + str(probDistro))
+      logging.debug("OBS_RARITY:\n" + str(rarity))
+      logging.debug("CONV_DELTA:\n" + str(delta))
+      logging.debug("CTL_WEIGHT:")
+      for i in range(5):
+        logging.debug("  %s", str(['%0.5f'% weight[(i,k)] for k in range(5)]))
+
+      globalconvergence = np.sum(abs(probDistro - probDistro_before))
+      logging.info("GLOBAL_CONVERGENCE: %f", globalconvergence)
+      for i in range(5):
+        logging.info("STATE_CONVERGENCE for %d: %f", i, np.sum(delta[i]))
+
+      globalconvergence_rate = globalconvergence / len(job_list)
+      logging.info("GLOBAL_CONVERGENCE_RATE: %f", globalconvergence_rate)
+      for i in range(5):
+        logging.info("STATE_CONVERGENCE_RATE for %d: %f", i, np.sum(delta[i])/len(job_list))
+
+      clist_entry = {'timestep': self.data['timestep'], 'numjobs': len(job_list), 'convg': globalconvergence, 'convs': str([np.sum(delta[i]) for i in range(5)])}
+      self.catalog.rpush('globalconvergelist', json.dumps(clist_entry))
+
+      self.data['jcqueue'] = list(jcqueue)
+
+      logging.debug("   JCQUEUE:  %s", str(self.data['jcqueue']))
+      # Update Each new job with latest convergence score and save to catalog(TODO: save may not be nec'y)
+      logging.debug("Updated Job Queue length:  %d", len(self.data['jcqueue']))
+      for jcid, config in newJobCandidate.items():
+        config['converge'] = self.data['converge']
+        self.addMut(wrapKey('jc', jcid), config)
+ 
+      return list(newJobCandidate.keys())
+
+
+
+if __name__ == '__main__':
+  mt = controlJob(__file__)
+  mt.run()
+
+
+
+
+# OLD COVERGENCE:
+      # logging.debug("Observations MAT:\n" + str(tmat))
+      # logging.debug("Fatigue:\n" + str(fatigue))
+
+      # # Load Selection Matrix
+      # smat = loadNPArray(self.catalog, 'selectionmatrix')
+      # if smat is None:
+      #   smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
+
+      # # Merge Update global selection matrix
+      # smat += selectionTally
+      # logging.debug("SMAT:\n" + str(smat))
+      # # Load Convergence Matrix
+      # cmat = loadNPArray(self.catalog, 'convergencematrix')
+      # if cmat is None:
+      #   cmat = np.full((5,5), 0.04)    # TODO: Move to init
+      # logging.debug("CMAT:\n" + str(cmat))
+
+      # # Remove bias from selection and add to observations 
+      # #  which gives the unbiased, uniform selection 
+      # inverseSelectFunc = lambda x: (np.max(x)) - x
+
+      # #  For now, Assume a 4:1 ratio (input:output) and do not factor in output prob distro
+      # unbias = 3 * inverseSelectFunc(smat) + tmat
+      # logging.debug("UNBIAS:\n" + str(unbias))
+
+      # # Calculcate "convergence" matrix as unbias(i,j) / sel(i.j)
+      # updated_cmat = unbias / np.sum(unbias)
+      # logging.debug("CMAT_0:\n" + str(cmat))
+      # logging.debug("CMAT_1:\n" + str(updated_cmat))
+
+
+      # # Calculate global convergence as summed difference:  cmat_t1 - cmat_t0
+      # convergence = np.sum(abs(updated_cmat - cmat))
+
+
+    # def oldcode():
+    #   pass
       # TODO:  Treat Archive as an overlay service. For now, wrap inside here and connect to it
 
 
@@ -523,464 +866,4 @@ class controlJob(macrothread):
       #  WEIGHT CALCULATION ---------------------------
 
       # Increment the timestep
-
-
-    # def execute(self, ld_index):
-    def execute(self, job_list):
-      logging.debug('CTL MT')
-
-      logging.debug("============================  <PRE-PROCESS>  =============================")
-
-      self.data['timestep'] += 1
-      logging.info('TIMESTEP: %d', self.data['timestep'])
-
-      numLabels = int(self.data['numLabels'])
-
-      delta_tmat = np.zeros(shape=(numLabels, numLabels))
-      logging.debug("Processing output from %d  simulations", len(job_list))
-      for job in job_list:
-        logging.debug("  Loading data for simulation: %s", job)
-        key = wrapKey('jc', job)
-        history = {}
-        self.catalog.load({key: history})
-        delta  = self.catalog.loadNPArray(wrapKey('delta', job))
-        delta_tmat += delta
-
-      logging.debug('Delta Matrix: %s\n%s', job, str(delta_tmat))
-
-      logging.debug("============================  <WEIGHT CALC>  =============================")
-
- 
-      #  TODO:  Consistency
-      # Load Transition Matrix (& TODO: Historical index state labels)
-      # tmat = loadNPArray(self.catalog, 'transitionmatrix')
-      # if tmat is None:
-      #   tmat = np.zeros(shape=(5,5))    # TODO: Move to init
-      # tmat += delta_tmat
-
-
-      # Weight Calculation: create a logistic function using current observation distribution
-      totalBins = numLabels ** 2
-
-      # 1. Calc "preference" part of the weight
-      logging.debug("Getting/Merging Observations...")
-      obsMat_Store = kv2DArray(self.catalog, 'observe')
-      observe_before = obsMat_Store.get()
-      obsMat_Store.merge(delta_tmat)
-      observe = obsMat_Store.get()
-
-      # Calc convergence on probability distro (before & after)
-      logging.debug("Calculating Probability Distributions for each state...")
-      probDistro_before = np.zeros(shape=(numLabels, numLabels))
-      probDistro        = np.zeros(shape=(numLabels, numLabels))
-      for n in range(numLabels):
-        numTrans_before = np.sum(observe_before[n]) - observe_before[n][n]
-        probDistro_before[n] = observe_before[n] / numTrans_before
-        probDistro_before[n][n] = 0
-        numTrans = np.sum(observe[n]) - observe[n][n]
-        probDistro[n] = observe[n] / numTrans
-        probDistro[n][n] = 0
-      delta        = np.zeros(shape=(numLabels, numLabels))
-      delta = abs(probDistro - probDistro_before)
-
-      bins = [(x, y) for x in range(numLabels) for y in range(numLabels)]
-
-      logging.debug("Calculating transition rarity...")
-        #  Isolate rare events (s.t. rare event seen less than mean)
-      rareObserve = np.choose(np.where(observe.flatten() < np.mean(observe)), observe.flatten())
-
-        #  Est. mid point of logistic curve by accounting for distribution skew
-      midptObs = np.mean(observe) * skew(observe) + np.median(observe)
-
-        #  Create the function
-      rarityFunc = makeLogisticFunc(1, 1 / np.std(rareObserve), midptObs)
-
-      # 2. Fatigue portion based on # times each bin was "launched"
-      launchMat_Store = kv2DArray(self.catalog, 'launch')
-      launch = launchMat_Store.get()
-      quota = np.sum(launch) / (totalBins - numLabels)
-
-      # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
-
-      #  3. Apply constants. This can be user influenced
-      alpha = self.data['weight_alpha']
-      beta = self.data['weight_beta']
-
-      # 4. Calculate weight (note: follow 2 are retained for debugging only)
-
-      #  UPDATED:  Weights CALC as a factor of rare events & instability in delta calc
-      rarity = np.zeros(shape=(numLabels, numLabels))
-      # fatigue = np.zeros(shape=(numLabels, numLabels))
-      logging.debug("Calculating control weights...")
-      weight = {}
-      quotasq = quota**2
-      for i in range(numLabels):
-        for j in range(numLabels):
-          rarity[i][j] = rarityFunc(observe[i][j] - midptObs)
-          weight[(i,j)] =  0 if i == j else alpha * rarity[i][j] + beta * delta[i][j]
-
-          # Apply a `fatigue` factor; bins are fatigued if run more than their quota
-          weight[(i,j)] *= 0 if launch[i][j] > quota else (quota - launch[i][j])**2/quotasq
- 
-      # totalObservations = np.sum(tmat)
-      # tmat_distro = {(i, j): tmat[i][j]/totalObservations for i in range(numLabels) for j in range(numLabels)}
-      # quota = max(totalObservations / len(tmat_distro.keys()), len(tmat_distro.keys()))
-      # pref = {(i, j): max((quota-tmat[i][j])/quota, 1/quota) for i in range(numLabels) for j in range(numLabels)}
-
-      updatedWeights = sorted(weight.items(), key=lambda x: x[1], reverse=True)
-
-
-      #  SCHEDULING   -----------------------------------------
-      logging.debug("============================  <SCHEDULING>  =============================")
-
-      #  5. Load JC Queue and all items within to get respective weights and projected target bins
-      #   TODO:  Pipeline cur queue  and/or load all up front
-      curqueue = []
-      logging.debug("Loading Current Queue of %d items", len(self.data['jcqueue']))
-      debug = True
-      for i in self.data['jcqueue']:
-        key = wrapKey('jc', i)
-        config = {}
-        self.catalog.load({key: config})
-        # if debug:
-        #   logging.debug('Sample Job output (1st on queue: idx `%s`)', i)
-        #   for k, v in config.items():
-        #     logging.debug('  %s:  %s',  k, str(v))  
-        #   debug = False        
-
-        # Dampening Factor: proportional it currency (if no ts, set it to 1)
-        jc_ts = config['timestep'] if 'timestep' in config else 1
-
-        #  TODO: May want to consider incl convergence of sys at time job was created
-        w_before    = config['weight']
-        config['weight'] = config['weight'] * (jc_ts / self.data['timestep'])
-        logging.debug("Dampening Factor Applied (jc_ts = %d):   %0.5f  to  %05f", jc_ts, w_before, config['weight'])
-        curqueue.append(config)
-
-
-      #  5a. (PreProcess current queue) for legacy JC's
-      logging.debug("Loaded %d items", len(curqueue))
-      for jc in range(len(curqueue)):
-        if 'weight' not in curqueue[jc]:
-          curqueue[jc]['weight'] = 1.0
-
-        if 'gc' not in curqueue[jc]:
-          curqueue[jc]['gc'] = 1
-
-      #  6. Sort current queue
-      if len(curqueue) > 0:
-        existingQueue = deque(sorted(curqueue, key=lambda x: x['weight'], reverse=True))
-        eqwlow = 0 if np.isnan(existingQueue[0]['weight']) else existingQueue[0]['weight']
-        eqwhi  = 0 if np.isnan(existingQueue[-1]['weight']) else existingQueue[-1]['weight']
-        logging.debug("Existing Queue has %d items between weights: %0.5f - %0.5f", len(existingQueue), eqwlow, eqwhi)
-      else:
-        existingQueue = deque()
-        logging.debug("Existing Queue is empty.")
-
-      #  7. Det. potential set of  new jobs  (base on launch policy)
-      #     TODO: Set up as multiple jobs per bin, cap on a per-control task basis, or just 1 per bin
-      potentialJobs = deque(updatedWeights)
-      logging.debug("Potential Job Queue has %d items between weights: %0.5f - %0.5f", len(potentialJobs), potentialJobs[0][1], potentialJobs[-1][1])
-
-      #  7. Prepare a new queue (for output)
-      jcqueue = deque()
-
-      targetBin = potentialJobs.popleft()
-      oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
-      selectionTally = np.zeros(shape=(numLabels, numLabels))
-      newJobCandidate = {}
-
-      # Rank order list of observed transition bins for each state
-      rarityorderstate = np.argsort(observe.sum(axis=1))
-      rarityordertrans = np.zeros(shape=(numLabels,numLabels))
-      for i in range(numLabels):
-        np.copyto(rarityordertrans[i], np.argsort(observe[i]))
-   
-      while len(jcqueue) < DEFAULT.MAX_JOBS_IN_QUEUE:
-
-        if oldjob == None and targetBin == None:
-          logging.info("No more jobs to queue.")
-          break
-
-        if (targetBin == None) or (oldjob and oldjob['weight'] > targetBin[1]) or (oldjob and np.isnan(targetBin[1])):
-          jcqueue.append(oldjob['name'])
-          oldjob['weight'] = 0 if np.isnan(oldjob['weight']) else oldjob['weight']
-          logging.debug("Re-Queuing OLD JOB `%s`   weight= %0.5f", oldjob['name'], oldjob['weight'])
-          oldjob = None if len(existingQueue) == 0 else existingQueue.popleft()
-
-        else:
-          A, B = targetBin[0]
-          logging.debug("\n\nCONTROL: Target transition bin  %s  (new job #%d,  weight=%0.5f)", str((A, B)), len(newJobCandidate), targetBin[1])
-
-          # Identify a pool of starting points Start with Target Bin
-          candidatePool = self.data[candidPoolKey(A, B)]
-          selectedbin = (A,B)
-
-          # Flip direction of transition
-          if len(candidatePool) == 0:
-            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking reverse direction", A, B)
-            candidatePool = self.data[candidPoolKey(B, A)]
-            selectedbin = (B,A)
-
-
-          # if len(candidatePool) == 0:
-          #   RS = A if sum(observe[A]) <= sum(observe[B]) else B
-          #   logging.info("No DEShaw reference for transition, (%d, %d)  -- checking transitions from rarer state, %d, (%d observations)", B, A, RS, sum(observe[RS]))
-
-          #   logging.info("  Prioritizing bins: %s", str([(RS,int(z)) for z in rarityordertrans[RS]]))
-          #   # Finally, pick any start point from the initial state (assume that state had a candidate)
-          #   for z in rarityordertrans[RS]:
-          #       candidatePool = self.data[candidPoolKey(RS, z)]
-          #       if len(candidatePool) == 0:
-          #         logging.info("No DEShaw reference for transition, (%d, %d) ", RS, z)
-
-          #       else: 
-          #         logging.info("FOUND DEShaw start point from transition, (%d, %d) ", RS, z)
-          #         selectedbin = (RS,z)
-          #         break
-
-          if len(candidatePool) == 0:
-            logging.info("No DEShaw reference for transition, (%d, %d)  -- checking wells in this order: %s", B, A, str(rarityorderstate))
-            for RS in rarityorderstate:
-              candidatePool = self.data[candidPoolKey(RS, RS)]
-              if len(candidatePool) == 0:
-                logging.info("No DEShaw reference for transition, (%d, %d) ", RS, RS)
-
-              else: 
-                logging.info("FOUND DEShaw start point from transition, (%d, %d) ", RS, RS)
-                selectedbin = (RS,RS)
-                break
-
-
-          logging.debug('Final Candidate Pool has  %d  candidates', len(candidatePool))
-
-          # selectedBins.append((A, B))
-
-          # Pick a random trajectory from the bin
-          sourceTraj, srcFrame = choice(candidatePool).split(':')
-          dstring = "####SELECT_TRAJ@ %s @ %s @ %s @ %s" % (str(targetBin[0]), str(selectedbin), sourceTraj, srcFrame)
-
-
-          # TODO: Archive Data Retrieval. This is where data is either pulled in from remote storage
-          #   or we have a pre-fetch algorithm to get the data
-          # Back-project  <--- Move to separate Function tied to decision history
-          # For now:
-          if isinstance(sourceTraj, int) or sourceTraj.isdigit():      # It's a DEShaw file
-            pdbfile, archiveFile = getHistoricalTrajectory(sourceTraj)
-          else:
-            archiveFile = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.dcd' % sourceTraj)
-            pdbfile     = os.path.join(DEFAULT.JOBDIR, sourceTraj, '%s.pdb' % sourceTraj)
-
-          # Generate new set of params/coords
-          jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, int(srcFrame), debugstring=dstring)
-
-          # TODO: DERIVE RUNTIME HERE
-
-          # Update Additional JC Params and Decision History, as needed
-          jcConfig = dict(params,
-              name    = jcID,
-              runtime = DEFAULT.RUNTIME,
-              interval = 500,
-              temp    = 310,
-              state   = A,
-              weight  = targetBin[1],
-              timestep = self.data['timestep'],
-              gc      = 1,
-              application   = DEFAULT.APPL_LABEL,
-              targetBin  = str((A, B)))
-
-          logging.info("New Simulation Job Created: %s", jcID)
-          for k, v in jcConfig.items():
-            logging.debug("   %s:  %s", k, str(v))
-
-          #  Add to the output queue & save config info
-          jcqueue.append(jcID)
-          newJobCandidate[jcID] = jcConfig
-          selectionTally[A][B] += 1
-          logging.info("New Job Candidate Completed:  %s   #%d on the Queue", jcID, len(jcqueue))
-          
-          if len(potentialJobs) == 0 or len(newJobCandidate) == DEFAULT.MAX_NUM_NEW_JC:
-            targetBin = None
-          else:
-            targetBin = potentialJobs.popleft()
-
-
-      # Update the selection matrix
-      # selObs_Store = kv2DArray(self.catalog, 'selection')
-      # selObs_Store.merge(selectionTally)
-
-      # Mark obsolete jobs for garbage collection:
-      logging.info("Marking %d obsolete jobs for garbage collection", len(existingQueue))
-      while len(existingQueue) > 0:
-        config = existingQueue.popleft()
-        config['gc'] = 0
-
-        # Add gc jobs it to the state to write back to catalog (flags it for gc)
-        self.addToState(wrapKey('jc', config['name']), config)
-
-
-      # CONVERGENCE CALCUALTION  -------------------------------------
-      logging.debug("============================  <CONVERGENCE -- CALC W/WEIGHTS>  =============================")
-
-      logging.debug("OBS_MATRIX_DELTA:\n" + str(delta_tmat))
-      logging.debug("OBS_MATRIX_UPDATED:\n" + str(observe))
-      logging.debug("CONVERGENCE_PROB_DISTRO:\n" + str(probDistro))
-      logging.debug("OBS_RARITY:\n" + str(rarity))
-      logging.debug("CONV_DELTA:\n" + str(delta))
-      logging.debug("CTL_WEIGHT:")
-      for i in range(5):
-        logging.debug("  %s", str(['%0.5f'% weight[(i,k)] for k in range(5)]))
-
-      globalconvergence = np.sum(abs(probDistro - probDistro_before))
-      logging.info("GLOBAL_CONVERGENCE: %f", globalconvergence)
-      for i in range(5):
-        logging.info("STATE_CONVERGENCE for %d: %f", i, np.sum(delta[i]))
-
-      globalconvergence_rate = globalconvergence / len(job_list)
-      logging.info("GLOBAL_CONVERGENCE_RATE: %f", globalconvergence_rate)
-      for i in range(5):
-        logging.info("STATE_CONVERGENCE_RATE for %d: %f", i, np.sum(delta[i])/len(job_list))
-
-
-      clist_entry = {'timestep': self.data['timestep'], 'numjobs': len(job_list), 'convg': globalconvergence, 'convs': str([np.sum(delta[i]) for i in range(5)])}
-      self.catalog.rpush('globalconvergelist', json.dumps(clist_entry))
-
-
-      # totalObservations = np.sum(observe)
-      # # totalLaunches = np.sum(launch)
-      # # fanout = totalObservations / totalLaunches
-
-      # # 1. Calc current covergence "score" as: sum(f*l_ij(f*l_ij - o_ij)) / max(o_ij, 1) 
-      # probDistro = np.zeros(shape=(numLabels, numLabels))
-      # for n in range(numLabels):
-      #   numTrans = np.sum(observe[n]) - observe[n][n]
-      #   probDistro[n] = observe[n] / numTrans
-      #   probDistro[n][n] = 0
-
-
-
-
-      # curConvergeScore = 0
-      # for i in range(numLabels):
-      #   for j in range(numLabels):
-      #     flij = fanout * launch[i][j]
-      #     oij  = observe[i][j]
-
-      #     #  Should we square the denom here ????
-      #     curConvergeScore += (flij* (flij - oij)) / max(oij, 1)
-
-      # # 2. Get current coverg list and sort it (or default to 0)
-      # clist = [json.loads(val.decode()) for val in self.catalog.lrange('globalconvergelist', 0, -1)]
-      # if len(clist) == 0:
-      #   lastConvergeScore = 0
-      #   lastGlobalConverge = 1.
-      # else:
-      #   lastConvergeScore = max(clist, key=lambda x: x['timestep'])['cscore']
-      #   lastGlobalConverge = max(clist, key=lambda x: x['timestep'])['cglobal']
-
-      # # 3. Calc global convergenance and post to catalog
-      # globalConverge = (curConvergeScore - lastConvergeScore)
-
-      # logging.info("OBSERVATION_Matrix:\n" + str(observe))
-
-      # logging.info("LAUNCH_Matrix:\n" + str(launch))
-
-      # logging.info('\nLast Convergence:  %0.6f', lastGlobalConverge)
-      # logging.info("\nGLOBAL Convergence:  %0.6f\n", globalConverge)
-
-      # if abs(globalConverge) < 0.0001:
-      #   self.catalog.set('terminate', 'CONVERGED')
-      #   logging.debug("***TEMINTION CONDITION met for GLOBAL CONVERGENCE")
-
-      self.data['jcqueue'] = list(jcqueue)
-
-      logging.debug("   JCQUEUE:  %s", str(self.data['jcqueue']))
-      # Update Each new job with latest convergence score and save to catalog(TODO: save may not be nec'y)
-      logging.debug("Updated Job Queue length:  %d", len(self.data['jcqueue']))
-      for jcid, config in newJobCandidate.items():
-        config['converge'] = self.data['converge']
-        jckey = wrapKey('jc', jcid)
-        self.catalog.save({jckey: config})
-
-      # Save all  packed matrices to catalog
-      logging.info("Saving global matrices to catalog")
-      # storeNPArray(self.catalog, smat, 'selectionmatrix')
-      # storeNPArray(self.catalog, updated_cmat, 'convergencematrix')
-      # storeNPArray(self.catalog, fatigue, 'fatigue')
-
-  
-      return list(newJobCandidate.keys())
-
-
-
-if __name__ == '__main__':
-  mt = controlJob(__file__)
-
-  #  For generating a seed JC
-  mt.parser.add_argument('--gendata')
-  args = mt.addArgs().parse_args()
-
-  if args.gendata:
-    win = args.gendata
-    labels = loadLabels()
-    jcID, params = generateNewJC(win, 500)
-
-    jcConfig = dict(params,
-        name    = jcID,
-        runtime = DEFAULT.RUNTIME,
-        temp    = 310,
-        state   = labels[win].state,
-        weight  = 0.,
-        timestep = 0,
-        gc      = 1,
-        application   = DEFAULT.APPL_LABEL,
-        converge = 0.,
-        targetBin  = str((labels[win].state, labels[win].state)))
-    for k, v in jcConfig.items():
-      logging.info('%s: %s', k, str(v))
-
-    catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    catalog.save({'jc_'+jcID: jcConfig})
-    sys.exit(0)
-
-
-  mt.run()
-
-
-
-
-# OLD COVERGENCE:
-      # logging.debug("Observations MAT:\n" + str(tmat))
-      # logging.debug("Fatigue:\n" + str(fatigue))
-
-      # # Load Selection Matrix
-      # smat = loadNPArray(self.catalog, 'selectionmatrix')
-      # if smat is None:
-      #   smat = np.full((5,5), 1.)    # SEED Selection matrix (it cannot be 0) TODO: Move to init
-
-      # # Merge Update global selection matrix
-      # smat += selectionTally
-      # logging.debug("SMAT:\n" + str(smat))
-      # # Load Convergence Matrix
-      # cmat = loadNPArray(self.catalog, 'convergencematrix')
-      # if cmat is None:
-      #   cmat = np.full((5,5), 0.04)    # TODO: Move to init
-      # logging.debug("CMAT:\n" + str(cmat))
-
-      # # Remove bias from selection and add to observations 
-      # #  which gives the unbiased, uniform selection 
-      # inverseSelectFunc = lambda x: (np.max(x)) - x
-
-      # #  For now, Assume a 4:1 ratio (input:output) and do not factor in output prob distro
-      # unbias = 3 * inverseSelectFunc(smat) + tmat
-      # logging.debug("UNBIAS:\n" + str(unbias))
-
-      # # Calculcate "convergence" matrix as unbias(i,j) / sel(i.j)
-      # updated_cmat = unbias / np.sum(unbias)
-      # logging.debug("CMAT_0:\n" + str(cmat))
-      # logging.debug("CMAT_1:\n" + str(updated_cmat))
-
-
-      # # Calculate global convergence as summed difference:  cmat_t1 - cmat_t0
-      # convergence = np.sum(abs(updated_cmat - cmat))
 

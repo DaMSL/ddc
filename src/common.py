@@ -76,16 +76,13 @@ class systemsettings:
     # Simulation & Analysis Protein Settings
     self.TOPO       = ini.get('topo') 
     self.PARM       = ini.get('parm') 
-    self.NUM_PCOMP  = ini.get('num_pcomp', 3)
-    self.NUM_VAR    = ini.get('num_var', 454)  # TODO: Set during Init
-    self.RUNTIME    = ini.get('runtime', 51000)
 
     # Filter Options: {‘all’, ‘alpha’, ‘minimal’, ‘heavy’, ‘water’}
     atom_filter = ini.get('atom_filter', 'heavy')
     self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
 
     # Controller Settings
-    self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
+    self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 1000)
     self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
     self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
   
@@ -117,10 +114,6 @@ class systemsettings:
     #     f.write(json.dumps(data, sort_keys=True, indent=4))
 
 
-    # candidPoolKey = lambda x, y: 'candidatePool_%d_%d' % (x, y)
-    # for i in range(5):
-    #   for j in range(5):
-    #     self.schema[candidPoolKey(i,j)] = 'list'
 
     self._configured = True
 

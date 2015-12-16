@@ -138,8 +138,8 @@ def checkseltraj(archive):
 
 def getDEShawIndex(archive, num, frame=400, winsize=200):
   start = dt.datetime.now()
-  indexSize = int(archive.get('indexSize').decode())
-  numpc = int(archive.get('num_pc').decode())
+  indexSize = int(archive.get('indexSize'))
+  numpc = int(archive.get('num_pc'))
   ts_index = dt.datetime.now()
   traj = loadDEShawTraj(num)
   ts_load = dt.datetime.now()
@@ -275,9 +275,9 @@ def benchmarkDEShaw(archive, theta=.6, winsize=200):
 
 def selflabeldeshaw(archive):
   theta = .6
-  indexsize = int(archive.get('indexSize').decode())
+  indexsize = int(archive.get('indexSize'))
   redis_storage = RedisStorage(archive)
-  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_'+DEFAULT.HASH_NAME+'_*')]
+  hashkeys = [i.split('_')[-1] for i in archive.keys('nearpy_'+DEFAULT.HASH_NAME+'_*')]
   ilist = []
   logging.debug("Pulling  keys")
   for h in hashkeys:
@@ -328,9 +328,9 @@ def selflabeldeshaw(archive):
 
 def checkarchive(archive, state=-1):
   theta = .6
-  indexsize = int(archive.get('indexSize').decode())
+  indexsize = int(archive.get('indexSize'))
   redis_storage = RedisStorage(archive)
-  hashkeys = [i.decode().split('_')[-1] for i in archive.keys('nearpy_rbphash_*')]
+  hashkeys = [i.split('_')[-1] for i in archive.keys('nearpy_rbphash_*')]
   indexlist = []
   logging.debug("Pulling  keys")
   for h in hashkeys:
