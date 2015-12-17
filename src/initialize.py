@@ -60,33 +60,24 @@ def initializecatalog(catalog):
   #  Create Candidate Pools from RMSD for all source DEShaw data
   logging.info("Loading DEShaw RMS Values")
   rms = np.load('rmsd.npy')
-  nn = []
-  cpools = {(i,j):[] for i in range(numLabels) for j in range(numLabels)}
   logging.info("Creating candidate pools")
-  wpools = [[] for i in range(numLabels)]
   for i, traj in enumerate(rms):
     for f, conform in enumerate(traj):
       ordc = np.argsort(conform)
       A = ordc[0]
       relproximity = conform[A] / (conform[A] + conform[ordc[1]])
-      nn.append((i, f, A, ordc[1], relproximity))
-      if relproximity > .49:
-        cpools[(A, ordc[1])].append((.5 - relproximity, i,f))
-      elif len(wpools[A]) == 0 or relproximity > wpools[A][0][0]:
-        bisect.insort(wpools[A], (relproximity, i, f))
-        if len(wpools[A]) == 1000:
-          del wpools[A][0]
+      B = ordc[1] if relproximity > .49 else A
+      pools[A][B].append('%03d:%03d'%(i,f))
+  logging.info("All Candidates Found! Randomly selecting.....")
 
-  logging.info("All Candidates Found! Breakdown by bin:")
-  candidatepools = {k:sorted(v) for k,v in cpools.items()}
-
-  for i in range(numLabels):
-    for j in range(numLabels):
-      if i == j:
-        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in wpools[i]]
+  for i in range(5):
+    for j in range(5):
+      size = min(DEFAULT.CANDIDATE_POOL_SIZE, len(pools[i][j]))
+      if size == 0:
+        logging.info("  No candidates for pool (%d,%d)", i, j)
       else:
-        candidates[i][j] = ['%03d:%03d'% (c[1], c[2]) for c in cpools[(i,j)]]
-      logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
+        candidates[i][j] = random.sample(pools[i][j], size)
+        logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
 
   logging.info("Updating Catalog")
 
@@ -103,10 +94,13 @@ def initializecatalog(catalog):
         pipe.rpush(kv2DArray.key('candidatePool', i, j), c)
   pipe.execute()
 
-  centroid = np.load('centroid_heavy.npy')
+  centfile = 'centroid.npy'
+  logging.info("Loading centroids from %s", centfile)
+  centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
 
   # Initialize observations matrix
+  logging.info('Initializing lauch, observe, and runtime matrices')
   observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
   launch = kv2DArray(catalog, 'launch', mag=numLabels, init=0)
   runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])

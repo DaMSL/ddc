@@ -7,6 +7,7 @@ import argparse
 import abc
 import redis
 import copy
+import re
 # from retrying import retry
 
 from common import * 
@@ -67,18 +68,53 @@ class macrothread(object):
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
-    self.slurmParams = {'time':'6:0:0', 
+    # self.slurmParams = {'time':'6:0:0', 
+    self.slurmParams = {'time':'5:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
               'partition':DEFAULT.PARTITION, 
               'job-name':self.name,
               'workdir' : os.getcwd()}
 
+    self.slurm_id  = None
+    self.job_id    = None
+    self.seq_num   = None
 
+
+  #  Sequence ALL JOBS --- good for up to 10,000 managers and 100 concurrently launched workers
+  #  TODO:  Can make this larger, if nec'y
+  def toMID(self, jobid):
+    return '%sm-%04d.00' % (self.name[0], int(jobid))
+
+  def fromMID(self, ):
+    if self.job_id is None:
+      return None
+
+    if re.match(r'\D[m,w]-\d{4}.{2}', self.job_id):
+      job = self.job_id.split('-')[1]
+      m, w = job.split('.')
+      return int(m)
+    else:
+      return None
+
+  def toWID(self, jobid, worknum):
+    return '%sw-%04d.%02d' % (self.name[0], jobid, worknum)
+
+  def seqNumFromID(self, ):
+    if self.job_id is None:
+      return '000000'
+
+    if re.match(r'\D[m,w]-\d{4}.{2}', self.job_id):
+      job = self.job_id.split('-')[1]
+      m, w = job.split('.')
+      return '%06d' % (100*(int(m)) + int(w))
+    else:
+      return '000000'
 
   def addMut(self, key, value=None):
     self._mut.append(key)
     if value is not None:
+      print ("ADDING MUTABLE DATA:  ", key)
       self.data[key] = value
 
   def addImmut(self, key, value=None):
@@ -90,7 +126,6 @@ class macrothread(object):
     if value is not None:
       self.data[key] = value
       self.origin[key] = copy.deepcopy(value)
-
 
   # # TODO:  Eventually we may want multiple up/down streams
   def setStream(self, upstream, downstream):
@@ -144,11 +179,6 @@ class macrothread(object):
     self.delay = 60
 
 
-
-  def retry_redisConn(ex):
-    return isinstance(ex, redis.ConnectionError)
-
-
   def load(self, *keylist):
     """
     Load state from remote catalog to local cache
@@ -172,8 +202,10 @@ class macrothread(object):
     logging.debug("Setting origin for append-only")
     for k in keys:
       if k in self._append:
+        print("APPEND-ONLY ORIGIN: ", k)
+
         self.origin[k] = copy.deepcopy(data[k])
-      logging.debug("  Setting Append only origin for: %s", k)
+        logging.debug("  Setting Append only origin for: %s", k)
 
 
   def save(self, *keylist):
@@ -214,10 +246,6 @@ class macrothread(object):
       if key not in self.data:
         logging.error("KEY ERROR. %s not found in current state", key)
       else:
-        logging.debug("Current Origin Contents:")
-        for k, v in self.origin.items():
-          print("   ",k,v)
-        logging.debug("------")
         if type(self.data[key]) in [int, float, np.ndarray]:
           state[key] = self.data[key] - self.origin[key]
         elif isinstance(self.data, list):
@@ -227,8 +255,6 @@ class macrothread(object):
         else:
           logging.error("CANNOT APPEND data `%s` of type of %s", key, str(type(self.data[key])))
     self.catalog.append(state)
-
-
 
 
   def manager(self, fork=False):
@@ -285,14 +311,16 @@ class macrothread(object):
     immed, defer  = self.split()
 
     # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
-    myid = 'id_%s' % self.name
-    curid = self.catalog.get(myid)
-    if curid is None:
-      self.catalog.set(myid, 0)
-      jobid = 0
-    else:
-      jobid = int(curid)
-    self.catalog.incr(myid)
+    idlabel = 'id_%s' % self.name
+    self.catalog.incr(idlabel)
+    nextid = self.catalog.get(idlabel)
+    print(' NEXT ID  === ', nextid)
+
+    nextid = 0 if nextid is None else int(nextid)
+    myid = self.fromMID()
+    if myid is None:
+      myid = int(nextid - 1)
+    print('   MY ID  === ', myid)
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
@@ -305,7 +333,7 @@ class macrothread(object):
       workernum = 1
       for i in immed:
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
-        self.slurmParams['job-name'] = "%sW%d-%d" % (self.name[0], jobid, workernum)
+        self.slurmParams['job-name'] = self.toWID(myid, workernum)
         slurm.sbatch(taskid=self.slurmParams['job-name'],
             options = self.slurmParams,
             modules = self.modules,
@@ -319,7 +347,7 @@ class macrothread(object):
     delay = self.delay  
     self.slurmParams['begin'] = 'now+%d' % delay
 
-    self.slurmParams['job-name'] = "%sM-%04d" % (self.name[0], jobid)
+    self.slurmParams['job-name'] = self.toMID(nextid)
     self.slurmParams['cpus-per-task'] = 1
     slurm.sbatch(taskid =self.slurmParams['job-name'],
               options   = self.slurmParams,
@@ -441,6 +469,18 @@ class macrothread(object):
 
     logging.info("APPLICATION:    %s", DEFAULT.APPL_LABEL)
     logging.info("WORKDIR:  %s", DEFAULT.WORKDIR)
+
+    # Read in Slurm params  (TODO: Move to abstract slurm call)
+    self.job_id   = os.getenv('JOB_NAME')
+    self.slurm_id = os.getenv('SLURM_JOB_ID')
+
+    logging.debug('EnVars Follow.q....')
+
+    for i in ['SBATCH_JOBID', 'SBATCH_JOB_NAME', 'SLURM_JOB_ID', 'SLURM_JOBID', 'SLURM_JOB_NAME']:
+      logging.debug('    %s : %s', i, os.getenv(i))
+
+    logging.info("JOB NAME :  %s", str(self.job_id))
+    logging.info("SLURM JOB:  %s", str(self.slurm_id))
 
     if args.debug:
       logging.debug("DEBUGGING: %s", self.name)

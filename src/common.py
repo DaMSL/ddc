@@ -12,6 +12,7 @@ import sys
 import random
 import string
 import json
+import pickle
 
 
 def singleton(cls):
@@ -82,7 +83,7 @@ class systemsettings:
     self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
 
     # Controller Settings
-    self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 1000)
+    self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
     self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
     self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
   

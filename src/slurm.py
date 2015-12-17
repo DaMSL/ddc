@@ -54,24 +54,15 @@ class slurm:
     for mod in modules:
       inline += 'module load %s\n' % mod
 
-
-    # For quickly watching last output (good for demo)
-    # task = options['job-name'].split('-')[0]
-    # inline += "echo 'watch -n 1 tail -80 ~/work/log/%s.out' > watch_%s.sh\n" % (options['job-name'], task)
-    # inline += "chmod +x watch_%s.sh\n" % task
-
-    # inline += "echo 'less ~/work/log/%s.out' > less_%s.sh\n" % (options['job-name'], task)
-    # inline += "chmod +x less_%s.sh\n" % task
-
-
+    inline += 'export JOB_NAME=%s\n' % options['job-name']
     inline += 'echo ================================\n'
     inline += 'echo JOB NAME:  %s\n' % options['job-name']
     inline += '\n%s\n' % cmd
 
 
-    # logging.debug("Inline SBATCH:------------->>")
-    # logging.debug(inline)
-    # logging.debug("<<-------  Batch Complete")
+    logging.debug("Inline SBATCH:------------->>")
+    logging.debug(inline)
+    logging.debug("<<-------  Batch Complete")
 
     # Launch job
     job = proc.Popen('sbatch <<EOF\n%sEOF' % inline,

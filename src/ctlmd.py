@@ -112,12 +112,15 @@ def makeLogisticFunc (maxval, steep, midpt):
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 
 
-def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
+def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None, jcid=None):
 
     logging.debug("Generating new simulation coordinates from:  %s", rawfile)
 
     # Get a new uid
-    jcuid = getUID()
+    if jcid is None:
+      jcuid = getUID() 
+    else:
+      jcuid = jcid
 
     #  TODO:  Should coords be pre-fetched and pulled from pre-fetch location?
     jobdir = os.path.join(DEFAULT.JOBDIR,  jcuid)
@@ -128,22 +131,21 @@ def generateNewJC(rawfile, pdbfile, topo, parm, frame=None, debugstring=None):
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
 
-    #  Load in Historical Referenced trajectory file, filter out proteins & slice
-    traj  = md.load(rawfile, top=pdbfile)
-    traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
-    
     #  Pick a random frame from this trajectory if none is provided
     if frame is None:
       frame = randint(0, traj.n_frames)
 
-    coord = traj.slice(frame)
+    #  Load in Historical Referenced trajectory file, filter out proteins & slice
+    traj  = md.load(rawfile, top=pdbfile, frame=frame)
+    traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
+    
 
-    logging.debug("  Source trajectory: %s   (frame # %d)", str(coord), frame)
+    logging.debug("  Source trajectory: %s   (frame # %d)", str(traj), frame)
     if debugstring is not None:
       logging.debug("\n##%s @ %d", debugstring, frame)
 
     # Save this as a temp file to set up simulation input file
-    coord.save_pdb(coordFile)
+    traj.save_pdb(coordFile)
 
     newsimJob = dict(workdir=jobdir,
         coord   = coordFile,
@@ -175,10 +177,11 @@ class controlJob(macrothread):
       self.addImmut('ctlSplitParam')
       self.addImmut('ctlDelay')
       self.addImmut('numLabels')
-      self.addImmut('launch')
       self.addImmut('terminate')
       self.addImmut('weight_alpha')
       self.addImmut('weight_beta')
+
+      self.addImmut('launch')
       self.addAppend('timestep')
       self.addAppend('observe')
 
@@ -229,18 +232,29 @@ class controlJob(macrothread):
       logging.info('TIMESTEP: %d', self.data['timestep'])
 
       numLabels = self.data['numLabels']
+      totalBins = numLabels ** 2
 
-      delta_tmat = np.zeros(shape=(numLabels, numLabels))
       logging.debug("Processing output from %d  simulations", len(job_list))
+
+      obs_delta = np.zeros(shape=(numLabels, numLabels))
+      #  Consolidate all observation delta's
       for job in job_list:
         logging.debug("  Loading data for simulation: %s", job)
 
         #  Do we need jc info here (provonance or )
         history = self.catalog.load(wrapKey('jc', job))
         traj_delta  = self.catalog.loadNPArray(wrapKey('delta', job))
-        delta_tmat += traj_delta
+        if traj_delta is not None:
+          obs_delta += traj_delta
 
-      logging.debug('Delta Matrix: \n%s', str(delta_tmat))
+      observe_before = np.copy(self.data['observe'])
+      self.data['observe'] += obs_delta
+      observe = self.data['observe']
+
+      launch = self.data['launch']
+
+
+      logging.debug('Delta Matrix: \n%s', str(obs_delta))
 
       logging.debug("============================  <WEIGHT CALC>  =============================")
 
@@ -250,16 +264,12 @@ class controlJob(macrothread):
       # tmat = loadNPArray(self.catalog, 'transitionmatrix')
       # if tmat is None:
       #   tmat = np.zeros(shape=(5,5))    # TODO: Move to init
-      # tmat += delta_tmat
+      # tmat += obs_delta
 
 
       # Weight Calculation: create a logistic function using current observation distribution
-      totalBins = numLabels ** 2
 
       # 1. Calc "preference" part of the weight
-      observe_before = np.copy(self.data['observe'])
-      self.data['observe'] += delta_tmat
-      observe = self.data['observe']
 
       # Calc convergence on probability distro (before & after)
       logging.debug("Calculating Probability Distributions for each state...")
@@ -269,6 +279,7 @@ class controlJob(macrothread):
         numTrans_before = np.sum(observe_before[n]) - observe_before[n][n]
         probDistro_before[n] = observe_before[n] / numTrans_before
         probDistro_before[n][n] = 0
+
         numTrans = np.sum(observe[n]) - observe[n][n]
         probDistro[n] = observe[n] / numTrans
         probDistro[n][n] = 0
@@ -288,8 +299,8 @@ class controlJob(macrothread):
       rarityFunc = makeLogisticFunc(1, 1 / np.std(rareObserve), midptObs)
 
       # 2. Fatigue portion based on # times each bin was "launched"
-      launch = self.data['launch']
-      quota = np.sum(launch) / (totalBins - numLabels)
+
+      quota = np.sum(launch) / totalBins
 
       # TODO:   Load New Transition Matrix  if consistency is necessary, otherwise use locally updated tmat
 
@@ -308,7 +319,8 @@ class controlJob(macrothread):
       for i in range(numLabels):
         for j in range(numLabels):
           rarity[i][j] = rarityFunc(observe[i][j] - midptObs)
-          weight[(i,j)] =  0 if i == j else alpha * rarity[i][j] + beta * delta[i][j]
+          # weight[(i,j)] =  0 if i == j else alpha * rarity[i][j] + beta * delta[i][j]
+          weight[(i,j)] =  alpha * rarity[i][j] + beta * delta[i][j]
 
           # Apply a `fatigue` factor; bins are fatigued if run more than their quota
           weight[(i,j)] *= 0 if launch[i][j] > quota else (quota - launch[i][j])**2/quotasq
@@ -438,7 +450,7 @@ class controlJob(macrothread):
           jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, int(srcFrame), debugstring=dstring)
 
           # TODO: DERIVE RUNTIME HERE
-          runtime = self.catalog.get(kv2DArray.key('runtime', A, B))
+          runtime = int(eval(self.catalog.get(kv2DArray.key('runtime', A, B))))
           # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
               name    = jcID,
@@ -485,7 +497,7 @@ class controlJob(macrothread):
       # CONVERGENCE CALCUALTION  -------------------------------------
       logging.debug("============================  <CONVERGENCE -- CALC W/WEIGHTS>  =============================")
 
-      logging.debug("OBS_MATRIX_DELTA:\n" + str(delta_tmat))
+      logging.debug("OBS_MATRIX_DELTA:\n" + str(obs_delta))
       logging.debug("OBS_MATRIX_UPDATED:\n" + str(observe))
       logging.debug("LAUNCH_MATRIX:\n" + str(launch))
       logging.debug("CONVERGENCE_PROB_DISTRO:\n" + str(probDistro))
@@ -521,8 +533,51 @@ class controlJob(macrothread):
 
 
 
+
 if __name__ == '__main__':
+
   mt = controlJob(__file__)
+
+  GENDATA = False
+
+  if GENDATA:
+
+    wells = [(0, 2099, 684),
+      (1, 630, 602),
+      (2, 2364, 737),
+      (3, 3322, 188),
+      (4, 2108, 258)]
+    print('GEN DATA!')
+
+    for well in wells:
+      state, win, frame = well
+
+      pdbfile, archiveFile = getHistoricalTrajectory(win)
+
+      jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, frame, jcid='test_%d'%state)
+
+      jcConfig = dict(params,
+          name    = jcID,
+          runtime = 20000,
+          interval = 500,
+          temp    = 310,
+          state   = state,
+          weight  = 0.0,
+          timestep = 0,
+          gc      = 1,
+          application   = DEFAULT.APPL_LABEL,
+          targetBin  = str((state, state)))
+
+      print("Data Generated! ")
+      print("Job = ", jcID)
+      for k, v in jcConfig.items():
+        logging.info('%s: %s', k, str(v))
+
+
+      catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+      catalog.hmset('jc_'+jcID, jcConfig)
+    sys.exit(0)
+
   mt.run()
 
 
@@ -605,7 +660,7 @@ if __name__ == '__main__':
       # observationCount = {}
       # statdata = {}
       # newvectors = []
-      # delta_tmat = np.zeros(shape=(numLabels, numLabels))
+      # obs_delta = np.zeros(shape=(numLabels, numLabels))
 
 
       # ### UPDATED USING RMS as probe function
@@ -740,7 +795,7 @@ if __name__ == '__main__':
       #     order = np.argsort(clust)[::-1]
       #     A = order[0]
       #     B = A if clust[A] > theta else order[1]
-      #     delta_tmat[A][B] += 1
+      #     obs_delta[A][B] += 1
 
       #     state = A
       #     labeledBin = (A, B)

@@ -70,10 +70,8 @@ class simulationJob(macrothread):
 
     # Increment launch count
     A, B = eval(params['targetBin'])
-    lkey = kv2DArray.key('launch', A, B)
-    logging.debug("Increment Launch count for %s", lkey)
-    self.catalog.incrbyfloat(lkey, 1.0)
-    # self.data['launch'][A][B] += 1
+    logging.debug("Increment Launch count for %s", params['targetBin'])
+    self.data['launch'][A][B] += 1
 
     return params
 

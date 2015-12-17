@@ -85,9 +85,6 @@ def decodevalue(value):
     data = None
   else:
     data = infervalue(value)
-
-  logging.debug("Decoded value:  %s  ->  %s  %s", str(value), str(data), str(type(data)))
-
   return data
 
 
@@ -335,7 +332,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     for key in deferredsave:
       if key not in self.schema.keys():
-        logging.warning("Trying dynamic save for KEY `%s`", key)
         if isinstance(data[key], list):
           self.delete(key)
           for elm in data[key]:
@@ -344,7 +340,7 @@ class dataStore(redis.StrictRedis, catalog):
           self.hmset(key, data[key])
         else:
           self.set(key, data[key])
-        logging.debug("Dynamically save %s = %s. Updating schema", key, data[key])
+        logging.debug("Dynamically saving %s. Updating schema", key)
 
       elif self.schema[key] == 'ndarray':
         self.storeNPArray(data[key])
@@ -391,19 +387,14 @@ class dataStore(redis.StrictRedis, catalog):
     #  Deferred load for retrieval of non-native data types
     for key in deferredload:
       if key not in self.schema.keys():
-        logging.warning("Trying dynamic load for KEY `%s`", key)
         try:
-          print('A')
           value = self.lrange(key, 0, -1)
         except redis.ResponseError as ex:
-          logging.debug("CAUGHT Exception")
           try:
-            print('B')
             value = self.hgetall(key)
           except redis.ResponseError as ex:
-            print('C')
             value = self.get(key)
-        logging.debug("Dynamically loaded %s = %s. Updating schema", key, str(value))
+        logging.debug("Dynamically loaded %s. Updating schema", key)
         data[key] = decodevalue(value)
         self.schema[key] = type(value).__name__
 
@@ -439,36 +430,43 @@ class dataStore(redis.StrictRedis, catalog):
 
 
   def append(self, data):
+    print('CATALOG APPEND')
     deferredappend = []
     pipe = self.pipeline()
     for key, value in data.items():
+      logger.debug("Appending data elm  `%s` of type, %s", key, type(data[key]))
       if key not in self.schema.keys():
-        logging.warning("KEY `%s` not found in local schema! Will try Dynamic loading")
+        logging.warning("  KEY `%s` not found in local schema! Will try Dynamic Append")
         deferredsave.append(key)
       elif self.schema[key] == 'int':
         pipe.incr(key, value)
+        logging.warning("  Increment `%s` as int by %d", key, value)
       elif self.schema[key] == 'float':
         pipe.incrbyfloat(key, value)
+        logging.warning("  Increment `%s` as float by %d", key, value)
       elif self.schema[key] == 'list':
         for val in value:
           pipe.rpush(key, val)
+        logging.warning("  Pushing onto list `%s`:  %s", key, str(value))
       elif self.schema[key] == 'dict':
         for k, v in value:
           pipe.hset(key, k, v)
+        logging.warning("  Updaing hash `%s`:  %s", key, str(value.keys()))
       elif self.schema[key] in ['matrix', 'ndarray']:
         deferredappend.append(key)
       else:
         pipe.set(key, value)
-      logger.debug("  Appending data elm  `%s` of type, %s" % (key, type(data[key])))
 
     pipe.execute()
 
     for key in deferredappend:
       if self.schema[key] == 'ndarray':
-        self.storeNPArray(data[key])
+        logging.warning(" NUMPY ARRAY MERGING NOT SUPPORTED")
+        # self.storeNPArray(data[key])
       elif self.schema[key] == 'matrix':
+        logging.warning("  Merging matrix `%s`:  %s", key, str(data[key]))
         matrix = kv2DArray(self, key)
-        matrix.set(data[key])
+        matrix.merge(data[key])
 
 
   # Slice off data in-place. Asssume key stores a list

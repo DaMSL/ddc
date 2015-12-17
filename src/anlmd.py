@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 
+
 import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
@@ -39,7 +40,7 @@ class analysisJob(macrothread):
       self.manual = False
 
       # Update Base Slurm Params
-      self.slurmParams['cpus-per-task'] = 24
+      self.slurmParams['cpus-per-task'] = 6
 
       # TODO: Move to Catalog or define on a per-task basis
       self.winsize = 100
@@ -61,17 +62,21 @@ class analysisJob(macrothread):
 
     def fetch(self, i):
 
-      params = self.catalog.hgetall(wrapKey('jc', i))
+      key = wrapKey('jc', i)
+      params = self.catalog.hgetall(key)
       for k, v in params.items():
         logging.debug('  %s :  %s', k, str(v))
-      return params
+      self.addMut(key, value=params)
+      return key
 
 
     def configElasPolicy(self):
       self.delay = self.data['anlDelay']
 
 
-    def execute(self, config):
+    def execute(self, jobkey):
+
+      config = self.data[jobkey]
 
       # 1. Check if source files exist
       if not (os.path.exists(config['dcd']) and os.path.exists(config['pdb'])):
@@ -84,16 +89,21 @@ class analysisJob(macrothread):
       traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
       
       # Set DEShaw Reference point
-      traj.superpose(deshawReference())
+      ref = deshawReference()
+      traj.superpose(ref, frame=0)
 
       logging.debug('Trajectory Loaded: %s - %s', config['name'], str(traj))
 
-      # 3. Initialize
-      numLabels = len(self.data['centroid'])
-      statdata = {}
-      intransition = False
+      # 3. Calc RMS for each conform to all centroids
+      numLabels = self.data['numLabels']
+      rmslist = np.zeros(shape=(len(traj.xyz), numLabels))
+      for i, conform in enumerate(traj.xyz):
+        np.copyto(rmslist[i], np.array([LA.norm(conform-cent) for cent in self.data['centroid']]))
+
+      # 4. Initialize conformation analysis data
       numtransitions = 0
       dwell = 0
+      dwelltime = []
       stepsize = 500 if 'interval' not in config else int(config['interval'])
       conformlist = []
       uniquebins = set()
@@ -101,12 +111,17 @@ class analysisJob(macrothread):
       theta = .01  
       logging.debug("  THETA  = %0.3f   (static for now)", theta)
 
-      # 4. Calc RMS for each conform to all centroids
-      for num, conform in enumerate(traj.xyz):
-        dwell += int(stepsize)
+      # 5. Account for noise -- for now use avg over 4 ps 
+      noise = 4000
+      nwidth = noise//(2*stepsize)
+      noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+      filtrms = np.array([noisefilt(rmslist, i) for i in range(len(rmslist))])
 
-        #  Calc RMSD to each centroid
-        rms = np.array([LA.norm(conform-cent) for cent in self.data['centroid']])
+      Ap = Bp = None
+
+      # 6.  Iterate over filtered RMS's and mark observations
+      for num, rms in enumerate(filtrms):
+        dwell += int(stepsize)
 
         #  Sort RMSD by proximity
         rs = np.argsort(rms)
@@ -114,34 +129,45 @@ class analysisJob(macrothread):
 
         #  Calc relative proximity for top 2 nearest centroids   (TODO:  Factor in more than top 2)
         relproximity = rms[A] / (rms[A] + rms[rs[1]])
-        if relproximity > (.5 - theta):
-          B = rs[1] 
-          if not intransition:
-            logging.info("  Transition:  %d  ->  %d   after,  %d fs  of dwell", A, B, dwell)
-            numtransitions += 1
-            intransition = True
-            dwell = 0
+
+        B = rs[1] if relproximity > (.5 - theta) else A
+
+        # Save observations for this conformation
+        conformlist.append((num, A, B, relproximity, dwell, str(rms.tolist())))
+
+        if num < len(filtrms) and ((A, B) == (Ap, Bp) or num==0):
+          dwell += stepsize
+
         else:
-          B = A
-          if intransition:
-            intransition = False
-            logging.info("  Stable State:  %d    after,  %d fs  of transition", A, dwell)
-            dwell = 0
+          if dwell > noise:
+            uniquebins.add((Ap,Bp))
+            numtransitions += 1
+            if Ap == Bp:
+              logging.info("  MD was stable in state %d for %d fs", Ap, dwell)
+            else:
+              logging.info("  MD was in transition (%d, %d) for %d fs", Ap, Bp, dwell)
+            # Log dwell time (but exclude last)
+            if num < len(filtrms):
+              dwelltime.append(((A,B), dwell))
+          else:
+            logging.info("        (filtering noise)  ")
+
+
+          dwell = 0
 
         logging.debug("     Obs:  %d, %d", A, B)
         delta_tmat[A][B] += 1
-        uniquebins.add((A,B))
-        conformlist.append((num, A, B, relproximity, intransition, dwell))
 
-      # 5. Gather stats for decision history
-      statdata['numtransitions'] = numtransitions
-      avgdwelltime = {}
-      for ub in uniquebins:
-        A,B = ub
-        avgdwelltime[ub] = np.mean([c[5] for c in conformlist if ub == (c[1],c[2])])
-        statdata[ub] = numtransitions
+        Ap = A
+        Bp = B
 
 
+      # 6. Gather stats for decision history
+      self.data[jobkey]['numtransitions'] = numtransitions
+      # avgdwelltime = {}
+      # for ub in uniquebins:
+      #   A,B = ub
+      #   avgdwelltime[ub] = np.mean([c[4] for c in conformlist if ub == (c[1],c[2])])
 
       logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point for classification)", config['name'])
       # TODO:  Feed all conforms into clustering algorithm & update centroid
@@ -153,8 +179,9 @@ class analysisJob(macrothread):
 
       # TODO: Update/Save Job Candidate History
 
-      delta_key = wrapKey('delta', config['name'])
-      self.catalog.storeNPArray(delta_tmat, delta_key)
+      self.catalog.set(wrapKey('conform', str(self.seqNumFromID())), pickle.dumps(conformlist))
+      self.catalog.storeNPArray(rmslist, wrapKey('rmslist', str(self.seqNumFromID())))
+      self.catalog.storeNPArray(delta_tmat, wrapKey('delta', config['name']))
       return [config['name']  ]
 
 
