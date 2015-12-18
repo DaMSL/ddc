@@ -496,7 +496,6 @@ class dataStore(redis.StrictRedis, catalog):
     self.hmset(key, {'header': json.dumps(header), 'data': bytes(arr)})
 
   def loadNPArray(self, key):
-    print('NP KEY = ', key)
     elm = self.hgetall(key)
     if elm == {}:
       return None

@@ -16,7 +16,9 @@ from macrothread import macrothread
 from slurm import slurm
 from indexing import *
 from deshaw import deshawReference
+from kvadt import kv2DArray
 
+from collections import deque
 # import logging
 # logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -77,6 +79,7 @@ class analysisJob(macrothread):
     def execute(self, jobkey):
 
       config = self.data[jobkey]
+      jobname = unwrapKey(jobkey)
 
       # 1. Check if source files exist
       if not (os.path.exists(config['dcd']) and os.path.exists(config['pdb'])):
@@ -108,11 +111,10 @@ class analysisJob(macrothread):
       conformlist = []
       uniquebins = set()
       delta_tmat = np.zeros(shape=(numLabels, numLabels))
-      theta = .01  
-      logging.debug("  THETA  = %0.3f   (static for now)", theta)
+      # logging.debug("  THETA  = %0.3f   (static for now)", theta)
 
       # 5. Account for noise -- for now use avg over 4 ps 
-      noise = 4000
+      noise = DEFAULT.OBS_NOISE
       nwidth = noise//(2*stepsize)
       noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
       filtrms = np.array([noisefilt(rmslist, i) for i in range(len(rmslist))])
@@ -120,55 +122,116 @@ class analysisJob(macrothread):
       Ap = Bp = None
 
       # 6.  Iterate over filtered RMS's and mark observations
+      translist = []
+      sample = {}
+      lastbin = None
       for num, rms in enumerate(filtrms):
         dwell += int(stepsize)
 
         #  Sort RMSD by proximity
-        rs = np.argsort(rms)
-        A = rs[0]
+        prox = np.argsort(rms)
+        A = prox[0]
 
         #  Calc relative proximity for top 2 nearest centroids   (TODO:  Factor in more than top 2)
-        relproximity = rms[A] / (rms[A] + rms[rs[1]])
+        # relproximity = rms[A] / (rms[A] + rms[rs[1]])
+        # B = rs[1] if relproximity > (.5 - theta) else A
+        # Use of Absolute Calculation
 
-        B = rs[1] if relproximity > (.5 - theta) else A
 
-        # Save observations for this conformation
-        conformlist.append((num, A, B, relproximity, dwell, str(rms.tolist())))
+        # THETA Calc derived from static run. it is based from the average std dev of all rms's from a static run
+        #   of BPTI without solvent. It could be dynamically calculated, but is hard coded here
+        #  The theta is divided by four based on the analysis of DEShaw:
+        #   est based on ~3% of DEShaw data in transition (hence )
+        avg_stddev = 0.34119404492089034
+        theta = avg_stddev / 4.
 
-        if num < len(filtrms) and ((A, B) == (Ap, Bp) or num==0):
-          dwell += stepsize
+        # Rel vs Abs:
+        # proximity = abs(rms[prox[1]] - rms[A]) / (rms[prox[1]] + rms[A])  #relative
+        proximity = abs(rms[prox[1]] - rms[A])    #abs
 
+        B = prox[1] if proximity < theta else A
+
+        status = 'STABLE'
+        start = 0
+        #  1st observation
+        if num == 0:
+          curbin = (A, B)
+
+        #  Same bin observed as previous
+        elif num < len(filtrms)-1 and (A, B) == (Ap, Bp):
+          pass
+
+        #  Noise
+        elif dwell <= noise:
+          logging.info("        (filtering noise)  ")
+          status = 'NOISE'
+          start = num
+
+        # Log last observed transition
+        elif num == len(filtrms):
+          logging.debug("last one")
+          status = 'TRANS'
+          translist.append((Ap,Bp,dwell))
+          curbin = (A, B)
+
+          # Grab a sample for the candidate pool  (Can cache here)
+          samp = start + ((num - start) // 2)
+          logging.debug("Grabbing sample frame: %d  %s", samp, str((Ap, Bp)))
+          sample[(Ap, Bp)] = samp
+          start = num
+
+        #  Transition Identified
         else:
-          if dwell > noise:
-            uniquebins.add((Ap,Bp))
-            numtransitions += 1
-            if Ap == Bp:
-              logging.info("  MD was stable in state %d for %d fs", Ap, dwell)
-            else:
-              logging.info("  MD was in transition (%d, %d) for %d fs", Ap, Bp, dwell)
-            # Log dwell time (but exclude last)
-            if num < len(filtrms):
-              dwelltime.append(((A,B), dwell))
+          logging.debug("new bin")
+          status = 'TRANS'
+          translist.append((Ap,Bp,dwell))
+          curbin = (A, B)
+
+          # Grab a sample for the candidate pool  (Can cache here)
+          samp = start + ((num - start) // 2)
+          logging.debug("Grabbing sample frame: %d  %s", samp, str((Ap, Bp)))
+          sample[(Ap, Bp)] = samp
+
+          if Ap == Bp:
+            logging.info("  MD was stable in state %d for %d fs", Ap, dwell)
           else:
-            logging.info("        (filtering noise)  ")
+            logging.info("  MD was in transition (%d, %d) for %d fs", Ap, Bp, dwell)
 
 
           dwell = 0
 
+
+
         logging.debug("     Obs:  %d, %d", A, B)
         delta_tmat[A][B] += 1
+
+        # Save observations for this conformation
+        conformlist.append((num, A, B, proximity, dwell, str(rms.tolist()), status))
 
         Ap = A
         Bp = B
 
 
-      # 6. Gather stats for decision history
-      self.data[jobkey]['numtransitions'] = numtransitions
-      # avgdwelltime = {}
-      # for ub in uniquebins:
-      #   A,B = ub
-      #   avgdwelltime[ub] = np.mean([c[4] for c in conformlist if ub == (c[1],c[2])])
+      tlist = deque()
 
+      for t in translist:
+        if len(tlist) == 0:
+          tlist.append(t)
+        elif (t[0], t[1]) == (tlist[-1][0], tlist[-1][1]):
+          last = tlist.pop()
+          tlist.append((t[0], t[1], t[2] + last[2]))
+        else:
+          tlist.append(t)
+
+      logging.debug("TRANSITION LIST:")
+      for t in tlist:
+        logging.debug('%s', str(t))
+      # logging.debug("******  DEBUG  *******  TERMINATING  ******")
+      # sys.exit(0)
+
+
+      # 6. Gather stats for decision history & downstream processing
+      self.data[jobkey]['numtransitions'] = numtransitions
       logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point for classification)", config['name'])
       # TODO:  Feed all conforms into clustering algorithm & update centroid
 
@@ -177,12 +240,30 @@ class analysisJob(macrothread):
       logging.debug("  Bins Observed :      %s", str(uniquebins))
       logging.debug("  This Delta:\n%s", str(delta_tmat))
 
-      # TODO: Update/Save Job Candidate History
-
-      self.catalog.set(wrapKey('conform', str(self.seqNumFromID())), pickle.dumps(conformlist))
+      # TODO: Move to abstract data ??????
+      seqnum = str(self.seqNumFromID())
+      self.catalog.set(wrapKey('conform', seqnum), pickle.dumps(conformlist))
+      self.catalog.set(wrapKey('translist', config['name']), pickle.dumps(tlist))
+      self.catalog.hset('anl_sequence', config['name'], seqnum)
       self.catalog.storeNPArray(rmslist, wrapKey('rmslist', str(self.seqNumFromID())))
       self.catalog.storeNPArray(delta_tmat, wrapKey('delta', config['name']))
-      return [config['name']  ]
+
+      # Add Sample Frames to the Candidate Pool
+      for tbin, frame in sample.items():
+        A, B = tbin
+        key = kv2DArray.key('candidatePool', A, B)
+        length = self.catalog.llen(key)
+        if length >= DEFAULT.CANDIDATE_POOL_SIZE:
+          self.catalog.lpop(key)
+        candidate = '%s:%03d' % (jobname,frame)
+
+        logging.info("New Job Candidate for (%d, %d): %s   poolsize=%d",
+          A, B, candidate, length)
+        self.catalog.rpush(key, candidate)
+
+      sample[(A, B)]
+
+      return [config['name']]
 
 
 

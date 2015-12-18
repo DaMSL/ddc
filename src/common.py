@@ -92,6 +92,9 @@ class systemsettings:
     self.BUILD_ARCHIVE = False #'build_archive' in ini and ini['build_archive'].lower() in ['true', 'yes', 'on']
     self.PARTITION = ini.get('partition', 'shared')
 
+    #  PARAMS TO BE SET:
+    self.OBS_NOISE = ini.get('obs_noise', 10000)
+
 
     # Config Schema -- placed here for now (TODO: Split????)    
     # SCHEMA

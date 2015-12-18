@@ -60,13 +60,15 @@ def initializecatalog(catalog):
   #  Create Candidate Pools from RMSD for all source DEShaw data
   logging.info("Loading DEShaw RMS Values")
   rms = np.load('rmsd.npy')
+  stddev = 1.1136661550671645
+  theta = stddev / 4
   logging.info("Creating candidate pools")
   for i, traj in enumerate(rms):
     for f, conform in enumerate(traj):
       ordc = np.argsort(conform)
       A = ordc[0]
-      relproximity = conform[A] / (conform[A] + conform[ordc[1]])
-      B = ordc[1] if relproximity > .49 else A
+      proximity = abs(conform[ordc[1]] - conform[A])
+      B = ordc[1] if proximity < theta else A
       pools[A][B].append('%03d:%03d'%(i,f))
   logging.info("All Candidates Found! Randomly selecting.....")
 

@@ -184,6 +184,7 @@ class controlJob(macrothread):
       self.addImmut('launch')
       self.addAppend('timestep')
       self.addAppend('observe')
+      self.addMut('runtime')
 
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
@@ -237,21 +238,72 @@ class controlJob(macrothread):
       logging.debug("Processing output from %d  simulations", len(job_list))
 
       obs_delta = np.zeros(shape=(numLabels, numLabels))
+      
       #  Consolidate all observation delta's
+      translist = {}
       for job in job_list:
         logging.debug("  Loading data for simulation: %s", job)
 
         #  Do we need jc info here (provonance or )
-        history = self.catalog.load(wrapKey('jc', job))
+        jkey = wrapKey('jc', job)
+        history = self.catalog.load(jkey)
         traj_delta  = self.catalog.loadNPArray(wrapKey('delta', job))
         if traj_delta is not None:
           obs_delta += traj_delta
+
+        tbin = eval(history[jkey]['targetBin'])
+        trans = self.catalog.get(wrapKey('translist', job))
+        if trans is not None:
+          trans = pickle.loads(trans)
+          if tbin not in translist.keys():
+            translist[tbin] = []
+          for t in trans:
+            translist[tbin].append(t)
 
       observe_before = np.copy(self.data['observe'])
       self.data['observe'] += obs_delta
       observe = self.data['observe']
 
       launch = self.data['launch']
+
+      # TODO: DERIVE RUNTIME HERE
+      # runtime = int(eval(self.catalog.get(kv2DArray.key('runtime', A, B))))
+
+      logging.info("Adapting Runtimes")
+      for tbin, tlist in translist.items():
+        A, B = tbin
+        time_s = 0
+        time_t = 0
+        num_t  = len(tlist)
+        for t in tlist:        
+          if t[0] == t[1]:
+            time_s += t[2]
+          else:
+            time_t += t[2]
+
+        run_step = 10000 * np.round(np.log( (num_t * max(1, time_t)) / time_s  ))
+        print("Runtime data for", A, B, ":  ", time_t, time_s, num_t, run_step)
+
+        currt = self.data['runtime'][A][B]
+        self.data['runtime'][A][B] = min(max(50000, currt+run_step), 500000) 
+
+        logging.info("Adapting runtime for (%d, %d)  from %.0f  --->  %.0f", 
+          A, B, currt, self.data['runtime'][A][B])
+      logging.debug("RUNTIMES: \n%s", str(self.data['runtime']))
+
+      #  Update Runtime values for observed states
+      # totdwell = np.zeros(shape=(numLabels, numLabels))
+      # obstrans = np.zeros(shape=(numLabels, numLabels))
+      # avgdwell = np.zeros(shape=(numLabels, numLabels))
+      # for t in translist:
+      #   A, B, dwell = t
+      #   totdwell[A][B] += dwell
+      #   obstrans[A][B] += dwell
+
+      # for i in range(numLabels):
+      #   for j in range(numLabels):
+      #     if obstrans[A][B] > 0:
+      #       avgdwell[A][B] = totdwell[A][B] / obstrans[A][B]
 
 
       logging.debug('Delta Matrix: \n%s', str(obs_delta))
@@ -449,12 +501,10 @@ class controlJob(macrothread):
           # Generate new set of params/coords
           jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, int(srcFrame), debugstring=dstring)
 
-          # TODO: DERIVE RUNTIME HERE
-          runtime = int(eval(self.catalog.get(kv2DArray.key('runtime', A, B))))
           # Update Additional JC Params and Decision History, as needed
           jcConfig = dict(params,
               name    = jcID,
-              runtime = runtime,
+              runtime = int(self.data['runtime'][A][B]),
               interval = 500,
               temp    = 310,
               state   = A,

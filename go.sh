@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PART=shared
+PART=debug
 STARTNUM=0
 
 if [[ "$#" -ne 1 ]]; then
