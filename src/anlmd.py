@@ -2,7 +2,6 @@ import argparse
 import sys
 import os
 
-
 import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
@@ -19,15 +18,13 @@ from deshaw import deshawReference
 from kvadt import kv2DArray
 
 from collections import deque
-# import logging
-# logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class analysisJob(macrothread):
     def __init__(self, fname):
       macrothread.__init__(self, fname,  'anl')
-      # State Data for Simulation MacroThread -- organized by state
 
+      #  Analysis Thread State Data
       self.setStream('rawoutput', 'completesim')
 
       self.addImmut('anlSplitParam')
@@ -111,9 +108,9 @@ class analysisJob(macrothread):
       conformlist = []
       uniquebins = set()
       delta_tmat = np.zeros(shape=(numLabels, numLabels))
-      # logging.debug("  THETA  = %0.3f   (static for now)", theta)
 
-      # 5. Account for noise -- for now use avg over 4 ps 
+      # 5. Account for noise  
+      #    For now: noise is user-configured; TODO: Factor in to Kalman Filter
       noise = DEFAULT.OBS_NOISE
       nwidth = noise//(2*stepsize)
       noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
@@ -128,16 +125,12 @@ class analysisJob(macrothread):
       for num, rms in enumerate(filtrms):
         dwell += int(stepsize)
 
-        #  Sort RMSD by proximity
+        #  6a. Sort RMSD by proximity & set state A as nearest state's centroid
         prox = np.argsort(rms)
         A = prox[0]
 
-        #  Calc relative proximity for top 2 nearest centroids   (TODO:  Factor in more than top 2)
-        # relproximity = rms[A] / (rms[A] + rms[rs[1]])
-        # B = rs[1] if relproximity > (.5 - theta) else A
-        # Use of Absolute Calculation
-
-
+        
+        #  6b. Calc Absolute proximity between nearest 2 states' centroids
         # THETA Calc derived from static run. it is based from the average std dev of all rms's from a static run
         #   of BPTI without solvent. It could be dynamically calculated, but is hard coded here
         #  The theta is divided by four based on the analysis of DEShaw:
@@ -145,31 +138,37 @@ class analysisJob(macrothread):
         avg_stddev = 0.34119404492089034
         theta = avg_stddev / 4.
 
-        # Rel vs Abs:
+        # NOTE: Original formulate was relative. Retained here for reference:  
+        # Rel vs Abs: Calc relative proximity for top 2 nearest centroids   
+        # relproximity = rms[A] / (rms[A] + rms[rs[1]])
+        # B = rs[1] if relproximity > (.5 - theta) else A
         # proximity = abs(rms[prox[1]] - rms[A]) / (rms[prox[1]] + rms[A])  #relative
         proximity = abs(rms[prox[1]] - rms[A])    #abs
 
+        #  (TODO:  Factor in more than top 2)
+
         B = prox[1] if proximity < theta else A
 
+        #  Mark Obsevation based on following Criteria
         status = 'STABLE'
         start = 0
-        #  1st observation
+
+        #  (A) 1st observation
         if num == 0:
           curbin = (A, B)
 
-        #  Same bin observed as previous
+        #  (B) Same bin observed as previous
         elif num < len(filtrms)-1 and (A, B) == (Ap, Bp):
           pass
 
-        #  Noise
+        #  (C) Noise
         elif dwell <= noise:
-          logging.info("        (filtering noise)  ")
           status = 'NOISE'
+          logging.info("        (filtering noise)  ")
           start = num
 
-        # Log last observed transition
+        #  (D) Last observation --> log as transaction (if not noise)
         elif num == len(filtrms):
-          logging.debug("last one")
           status = 'TRANS'
           translist.append((Ap,Bp,dwell))
           curbin = (A, B)
@@ -180,9 +179,8 @@ class analysisJob(macrothread):
           sample[(Ap, Bp)] = samp
           start = num
 
-        #  Transition Identified
+        #  (E)  Transition Identified
         else:
-          logging.debug("new bin")
           status = 'TRANS'
           translist.append((Ap,Bp,dwell))
           curbin = (A, B)
@@ -197,23 +195,24 @@ class analysisJob(macrothread):
           else:
             logging.info("  MD was in transition (%d, %d) for %d fs", Ap, Bp, dwell)
 
-
           dwell = 0
 
 
-
+        #  6c. Mark the Observation
+        #  TODO:  Determine if  "noise" should be surpressed here during post-processing
         logging.debug("     Obs:  %d, %d", A, B)
         delta_tmat[A][B] += 1
 
-        # Save observations for this conformation
+        #  6d. Save observations for this conformation
         conformlist.append((num, A, B, proximity, dwell, str(rms.tolist()), status))
 
         Ap = A
         Bp = B
 
 
+      # 7. Compact transitionlist s.t. it contains only the identified transitions 
+      #   (omit noise and combine successive duplicates)
       tlist = deque()
-
       for t in translist:
         if len(tlist) == 0:
           tlist.append(t)
@@ -230,7 +229,7 @@ class analysisJob(macrothread):
       # sys.exit(0)
 
 
-      # 6. Gather stats for decision history & downstream processing
+      # 8. Gather stats for decision history & downstream processing
       self.data[jobkey]['numtransitions'] = numtransitions
       logging.debug("\nFinal processing for Source Trajectory: %s   (note: injection point for classification)", config['name'])
       # TODO:  Feed all conforms into clustering algorithm & update centroid
@@ -248,7 +247,7 @@ class analysisJob(macrothread):
       self.catalog.storeNPArray(rmslist, wrapKey('rmslist', str(self.seqNumFromID())))
       self.catalog.storeNPArray(delta_tmat, wrapKey('delta', config['name']))
 
-      # Add Sample Frames to the Candidate Pool
+      # 9. Add Sample Frames to the Candidate Pool
       for tbin, frame in sample.items():
         A, B = tbin
         key = kv2DArray.key('candidatePool', A, B)
@@ -264,45 +263,6 @@ class analysisJob(macrothread):
       sample[(A, B)]
 
       return [config['name']]
-
-
-
-
-
-      # result = {}
-      # indexSize = self.data['indexSize']
-      # # 2. Split raw data in WINSIZE chunks and calc eigen vectors
-      # #   TODO: Retain provenance
-      # for win in range(0, len(traj.xyz), self.slide):
-      #   if win + self.winsize > len(traj.xyz):
-      #     break
-      #   eg, ev = LA.eigh(distmatrix(traj.xyz[win:win+self.winsize]))
-      #   key = jobnum + ':' + '%04d' % win
-      #   result[key] = makeIndex(eg, ev)
-
-      # # To Build Archive online
-      # if self.buildArchive:
-      #   archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-      #   engine = getNearpyEngine(archive, indexSize)
-
-      #   #  TODO: Better label
-      #   label = key
-      #   for key, idx in result.items():
-      #     engine.store_vector(idx, key)
-
-      # # Index for downstream retrieval
-      # logging.debug('Saving Index in catalog')
-
-      # # Pack & store data
-      # for k, v in result.items():
-      #   logging.debug(" `%s`:  <vector with dimensions, %s>" % (k, str(v.shape)))
-      # packed = {k: v.tobytes() for k, v in result.items()}
-
-
-      
-      # Index Key : If/When to update job ID management for downstream data
-      # index_key = wrapKey('idx', jobnum)
-      # self.catalog.save({index_key: packed})
 
 
 

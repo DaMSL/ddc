@@ -28,7 +28,7 @@ class slurm:
     return out
 
   @classmethod
-  def getJobs(cls, **kwargs):
+  def getJobs(**kwargs):
     cmd = ['squeue','-h', '-l']
     if 'state' in kwargs: 
       cmd.append('--state=' + kwargs.get('state'))

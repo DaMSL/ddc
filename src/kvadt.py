@@ -2,6 +2,28 @@ import abc
 import redis
 import numpy as np
 
+
+
+# NOTE:  Possible bug in Enum class prevents proper init of __members__
+#  Following is a shell of a wrapper type-class for all data types in the system
+#  Will need to re-design another time (found a bug in the enum module)
+#  Attempt to bypass bug:
+# class DType:
+#   int = int
+#   float = float
+#   num = float
+#   list = list
+#   dict = dict
+#   str = str
+#   ndarray = np.ndarray
+#   matrix = kv2DArray
+#   @classmethod
+#   def cmp(cls, this, other):
+#     return this.__name__ == other.__name__
+
+
+
+#  K-V ADT Nucleaus of a type-wrapper class
 class kvadt(object):
   __metaclass__ = abc.ABCMeta
 

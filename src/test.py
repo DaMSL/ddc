@@ -40,10 +40,6 @@ def savePCAPoints(archive, start):
         z = np.mean(dmat.dot(index[1135][4].pca[2]), axis=0)
         ptfile.write('%d,%d,%d,%f,%f,%f\n' % ((start+dcd), win*100, index[dcd][win].state, x, y, z))
 
-# index[1448][400].pca[0]
-# index[3826][400].pca[1]
-# index[1135][400].pca[2]
-
 
 def makePlot(S):
   labels = loadLabels()

@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+"""Abstract Data Class defining the macro thread
+
+Sub-classes should implement a split and execute method (and optional )
+"""
+
 import time
 import math
 import sys
@@ -19,8 +25,13 @@ from collections import namedtuple
 # For now: use redis catalog
 import redisCatalog
 
-# import logging, logging.handlers
-# logger = setLogger("MT")
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2015, Data Driven Control"
+__version__ = "0.0.1"
+__email__ = "bring4@jhu.edu"
+__status__ = "Development"
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,14 +45,12 @@ class macrothread(object):
     #  TODO: Better handling of command line args
     self.parser = None
     self.parser = self.addArgs()
-
     args = self.parser.parse_args()
-
     self.config = args.config
+
+    #  apply global settings (TODO: Move to system pro-proc)    
     DEFAULT.applyConfig(self.config)
 
-
-    # System-wide meta-data TODO: (part loaded from file, part from catalog)
     # Thread State
     self._mut = []
     self._immut = []
@@ -56,6 +65,7 @@ class macrothread(object):
     # Elasticity
     self.delay = None
 
+    # Data Stre
     self.catalog = None
     self.localCatalogServer = None
 
@@ -68,8 +78,7 @@ class macrothread(object):
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
-    # self.slurmParams = {'time':'6:0:0', 
-    self.slurmParams = {'time':'5:0:0', 
+    self.slurmParams = {'time':'96:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
               'partition':DEFAULT.PARTITION, 
@@ -81,6 +90,7 @@ class macrothread(object):
     self.seq_num   = None
 
 
+  #  Job ID Management  
   #  Sequence ALL JOBS --- good for up to 10,000 managers and 100 concurrently launched workers
   #  TODO:  Can make this larger, if nec'y
   def toMID(self, jobid):
@@ -111,6 +121,8 @@ class macrothread(object):
     else:
       return '000000'
 
+
+  #  Methods to add data elements to thread state
   def addMut(self, key, value=None):
     self._mut.append(key)
     if value is not None:
@@ -127,7 +139,7 @@ class macrothread(object):
       self.data[key] = value
       self.origin[key] = copy.deepcopy(value)
 
-  # # TODO:  Eventually we may want multiple up/down streams
+  # TODO:  Eventually we may want multiple up/down streams
   def setStream(self, upstream, downstream):
     if upstream is None:
       logger.info("Upstream data `%s` not defined", upstream)
@@ -137,22 +149,7 @@ class macrothread(object):
       logger.warning("Downstream data `%s` not defined in schema", downstream)
     self.downstream = downstream
 
-  # def setState(self, *arg):
-
-  #   for a in arg:
-  #     self._state[a] = self.data[a]
-  #   # self._state['id_' + self.name] = 0
-
-  # def addToState(self, key, value):
-  #   self._state[key] = value
-  #   self.data[key] = value
-
-  def setCatalog(self, catalog):
-    self.catalog = catalog
-
-  def getCatalog(self):
-    return self.catalog
-
+  # Implementation methods for macrothreads
   @abc.abstractmethod
   def term(self):
     raise NotImplementedError("This method has not been implemented.")
@@ -179,6 +176,13 @@ class macrothread(object):
     self.delay = 60
 
 
+  #  Catalog access methods
+  def setCatalog(self, catalog):
+    self.catalog = catalog
+
+  def getCatalog(self):
+    return self.catalog
+
   def load(self, *keylist):
     """
     Load state from remote catalog to local cache
@@ -197,13 +201,11 @@ class macrothread(object):
     logging.debug("Loaded state for %s:", self.name)
     for k,v in data.items():
       self.data[k] = v
-      logging.debug("  %10s: %s ", k, str(v))
+      logging.debug("  %10s", k)
 
     logging.debug("Setting origin for append-only")
     for k in keys:
       if k in self._append:
-        print("APPEND-ONLY ORIGIN: ", k)
-
         self.origin[k] = copy.deepcopy(data[k])
         logging.debug("  Setting Append only origin for: %s", k)
 
@@ -257,14 +259,11 @@ class macrothread(object):
     self.catalog.append(state)
 
 
+  # Manager Algorithm
   def manager(self, fork=False):
 
     logger.debug("\n==========================\n  MANAGER:  %s", self.name)
 
-    # # Catalog Service Check here
-    # if not self.catalog:
-    #   self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    # self.localcatalogserver = self.catalog.conn()
 
     # Check global termination:
     term_flag = self.data['terminate']
@@ -308,19 +307,20 @@ class macrothread(object):
 
     #  TODO:  Det if manager should load entire input data set, make this abstract, or
     #     push into UDF portion
+    #  Defer can return either a list of items to push back or a "split" value to
+    #  perform an in-line data trim on the key-store DB (optimiation)
     immed, defer  = self.split()
 
-    # # TODO:  JobID mgmt. For now using incrementing job id counters (det if this is nec'y)
+    #  Manager oversee's id assignment. 
     idlabel = 'id_%s' % self.name
     self.catalog.incr(idlabel)
     nextid = self.catalog.get(idlabel)
-    print(' NEXT ID  === ', nextid)
 
+    # first ID check 
     nextid = 0 if nextid is None else int(nextid)
     myid = self.fromMID()
     if myid is None:
       myid = int(nextid - 1)
-    print('   MY ID  === ', myid)
 
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
@@ -340,13 +340,9 @@ class macrothread(object):
             cmd = "python3 %s -c %s -w %s" % (self.fname, self.config, str(i)))
         workernum += 1
 
-    # Reschedule Next Manager:
-    # METHOD 1.  Automatic. Schedule self after scheduling ALL workers
-    #      FOR NOW, back off delay  (for debug/demo/testing)
-    # TODO: Use Elas Policy to control manager rescheduling
+    # Elas Policy to control manager rescheduling
     delay = self.delay  
     self.slurmParams['begin'] = 'now+%d' % delay
-
     self.slurmParams['job-name'] = self.toMID(nextid)
     self.slurmParams['cpus-per-task'] = 1
     slurm.sbatch(taskid =self.slurmParams['job-name'],
@@ -354,7 +350,7 @@ class macrothread(object):
               modules   = self.modules,
               cmd = "python3 %s -c %s" % (self.fname, self.config))
 
-    # METHOD 2.  Trigger Based
+    # TODO: Alternate manager rescheduling:  Trigger Based
     #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
 
 
@@ -364,41 +360,32 @@ class macrothread(object):
     self.catalogPersistanceState = True
 
 
-    # Consume upstream input data (should this happen earlier or now?)
-    #  TODO: Should we just make this only 1 list allowed for upstream data?
+    # Consume upstream input data
     if isinstance(defer, list) and len(defer) > 0:
       self.catalog.removeItems(self.upstream, defer)
     elif defer is not None:
       self.catalog.slice(self.upstream, defer)
 
     # Other interal thread state is saved back to catalog
-    #  TODO: For now the manager ONLY updates the job ID
-
     self.save(self._mut)
-    
+
+    # Check for locally run catalog service and block until it completes    
     if self.localcatalogserver and self.catalogPersistanceState:
       logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
       self.localcatalogserver.join()
       self.localcatalogserver = None
 
     logger.debug("==========================")
-    return 1
+    return 0
 
 
   def worker(self, i):
     logger.debug("\n--------------------------\n   WORKER:  %s", self.name)
-
-    # TODO:  Does the worker need to fetch input data? (ergo: should this be abstracted)
-    # jobInput = self.fetch(i)
-
     # TODO: Optimization Notifications
     #  catalog.notify(i, "active")
 
-    # Catalog Service Check here. Ensure catalog is available and then retrieve all data up front
-
-
     logger.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
-    jobInput = self.fetch(i)      # TODO: Manage job Input w/multiple input items, for now just pass it
+    jobInput = self.fetch(i)
 
     # In case this worker spun up a service, ensure it is stopped locally
     if self.localcatalogserver and not self.catalogPersistanceState:

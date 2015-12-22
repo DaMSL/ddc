@@ -23,13 +23,6 @@ def singleton(cls):
         return instances[cls]
     return getinstance
 
-
-# logger = None
-
-
-# archiveConfig = dict(name='archive', port=6380)
-
-
 @singleton
 class systemsettings:
   def __init__(self, confile=None):
@@ -89,7 +82,6 @@ class systemsettings:
   
     # Potentailly Dynamic
     self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
-    self.BUILD_ARCHIVE = False #'build_archive' in ini and ini['build_archive'].lower() in ['true', 'yes', 'on']
     self.PARTITION = ini.get('partition', 'shared')
 
     #  PARAMS TO BE SET:

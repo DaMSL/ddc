@@ -422,7 +422,7 @@ class dataStore(redis.StrictRedis, catalog):
             data[key] = {}
         i += 1
       except (AttributeError, KeyError) as ex:
-        logging.error("BAD KEY:  %s", key)
+        logging.error("ERROR! Loading a BAD KEY:  %s", key)
         logging.error("Trace:  %s", str(ex))
         sys.exit(0)
 
