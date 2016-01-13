@@ -236,7 +236,7 @@ class controlJob(macrothread):
 
       obs_delta = np.zeros(shape=(numLabels, numLabels))
       
-      #  Consolidate all observation delta's and transation lists from recently run simulations
+      #  Consolidate all observation delta's and transaction lists from recently run simulations
       translist = {}
       for job in job_list:
         logging.debug("  Loading data for simulation: %s", job)
@@ -534,7 +534,7 @@ class controlJob(macrothread):
         self.addMut(wrapKey('jc', config['name']), config)
 
 
-      # POST-PROCESSING  -------------------------------------
+    #  POST-PROCESSING  -------------------------------------
       logging.debug("============================  <POST-PROCESSING & OUTPUT>  =============================")
 
       logging.debug("OBS_MATRIX_DELTA:\n" + str(obs_delta))
@@ -544,7 +544,7 @@ class controlJob(macrothread):
       logging.debug("CONVERGENCE_PROB_DISTRO:\n" + str(probDistro))
       logging.debug("OBS_RARITY:\n" + str(rarity))
       logging.debug("CONV_DELTA:\n" + str(delta))
-      logging.debug("CTL_WEIGHT:\n" + str(np.array([[weight[(i,k)] for i in range(numLabels)] or k in range(numLabels)])))
+      # logging.debug("CTL_WEIGHT:\n" + str(np.array([[weight[(i,k)] for i in range(numLabels)] or k in range(numLabels)])))
 
       logging.info("GLOBAL_CONVERGENCE: %f", globalconvergence)
       for i in range(5):
