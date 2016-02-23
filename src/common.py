@@ -47,8 +47,10 @@ class systemsettings:
     application = os.path.basename(self._confile).split('.')[0]
     self.APPL_LABEL  = application
     self.WORKDIR     = ini.get('workdir', '.')
+
     self.LOGDIR = os.path.join(self.WORKDIR, 'log', application)
     self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
+    self.DATADIR = os.path.join(self.WORKDIR, 'data', application)
 
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
     self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
@@ -75,6 +77,9 @@ class systemsettings:
     atom_filter = ini.get('atom_filter', 'heavy')
     self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
 
+    # Analysis Setting
+    self.MAX_RESERVOIR_SIZE = 1000
+
     # Controller Settings
     self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
     self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
@@ -97,10 +102,7 @@ class systemsettings:
     #     synchronize between threads thru the catalog
 
     self.schema = defaults['schema']
-    # self.schema['centroid'] = np.zeros(1)
-
     self.init = defaults['init']
-
 
     # make_config_file = 'default.conf'
 
@@ -130,11 +132,9 @@ class systemsettings:
     self.NUM_VAR = n
   
   def envSetup(self):
-    if not os.path.exists(self.JOBDIR):
-      os.makedirs(self.JOBDIR)
-
-    if not os.path.exists(self.LOGDIR):
-      os.mkdir(self.LOGDIR)
+    for d in [self.JOBDIR, self.LOGDIR, self.DATADIR]:
+      if not os.path.exists(d):
+        os.mkdir(d)
 
     checkpath = lambda k, x: print('%-10s: %s.....%s ' % (k, x, ('ok' if os.path.exists(x) else " DOES NOT EXIST")))
 

@@ -6,6 +6,7 @@ from indexing import *
 import math
 import json
 import bisect
+import datetime as dt
 
 DO_COV_MAT = False
 
@@ -28,6 +29,37 @@ def updateschema(catalog):
     logging.info('Setting schema:    %s  %s', k, str(v))
 
   catalog.hmset("META_schema", dtype_map)
+
+def calcDEShaw_PCA(catalog):
+  numPC = 3
+  catalog.delete('subspace:pca')
+  logging.debug("Projecting DEshaw PCA Vectors (assuming PC's are pre-calc'd")
+  pcavect = catalog.loadNPArray('pcaVectors')
+  logging.debug("Loaded PCA Vectors: %s, %s", str(pcavect.shape), str(pcavect.dtype))
+  src = np.load(os.path.join(DEFAULT.DATADIR, 'bpti_10p.npy'))
+  logging.debug("Loaded source points: %s, %s", str(src.shape), str(src.dtype))
+  pcalist = np.zeros(shape=(len(src), numPC))
+  start = dt.datetime.now()
+  pdbfile, dcdfile = getHistoricalTrajectory(0)
+  traj = md.load(dcdfile, top=pdbfile, frame=0)
+  filt = traj.top.select_atom_indices(selection='heavy')
+  for i, conform in enumerate(src):
+    if i % 10000 == 0:
+      logging.debug("Projecting: %d", i)
+    heavy = np.array([conform[k] for k in filt])
+    np.copyto(pcalist[i], np.array([np.dot(heavy.reshape(pc.shape),pc) for pc in pcavect[:numPC]]))
+  end = dt.datetime.now()
+  logging.debug("Projection time = %d", (end-start).seconds)
+
+  rIdx = []
+  for si in pcalist:
+    #  TODO: Verify & check bit packing, pipeline this
+    rIdx.append(catalog.rpush('subspace:pca', bytes(si)))
+  logging.debug("R_Index Created (pca)")
+
+  cacherawfile = os.path.join(DEFAULT.DATADIR, 'cache_raw')
+  np.save(cacherawfile, src)
+
 
 
 def initializecatalog(catalog):
@@ -86,6 +118,7 @@ def initializecatalog(catalog):
   pipe = catalog.pipeline()  
   logging.info("Deleting existing candidates and controids")
   pipe.delete('centroid')
+  pipe.delete('pcaVectors')
   for i in range(numLabels):
     for j in range(numLabels):
       pipe.delete(kv2DArray.key('candidatePool', i, j))
@@ -100,6 +133,13 @@ def initializecatalog(catalog):
   logging.info("Loading centroids from %s", centfile)
   centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
+
+  pcaVectorfile = 'cpca_pc3.npy'
+  logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
+  pcaVectors = np.load(pcaVectorfile)
+  catalog.storeNPArray(pcaVectors, 'pcaVectors')
+  calcDEShaw_PCA(catalog)
+
 
   # Initialize observations matrix
   logging.info('Initializing lauch, observe, and runtime matrices')
@@ -320,7 +360,6 @@ def seedData(catalog):
     catalog.hdel(key, 'indexList')
     catalog.hdel(key, 'actualBin')
 
-
 def seedJob(catalog, num=1):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
@@ -384,6 +423,9 @@ if __name__ == '__main__':
   settings = systemsettings()
   settings.applyConfig(confile)
   catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+
+  calcDEShaw_PCA(catalog)
+  sys.exit(0)
 
   if args.initcatalog:
     settings.envSetup()
