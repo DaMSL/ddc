@@ -26,7 +26,7 @@ from collections import namedtuple
 import redisCatalog
 
 __author__ = "Benjamin Ring"
-__copyright__ = "Copyright 2015, Data Driven Control"
+__copyright__ = "Copyright 2016, Data Driven Control"
 __version__ = "0.0.1"
 __email__ = "bring4@jhu.edu"
 __status__ = "Development"
@@ -111,6 +111,8 @@ class macrothread(object):
     return '%sw-%04d.%02d' % (self.name[0], jobid, worknum)
 
   def seqNumFromID(self, ):
+    """Returns the logical sequenced number for this macrothread
+    """
     if self.job_id is None:
       return '000000'
 
@@ -203,6 +205,7 @@ class macrothread(object):
       self.data[k] = v
       logging.debug("  %10s", k)
 
+
     logging.debug("Setting origin for append-only")
     for k in keys:
       if k in self._append:
@@ -256,7 +259,8 @@ class macrothread(object):
           state[key] = {k:v for k.v in self.data[key].items if k not in self.origin[key].keys()}
         else:
           logging.error("CANNOT APPEND data `%s` of type of %s", key, str(type(self.data[key])))
-    self.catalog.append(state)
+    
+    return self.catalog.append(state)
 
 
   # Manager Algorithm
@@ -494,6 +498,8 @@ class macrothread(object):
     # Load data from Catalog
     logger.info("Loading Thread State for from catalog:")
     self.load(self._mut, self._immut, self._append)
+
+
 
     if args.workinput:
       logger.debug("Running worker.")

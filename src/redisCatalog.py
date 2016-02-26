@@ -328,7 +328,7 @@ class dataStore(redis.StrictRedis, catalog):
         pipe.set(key, value)
       logger.debug("  Saving data elm  `%s` as %s ", key, type(data[key]))
 
-    pipe.execute()
+    result = pipe.execute()
 
     for key in deferredsave:
       if key not in self.schema.keys():
@@ -351,7 +351,7 @@ class dataStore(redis.StrictRedis, catalog):
         else:
           matrix = kv2DArray(self, key, )
 
-
+    return result
 
 
 
@@ -394,7 +394,6 @@ class dataStore(redis.StrictRedis, catalog):
             value = self.hgetall(key)
           except redis.ResponseError as ex:
             value = self.get(key)
-        logging.debug("Dynamically loaded %s. Updating schema", key)
         data[key] = decodevalue(value)
         self.schema[key] = type(value).__name__
 
@@ -437,7 +436,7 @@ class dataStore(redis.StrictRedis, catalog):
       logger.debug("Appending data elm  `%s` of type, %s", key, type(data[key]))
       if key not in self.schema.keys():
         logging.warning("  KEY `%s` not found in local schema! Will try Dynamic Append")
-        deferredsave.append(key)
+        deferredappend.append(key)
       elif self.schema[key] == 'int':
         pipe.incr(key, value)
         logging.warning("  Increment `%s` as int by %d", key, value)
@@ -457,7 +456,7 @@ class dataStore(redis.StrictRedis, catalog):
       else:
         pipe.set(key, value)
 
-    pipe.execute()
+    result = pipe.execute()
 
     for key in deferredappend:
       if self.schema[key] == 'ndarray':
@@ -468,6 +467,7 @@ class dataStore(redis.StrictRedis, catalog):
         matrix = kv2DArray(self, key)
         matrix.merge(data[key])
 
+    return result
 
   # Slice off data in-place. Asssume key stores a list
   def slice(self, key, num):
