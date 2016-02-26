@@ -69,9 +69,6 @@ class systemsettings:
         port=ini.get('archive_port', '6380') )
     self.HASH_NAME             = ini.get('hash_name', 'rbphash')  #TODO CHANGE NAME
 
-    # Simulation & Analysis Protein Settings
-    self.TOPO       = ini.get('topo') 
-    self.PARM       = ini.get('parm') 
 
     # Filter Options: {‘all’, ‘alpha’, ‘minimal’, ‘heavy’, ‘water’}
     atom_filter = ini.get('atom_filter', 'heavy')

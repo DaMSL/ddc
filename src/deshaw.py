@@ -7,11 +7,18 @@ from numpy import linalg as LA
 import logging
 
 
+# Predefined topology and parameters for DEShaw BPTI
+TOPO  = os.getenv('HOME') +  "/bpti/amber/top_all22_prot.inp"
+PARM  = os.getenv('HOME') +  "/bpti/amber/par_all22_prot.inp"
+
+
+
 # TODO:  Make a Raw Archiver class (& link in with data mover)
 
 # Hard Coded for now
 RAW_ARCHIVE = os.getenv('HOME') + '/work/bpti'
 PDB_FILE    = os.getenv('HOME') + '/work/bpti/bpti-all.pdb'
+
 
 label =namedtuple('window', 'time state')
 
@@ -35,8 +42,11 @@ def getLabelList(labels):
   return sorted(list(labelset))
 
 
-def getDEShawfilename(seqnum):
-    return 'bpti-all-%03d.dcd' if int(seqnum) < 1000 else 'bpti-all-%04d.dcd'
+def getDEShawfilename(seqnum, fullpath=False):
+    filename = 'bpti-all-%03d.dcd' if int(seqnum) < 1000 else 'bpti-all-%04d.dcd'
+    if fullpath:
+      filename = os.path.join(RAW_ARCHIVE, filename)
+    return filename
 
 
 def getHistoricalTrajectory(seqnum):

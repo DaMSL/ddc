@@ -23,7 +23,6 @@ def filter_heavy(source, pdbfile=None):
   Apply heavy atom filter. If no PDD file is provided, assume it is
   saved along side the dcd file, but with .pdb extension
   """
-
   if isinstance(source, md.Trajectory):
     traj = source
   else:
@@ -35,8 +34,8 @@ def filter_heavy(source, pdbfile=None):
   traj.atom_slice(filt, inplace=True)
   
   # Set DEShaw Reference point
-  ref = deshaw.deshawReference()
-  traj.superpose(ref, frame=0)
+  # ref = deshaw.deshawReference()
+  # traj.superpose(ref, frame=0)
   return traj
 
 

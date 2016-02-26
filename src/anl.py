@@ -192,8 +192,6 @@ class analysisJob(macrothread):
       mylogical_seqnum = str(self.seqNumFromID())
 
 
-
-
     # 3. Subspace Calcuation
     #------ A:  RMSD  ------------------
       #     S_A = rmslist

@@ -1,7 +1,7 @@
 from simmd import *
-from anlmd import *
-from ctlmd import *
-from deshaw import *
+from anl import *
+from ctl import *
+import deshaw
 from indexing import *
 import math
 import json
@@ -380,7 +380,7 @@ def seedJob(catalog, num=1):
         pdbfile, archiveFile = getHistoricalTrajectory(int(src))
 
         # Generate new set of params/coords
-        jcID, params = generateNewJC(archiveFile, pdbfile, DEFAULT.TOPO, DEFAULT.PARM, frame=int(frame))
+        jcID, params = generateNewJC(archiveFile, pdbfile, deshaw.TOPO, deshaw.PARM, frame=int(frame))
 
         # Update Additional JC Params and Decision History, as needed
         config = dict(params,
