@@ -148,8 +148,6 @@ def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=N
 
     return jcuid, newsimJob
 
-
-
 def bootstrap (source, N=1000, interval=.95):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
@@ -190,17 +188,12 @@ def bootstrap (source, N=1000, interval=.95):
     probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
   return probility_est
 
-
-
 def q_select (T, value):
   idx_list = []
   for i, elm in enumerate(T):
     if elm == value:
       idx_list.append(i)
   return idx_list
-
-
-
 
 class controlJob(macrothread):
     def __init__(self, fname):
@@ -227,10 +220,9 @@ class controlJob(macrothread):
 
 
       # Update Base Slurm Params
-      self.slurmParams['cpus-per-task'] = 24
+      self.slurmParams['cpus-per-task'] = 1
 
       self.modules.add('namd')
-
 
     def term(self):
       # For now
@@ -250,8 +242,11 @@ class controlJob(macrothread):
 
     # DEFAULT VAL for i for for debugging
     def fetch(self, i=100):
-      end = min(self.data['ctlIndexHead'] + int(i), self.catalog.llen('completesim'))
-      return end
+      print ("FETCHING!!!!!")
+      lastxid = self.catalog.llen('xid:reference')
+      print (' VALS --->   ', self.data['ctlIndexHead'], i, int(lastxid))
+      # end = min(self.data['ctlIndexHead'] + int(i), int(lastxid))
+      return -1
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
@@ -287,7 +282,6 @@ class controlJob(macrothread):
       for pt in cache_miss:
         pipe.lindex('xid:reference', pt)
       framelist = pipe.execute()
-      print('framelist---> ', framelist)
       # for i in range(len(framelist)):
       #   if framelist[i] is None:
       #     dcdfile_num = cache_miss[i] // 100
@@ -298,7 +292,6 @@ class controlJob(macrothread):
       #  Account for DEShaw Files (derived from index if index not in catalog)
       atomfilter = {}
       for i, idx in enumerate(framelist):
-        print ('FRAMELIST --> ', idx, type(idx))
         if idx is None:
           dcdfile_num = cache_miss[i] // 100
           frame = (cache_miss[i] - 100*dcdfile_num) * 10
@@ -309,7 +302,6 @@ class controlJob(macrothread):
         if file_index not in atomfilter:
           atomfilter[file_index] = []
         atomfilter[file_index].append(frame)
-      print ('atomfilter --> ', atomfilter)
 
       # # Get List of files
       # filelist = {}
@@ -324,23 +316,16 @@ class controlJob(macrothread):
       for idx in atomfilter.keys():
         if idx >= 0:
           filename = self.catalog.lindex('xid:filelist', idx)
-          print ('Loading recent file: ', filename)
           traj = datareduce.load_trajectory(filename)
-          print ('    pre-filtered: ', str(traj))
         else:
           filename = deshaw.getDEShawfilename(-1 * idx)
-          print ('Loading DEShaw file: ', filename)
           traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
           traj.atom_slice(traj.top.select('protein'), inplace=True)
-          print ('    pre-filtered: ', str(traj))
         traj = traj.slice(atomfilter[idx])
-        print ('    post-filtered: ', str(traj))
         if source_traj is None:
           source_traj = traj
         else:
           source_traj.join(traj, check_topology=False)
-        print ('    returned: ', str(source_traj))
-        print(' Pulling from file:  ', idx, source_traj.n_frames)      
 
       return source_traj
 
@@ -386,7 +371,7 @@ class controlJob(macrothread):
       pdf_rms = bootstrap(labeled_pts_rms)
       logging.info("Bootstrap complete. PDF for each variable:")
       for k, p in pdf_rms.items():
-        logging.info('  %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f', k, p[0], p[1], p[2], p[3])
+        logging.info('##CONV  %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f', k, p[0], p[1], p[2], p[3])
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
@@ -437,11 +422,10 @@ class controlJob(macrothread):
 
 
       #  GAMMA FUNCTION
-      gamma = lambda a, b : 1 - a * b
+      gamma = lambda a, b : a * b
       # TODO: Factor in RMS weight
       comb_wgt = {k: gamma(wgt_A[k], wgt_B[k]) for k in hcube_B.keys()}
       total = sum(comb_wgt.values())
-      print ('SUM T==== ', total)
 
       umbrella = OrderedDict()
       for k, v in comb_wgt.items():
@@ -449,7 +433,6 @@ class controlJob(macrothread):
         umbrella[k] = (v/total) 
       keys = umbrella.keys()
 
-      print ('SUM ==== ', sum(list(umbrella.values())))
     
     # EXECUTE SAMPLER
       logging.debug("=======================  <DATA SAMPLER>  =========================")
@@ -458,7 +441,7 @@ class controlJob(macrothread):
       # Select N=20 new candidates
       #  TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
       candidates = np.random.choice(list(umbrella.keys()), 
-           size=3, replace=True, p = list(umbrella.values()))
+           size=10, replace=True, p = list(umbrella.values()))
 
       print ('CANDIDATE HCUBES: ', candidates)
       # 2nd Selection Level: pick an index for each chosen cube (uniform)

@@ -43,14 +43,8 @@ class DType:
   def cmp(cls, this, other):
     return this.__name__ == other.__name__
 
-
-
-
-
-
 def get2DKeys(key, X, Y):
   return ['key_%d_%d' % (x, y) for x in range(X) for y in range(Y)]
-
 
 def infervalue(value):
   try:
@@ -62,7 +56,6 @@ def infervalue(value):
   except ValueError as ex:
     castedval = value
   return castedval
-
 
 def decodevalue(value):
   data = None
@@ -87,7 +80,6 @@ def decodevalue(value):
     data = infervalue(value)
   return data
 
-
 class dataStore(redis.StrictRedis, catalog):
   def __init__(self, name, host='localhost', port=6379, db=0, persist=True, connect=True):
 
@@ -105,8 +97,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     if connect:
       self.conn()
-
-
 
   def conn (self, host='localhost'):
 
@@ -164,9 +154,6 @@ class dataStore(redis.StrictRedis, catalog):
       return os.path.exists(self.lockfile) and self.ping()
     except redis.ConnectionError as ex:
       return False
-
-  def clear(self):
-    self.flushdb()
 
   def redisServerMonitor(self, termEvent):
 
@@ -290,9 +277,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     return t
 
-
-
-  # TODO: Graceful shutdown and hand off -- will need to notify all clients
   def stop(self):
     # self.save()
     self.terminationFlag.set()
@@ -300,13 +284,15 @@ class dataStore(redis.StrictRedis, catalog):
     if os.path.exists(self.lockfile):
       os.remove(self.lockfile)
 
-
   def loadSchema(self):
     logging.debug("Loading system schema")
 
     self.schema = self.hgetall('META_schema')
     for k, v in self.schema.items(): print("  ",k, v)
 
+  #  REDIS-SPecific  Opeations    
+  def clear(self):
+    self.flushdb()
 
   def save(self, data):
     deferredsave = []
@@ -352,9 +338,6 @@ class dataStore(redis.StrictRedis, catalog):
           matrix = kv2DArray(self, key, )
 
     return result
-
-
-
 
   # Retrieve data stored for each key in data & store into data 
   def load(self, keylist):
@@ -427,7 +410,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     return data
 
-
   def append(self, data):
     print('CATALOG APPEND')
     deferredappend = []
@@ -486,7 +468,6 @@ class dataStore(redis.StrictRedis, catalog):
 
     pipe.lrem(key, 0, nullvalue)
     pipe.execute()
-
 
   def storeNPArray(self, arr, key):
     #  Force numpy version 1.0 formatting

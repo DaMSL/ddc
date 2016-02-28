@@ -78,7 +78,7 @@ class macrothread(object):
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
-    self.slurmParams = {'time':'96:0:0', 
+    self.slurmParams = {'time':'1:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
               'partition':DEFAULT.PARTITION, 

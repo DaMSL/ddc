@@ -69,9 +69,9 @@ class simulationJob(macrothread):
     self.addMut(key, params)
 
     # Increment launch count
-    A, B = eval(params['targetBin'])
-    logging.debug("Increment Launch count for %s", params['targetBin'])
-    self.data['launch'][A][B] += 1
+    # A, B = eval(params['targetBin'])
+    # logging.debug("Increment Launch count for %s", params['targetBin'])
+    # self.data['launch'][A][B] += 1
 
     return params
 
