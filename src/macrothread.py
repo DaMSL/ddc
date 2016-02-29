@@ -14,16 +14,11 @@ import abc
 import redis
 import copy
 import re
-# from retrying import retry
-
-from common import * 
-import catalog
-from slurm import slurm
-
 from collections import namedtuple
 
-# For now: use redis catalog
-import redisCatalog
+from common import * 
+from slurm import slurm
+import overlayService
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -67,10 +62,7 @@ class macrothread(object):
 
     # Data Stre
     self.catalog = None
-    self.localCatalogServer = None
-
-    # Catalog support status (bool for now, may need to be state-based)
-    self.catalogPersistanceState = False
+    self.localcatalogserver = None
 
     # Runtime Modules to load   -- Assumes Redis as baseline catalog (for now)
     self.modules = set(['redis'])
@@ -304,10 +296,10 @@ class macrothread(object):
     #  state value or we'll just let this manager become the monitor and
     #  provide the service which means it will need to immediate re-schedule
     #  itself
-    self.catalogPersistanceState = True
-    if self.localcatalogserver and not self.catalogPersistanceState:
-      self.catalog.stop()
-      self.localcatalogserver = None
+    # self.catalogPersistanceState = True
+    # if self.localcatalogserver and not self.catalogPersistanceState:
+    #   self.catalog.stop()
+    #   self.localcatalogserver = None
 
     #  TODO:  Det if manager should load entire input data set, make this abstract, or
     #     push into UDF portion
@@ -357,13 +349,6 @@ class macrothread(object):
     # TODO: Alternate manager rescheduling:  Trigger Based
     #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
 
-
-    # Ensure the catalog is available. If not, start it for persistance and check
-    # if the thread is running before exit
-    self.localcatalogserver = self.catalog.conn()
-    self.catalogPersistanceState = True
-
-
     # Consume upstream input data
     if isinstance(defer, list) and len(defer) > 0:
       self.catalog.removeItems(self.upstream, defer)
@@ -372,12 +357,6 @@ class macrothread(object):
 
     # Other interal thread state is saved back to catalog
     self.save(self._mut)
-
-    # Check for locally run catalog service and block until it completes    
-    if self.localcatalogserver and self.catalogPersistanceState:
-      logger.debug("This Manager is running the catalog. Waiting on local service to terminate...")
-      self.localcatalogserver.join()
-      self.localcatalogserver = None
 
     logger.debug("==========================")
     return 0
@@ -391,11 +370,6 @@ class macrothread(object):
     logger.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
     jobInput = self.fetch(i)
 
-    # In case this worker spun up a service, ensure it is stopped locally
-    if self.localcatalogserver and not self.catalogPersistanceState:
-      self.catalog.stop()
-      self.localcatalogserver = None
-
     logger.debug("Starting WORKER  Execution  ---->>")
     result = self.execute(jobInput)
     logger.debug("<<----  WORKER Execution Complete")
@@ -403,9 +377,6 @@ class macrothread(object):
     # Ensure returned results are a list
     if type(result) != list:
       result = [result]
-
-    #  CHECK CATALOG STATUS for saving data
-    self.localcatalogserver = self.catalog.conn()
 
     #  catalog.notify(i, "complete")
     for r in result:
@@ -433,11 +404,6 @@ class macrothread(object):
 
     logging.debug("Saving all mutable state items")
     self.save(self._mut)
-
-    if self.localcatalogserver and self.catalogPersistanceState:
-      logger.debug("This Worker is running the catalog. Waiting on local service to terminate...")
-      self.localcatalogserver.join()
-      self.localcatalogserver = None
 
     logger.debug("--------------------------")
 
@@ -478,20 +444,22 @@ class macrothread(object):
 
 
     if args.init:
-      # TODO:  Abstract The Catalog/Archive to enable mutliple
-      #   and dynamic Storage type    
-      #   FOR NOW:  Use a Redis Implmentation
-      catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-      archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-
-      initialize(catalog, archive)
       sys.exit(0)
 
     # Both Worker & Manager need catalog to run; load it here and import schema
 
     if not self.catalog:
-      self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-    self.localcatalogserver = self.catalog.conn()
+      # self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+      self.catalog = overlayService.RedisClient(DEFAULT.APPL_LABEL)
+
+    if self.catalog.isconnected and self.catalog.ping():
+      logging.info('Catalog service is connected')
+    else:
+      logging.info("Catalog service is not running. Starting the service now")
+      service = overlayService.RedisService(DEFAULT.APPL_LABEL)
+      self.localcatalogserver = service.start()
+      logging.info("Catalog service started as a background thread.")
+      #  TODO: Quit and self-reschedule???
 
     self.catalog.loadSchema()   # Should this be called from within the catalog module?
 
@@ -499,10 +467,13 @@ class macrothread(object):
     logger.info("Loading Thread State for from catalog:")
     self.load(self._mut, self._immut, self._append)
 
-
-
     if args.workinput:
       logger.debug("Running worker.")
       self.worker(args.workinput)
     else:
       self.manager()
+
+    if self.localcatalogserver:
+      logger.debug("This thread is running the catalog. Waiting on local service to terminate...")
+      self.localcatalogserver.join()
+      self.localcatalogserver = None

@@ -36,6 +36,7 @@ class systemsettings:
 
     if ini_file is not None:
       self._confile = ini_file
+    logging.info("Applying System Settings from inifile:  %s", self._confile)   
 
     with open(self._confile) as f:
       defaults = json.loads(f.read())
@@ -56,6 +57,7 @@ class systemsettings:
     self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
     self.CATALOG_IDLE_THETA    = ini.get('catalog_idle_theta', 300)
     self.CATALOG_STARTUP_DELAY = ini.get('catalog_startup_delay', 10)
+    self.SERVICE_HEARTBEAT_DELAY = ini.get('catalog_heartbeat_delay', 15)
 
     self.catalogConfig  = dict(
         name=ini.get('catalog_name', application),
@@ -71,14 +73,14 @@ class systemsettings:
 
 
     # Filter Options: {‘all’, ‘alpha’, ‘minimal’, ‘heavy’, ‘water’}
-    atom_filter = ini.get('atom_filter', 'heavy')
-    self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
+    # atom_filter = ini.get('atom_filter', 'heavy')
+    # self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
 
     # Analysis Setting
     self.MAX_RESERVOIR_SIZE = 1000
 
     # Controller Settings
-    self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
+    # self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
     self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
     self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
   
@@ -139,8 +141,8 @@ class systemsettings:
     checkpath('JOBDIR', self.JOBDIR)
     checkpath('LOGDIR', self.LOGDIR)
     checkpath('REDIS_CONF', self.REDIS_CONF_TEMPLATE)
-    checkpath('TOPO', self.TOPO)
-    checkpath('PARM', self.PARM)
+    # checkpath('TOPO', self.TOPO)
+    # checkpath('PARM', self.PARM)
 
 
   @classmethod

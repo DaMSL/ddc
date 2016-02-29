@@ -284,13 +284,13 @@ class dataStore(redis.StrictRedis, catalog):
     if os.path.exists(self.lockfile):
       os.remove(self.lockfile)
 
+  #  REDIS-SPecific  Opeations    
   def loadSchema(self):
     logging.debug("Loading system schema")
 
     self.schema = self.hgetall('META_schema')
     for k, v in self.schema.items(): print("  ",k, v)
 
-  #  REDIS-SPecific  Opeations    
   def clear(self):
     self.flushdb()
 
