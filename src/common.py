@@ -4,16 +4,43 @@ import shutil
 import uuid
 import subprocess as proc
 import numpy as np
-import nearpy
-from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections, UniBucket
-from nearpy.distances import EuclideanDistance
-from nearpy.storage import RedisStorage
+# import nearpy
+# from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections, UniBucket
+# from nearpy.distances import EuclideanDistance
+# from nearpy.storage import RedisStorage
 import sys
 import random
 import string
 import json
 import pickle
+import datetime as dt
+from collections import OrderedDict
 
+
+def executecmd(cmd):
+  task = proc.Popen(cmd, shell=True,
+          stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
+  stdout, stderr = task.communicate()
+  return stdout.decode()
+
+
+class microbench:
+  def __init__(self):
+    self._begin = None
+    self.tick = OrderedDict()
+  def start(self):
+    self._begin = dt.datetime.now()
+    self.tick['START'] = self._begin
+  def mark(self, label=None):
+    if label is None:
+      label = 'mark-%02d' % len(self.tick.keys())
+    self.tick[label] = dt.datetime.now()
+  def show(self):
+    print ('\n##    TIME   EVENT')
+    print ('  ------  ---------')
+    for label, ts in self.tick.items():
+      t = (ts-self._begin).seconds
+      print('##    %4d  %s' % (t, label))
 
 def singleton(cls):
     instances = {}
@@ -183,13 +210,6 @@ def wrapKey(prefix, key):
 def unwrapKey(key):
   return key[key.find('_')+1:] if '_' in key else key
 
-
-
-def executecmd(cmd):
-  task = proc.Popen(cmd, shell=True,
-          stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
-  stdout, stderr = task.communicate()
-  return stdout.decode()
 
 
 

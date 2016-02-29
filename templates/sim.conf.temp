@@ -63,7 +63,7 @@ langevinHydrogen    off   ;# don't couple langevin bath to hydrogens
 outputName          $outputname
 
 restartfreq         10000   ;# 1000steps = every 2ps
-dcdfreq             250
+dcdfreq             1
 xstFreq             10000
 outputEnergies      10000
 outputPressure      10000

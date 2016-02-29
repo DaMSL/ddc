@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class simulationJob(macrothread):
+  """Macrothread to run MD simuation. Each worker runs one simulation
+  using the provided input parameters.
+    Input -> job candidate key in the data store 
+    Execute -> creates the config file and calls namd to run the simulation. 
+  """
   def __init__(self, fname, jobnum = None):
     macrothread.__init__(self, fname, 'sim')
 
@@ -51,7 +56,6 @@ class simulationJob(macrothread):
   def configElasPolicy(self):
     self.delay = self.data['simDelay']
 
-
   def fetch(self, i):
     # Load parameters from catalog
 
@@ -69,7 +73,6 @@ class simulationJob(macrothread):
     # self.data['launch'][A][B] += 1
 
     return params
-
 
   def execute(self, job):
 
@@ -89,7 +92,11 @@ class simulationJob(macrothread):
     cmd = 'namd2 %s > %s' % (conFile, logFile)
     logging.debug("Executing Simulation:\n   %s\n", cmd)
 
+    bench = microbench()
+    bench.start()
     stdout = executecmd(cmd)
+    bench.mark('SimExec:%s' % job['name'])
+    bench.show()
 
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     logging.info(stdout)

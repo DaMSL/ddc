@@ -146,7 +146,6 @@ class analysisJob(macrothread):
       immed = self.data['rawoutput'][:split]
       return immed, split
 
-
     def fetch(self, i):
 
       key = wrapKey('jc', i)
@@ -156,14 +155,10 @@ class analysisJob(macrothread):
       self.addMut(key, value=params)
       return key
 
-
     def configElasPolicy(self):
       self.delay = self.data['anlDelay']
 
-
     def execute(self, jobkey):
-
-
       config = self.data[jobkey]
       jobname = unwrapKey(jobkey)
 
@@ -173,26 +168,36 @@ class analysisJob(macrothread):
         logging.error('Source Files not found: %s, %s', config['dcd'], config['pdb'])
         return []
 
-
     # 2. Load raw data from trajectory file
       logging.debug("2. Load DCD")
-      # traj = md.load(config['dcd'], top=config['pdb'])
-      # traj.atom_slice(DEFAULT.ATOM_SELECT_FILTER(traj), inplace=True)
-      
-      # # Set DEShaw Reference point
-      # ref = deshawReference()
-      # traj.superpose(ref, frame=0)
       traj = datareduce.filter_heavy(config['dcd'], config['pdb'])
+      logging.debug('Trajectory Loaded: %s (%s)', config['name'], str(traj))
 
-      logging.debug('Trajectory Loaded: %s - %s', config['name'], str(traj))
+    # 3. Update Catalog with HD points (TODO: cache this)
+      #  TODO: Pipeline all
+      # off-by-1: append list returns size (not inserted index)
+      #  ADD index to catalog
+      # Off by 1 error for index values
+      file_idx = self.catalog.append({'xid:filelist': [config['dcd']]})[0]
+      print ('FILEIDX  ', file_idx)
+      delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
+      global_idx = self.catalog.append({'xid:reference': delta_xid_index})
+      global_xid_index_slice = [x-1 for x in global_idx]
+      print ('GLOBAL IDX SLICE:    ', global_xid_index_slice)
 
-    # 3. Update higher dimensional index
+
+    # 4. Update higher dimensional index
       # Logical Sequence # should be unique seq # derived from manager (provides this
       #  worker's instantiation with a unique ID for indexing)
       mylogical_seqnum = str(self.seqNumFromID())
+      self.catalog.hset('anl_sequence', config['name'], mylogical_seqnum)
 
+      # INSERT NEW points here into cache/archive
+      logging.debug(" Loading new conformations into cache....TODO: NEED CACHE LOC")
+      # for i in range(traj.n_frames):
+      #   cache.insert(global_xid_index_slice[i], traj.xyz[i])
 
-    # 3. Subspace Calcuation
+    # 5a. Subspace Calcuation: RMS
     #------ A:  RMSD  ------------------
       #     S_A = rmslist
 
@@ -215,7 +220,19 @@ class analysisJob(macrothread):
       # Notes: Delta_S == rmslist
       rmslist = np.array([noisefilt(rmsraw, i) for i in range(numConf)])
 
-      # 3. Merge Delta_S into RMS Subspace
+      # 3. Append new points into the data store. 
+      #    r_idx is the returned list of indices for each new RMS point
+      #  TODO: DECIDE on retaining a Reservoir Sample
+      #    for each bin OR to just cache all points (per strata)
+      #  Reservoir Sampliing is Stratified by subspaceHash
+      # logging.debug('Creating reservoir Sample')
+      # reservoirSampling(self.catalog, traj.xyz, rIdx, subspaceHash, 
+      #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
+      #     'rms', lambda key: '%d_%d' % key)
+      r_idx = []
+      for si in rmslist:
+        r_idx.append(self.catalog.rpush('subspace:rms', bytes(si)) - 1)
+      logging.debug("R_Index Created (rms).")
 
       # 4. Apply Heuristics Labeling
       logging.debug('Applying Labeling Heuristic')
@@ -250,42 +267,32 @@ class analysisJob(macrothread):
           logging.debug("Found Label: %s", str((A, B)))
         subspaceHash[(A, B)].append(i)
 
-
-      #  TODO: DECIDE on retaining a Reservoir Sample
-      #    for each bin OR to just cache all points (per strata)
-      #  Reservoir Sampliing is Stratified by subspaceHash
-      # logging.debug('Creating reservoir Sample')
-      # reservoirSampling(self.catalog, traj.xyz, rIdx, subspaceHash, 
-      #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
-      #     'rms', lambda key: '%d_%d' % key)
-
-      r_idx = []
-      for si in rmslist:
-        r_idx.append(self.catalog.rpush('subspace:rms', bytes(si)) - 1)
-      logging.debug("R_Index Created (rms).")
+      # Update Catalog
+      idxcheck = self.catalog.append({'label:rms': rmslabel})
+      print ('RMS Labels (1-to-1): ', idxcheck)
 
 
+    # 5b. Subspace Calcuation: PCA
     #------ B:  PCA  -----------------
-      # Project Pt to PC's for each conform (top 3 PC's)
+      # 1. Project Pt to PC's for each conform (top 3 PC's)
       logging.debug("Using following PCA Vectors: %s", str(self.data['pcaVectors'].shape))
-
       pcalist = datareduce.PCA(traj.xyz, self.data['pcaVectors'], numpc=3)
 
-
-      # Store subspace in catalog
+      # 2. Apend subspace in catalog
       p_idx = []
       for si in pcalist:
         p_idx.append(self.catalog.rpush('subspace:pca', bytes(si)) - 1)
       logging.debug("P_Index Created (pca) for delta_S_pca")
 
 
-      # For Now: Load entire tree into local memory
+      # 3. Performing tiling over subspace
+      #   For Now: Load entire tree into local memory
       hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
       logging.debug('# Loaded keys = %d', len(hcube_mapping.keys()))
 
       # TODO: accessor function is for 1 point (i) and 1 axis (j). 
       #  Optimize by changing to pipeline  retrieval for all points given 
-      #  a list of indices with an axis
+      #  a list of indices with an axis (if nec'y)
       func = lambda i,j: np.fromstring(self.catalog.lindex('subspace:pca', i))[j]
       logging.debug("Reconstructing the tree...")
       hcube_tree = KDTree.reconstruct(hcube_mapping, func)
@@ -295,74 +302,13 @@ class analysisJob(macrothread):
         hcube_tree.insert(pcalist[i], p_idx[i])
 
       # TODO: Ensure hcube_tree is written to catalog
-
-      #  TODO: DECIDE on retaining a Reservoir Sample
+      # TODO: DECIDE on retaining a Reservoir Sample
       # reservoirSampling(self.catalog, traj.xyz, r_idx, subspaceHash, 
       #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
       #     'pca', 
       #     lambda key: '%d_%d' % key)
 
-
-    # -- 4. Update Catalog
-      #  TODO: Pipeline all
-      # off-by-1: append list returns size (not inserted index)
-      #  ADD index to catalog
-      # Off by 1 error for index values
-      file_idx = self.catalog.append({'xid:filelist': [config['dcd']]})[0]
-      print ('FILEIDX  ', file_idx)
-      delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
-      global_idx = self.catalog.append({'xid:reference': delta_xid_index})
-      global_xid_index_slice = [x-1 for x in global_idx]
-
-      idxcheck = self.catalog.append({'label:rms': rmslabel})
-
-      print ('GLOBAL IDX SLICE:    ', global_xid_index_slice)
-      print ('RMS Labels (1-to-1): ', idxcheck)
-
-      # # Store RMS indices and lower dimenstional points
-      # for i in range(traj.n_frames):
-      #   self.catalog.rpush('back_project:rms', str(rmslabel[i]))
-
-
-
-
-      # INSERT NEW points here into cache/archive
-      logging.debug(" Loading new conformations into cache....TODO: NEED CACHE LOC")
-      # for i in range(traj.n_frames):
-      #   cache.insert(global_xid_index_slice[i], traj.xyz[i])
-
-
-
-      # 6. Gather stats for decision history & downstream processing
-      # logging.debug("\nFinal processing for Source Trajectory: %s", config['name'])
-      # logging.debug("  # Observations:      %d", len(conformlist))
-      # logging.debug("  Bins Observed :      %s", str(uniquebins))
-      # logging.debug("  This Delta:\n%s", str(delta_tmat))
-
-      # TODO: Move to abstract data ??????
-      # 7. WRITE Data to Catalog
-      #  TODO: Det. where this should go
-      # self.catalog.set(wrapKey('conform', seqnum), pickle.dumps(conformlist))
-      self.catalog.hset('anl_sequence', config['name'], mylogical_seqnum)
-      # self.catalog.storeNPArray(rmslist, wrapKey('rmslist', str(self.seqNumFromID())))
-      # self.catalog.storeNPArray(delta_tmat, wrapKey('delta', config['name']))
-
-      # 8. Add Sample Frames to the Candidate Pool
-      # for tbin, frame in sample.items():
-      #   A, B = tbin
-      #   key = kv2DArray.key('candidatePool', A, B)
-      #   length = self.catalog.llen(key)
-      #   if length >= DEFAULT.CANDIDATE_POOL_SIZE:
-      #     self.catalog.lpop(key)
-      #   candidate = '%s:%03d' % (jobname,frame)
-
-      #   logging.info("New Job Candidate for (%d, %d): %s   poolsize=%d",
-      #     A, B, candidate, length)
-      #   self.catalog.rpush(key, candidate)
-
-      # sample[(A, B)]
       return [config['name']]
-
 
 
 if __name__ == '__main__':

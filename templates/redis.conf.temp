@@ -1,4 +1,4 @@
-daemonize yes
+daemonize no
 pidfile %(localdir)s/%(name)s.pid
 port %(port)d
 tcp-backlog 511

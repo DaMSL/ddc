@@ -17,6 +17,7 @@ import socket
 import argparse
 import sys
 import subprocess as proc
+import shlex
 import json
 
 from common import *
@@ -116,6 +117,7 @@ class OverlayService(object):
         lock = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.write(lock, bytes('%s,%d' % (self._host, self._port), 'UTF-8'))
         os.close(lock)
+        logging.debug("[Overlay - %s] Lock File not found (I am creating it from %s)", self._name_svc, self._host)
         self._state = 'START'
         self._role  = 'MASTER'
         self.master = self._host
@@ -126,8 +128,9 @@ class OverlayService(object):
         logging.debug("[Overlay - %s] Checking if service is available on %s, %s", self._name_svc, host, port)
 
         if self.ping(host, port):
+          logging.debug("[Overlay - %s] Running on %s", self._name_svc, host)
           if as_replica:
-
+            logging.debug("[Overlay - %s] Starting in replica -- will initiate master takeover control protocol", self._name_svc)
             # If starting up as a replica -- assume immediate replication and control
             #  of service operation. This will initiate this node to start as a 
             #  replica and initate replication/handover protocol. Future improvements
@@ -160,8 +163,11 @@ class OverlayService(object):
       return False
 
     # TODO: Check subproc call here -- should this also be threaded in a python wrap call?
-    err = proc.call(self.launchcmd)
-    if err:
+    args = shlex.split(self.launchcmd)
+    service = proc.Popen(args)
+
+
+    if service.returncode is not None:
       logging.error("[Overlay - %s] ERROR starting local service on %s", self._name_svc, self.host)    
       # Exit or Return ???
       return False
@@ -181,8 +187,9 @@ class OverlayService(object):
       return False
 
     self._state = 'RUNNING'
+    logging.info("[Overlay - %s] My Service started local on %s. Starting the local monitor.", self._name_svc, self._host)    
 
-    logging.info("[Overlay - %s] Service started on %s. Starting the local monitor.", self._name_svc, self._host)    
+    self.service = service
 
     t = Thread(target=self.monitor)
     t.start()
@@ -192,6 +199,10 @@ class OverlayService(object):
 
     logging.info("[Overlay - %s] Monitor Daemon Started.", self._name_svc)
     logging.debug('\n[Monitor - %s]  Initiated', self._name_svc)
+
+    # TODO: Move to settings
+    missed_hb = 0
+    allowed_misshb = 3
 
     # Redundant check to ensure service has started locally (it should be started already)
     alive = False
@@ -211,32 +222,33 @@ class OverlayService(object):
     #   in-loop check every heartbeat (via miss ping, lost pid, or idle timeout)
     while not self.terminationFlag.wait(DEFAULT.SERVICE_HEARTBEAT_DELAY):
       # TODO:  try/catch service connection errors here
-
-      # Heartbeat
-      heartbeat = self.ping()
-      if heartbeat:
-        logger.debug("[Monitor - %s]  Heartbeat on %s. My role = %s", self._name_svc, self._host, self._role)
-      else:
-        logger.warning("[Monitor - %s]  MISSED Heartbeat on %s. Cannot ping the service", self._name_svc, self._host)
-        # TODO:  Force/Hard Shurdown
+      if self.service.poll():
+        logging.warning("[Monitor - %s] Local Service has STOPPED on %s.", self._name_svc, self._host)
         break
 
-      # CHECK PID HERE
+      # Heartbeat
+      if not self.ping():
+        missed_hb += 1
+        logger.warning("[Monitor - %s]  MISSED Heartbeat on %s. Lost communicate with service for %d seconds.", 
+              self._name_svc, self._host, missed_hb * DEFAULT.SERVICE_HEARTBEAT_DELAY)
+        continue
+
+      missed_hb = 0
 
       # CHECK IDLE TIME
       # if self.idle():
       #   logger.info("[Monitor - %s] Service is idle. Initiate graceful shutdown (TODO).", self._name_svc)    
       #   break
 
-      with open(self.lockfile, 'r') as conn:
-        lines = conn.read().split('\n')
+      if self._role == 'MASTER':
+        with open(self.lockfile, 'r') as conn:
+          lines = conn.read().split('\n')
         if len(lines) > 1:
           # TODO: Multiple slave
           print (lines, len(lines))
           data = lines[1].split(',')
           logging.info("[Monitor - %s]  Detected a new slave on %s", self._name_svc, data[1])
-          if self._role == 'MASTER':
-            self.handoverFlag.set()
+          self.handoverFlag.set()
 
       if self.handoverFlag.is_set():
         # This service has been flagged to handover control to a new master or from an old one
@@ -277,11 +289,12 @@ class OverlayService(object):
     """
     logging.debug('MY ROLE = %s', self._role)
     logging.info('[Overlay - %s] Service shutting down on %s.', self._name_svc, self._host)
-    result = proc.call(self.shutdowncmd)
+    args = shlex.split(self.shutdowncmd)
+    result = proc.call(args)
     logging.info("[Overlay - %s] shutdown with return code: %s", self._name_svc, str(result))
 
     if self._role == 'MASTER':
-      logging.info('[Overlay - %s] Last master shutdown. Removeing lockfile', self._name_svc)
+      logging.info('[Overlay - %s] Last master shutdown. Removing lockfile', self._name_svc)
       os.remove(self.lockfile)
 
 
@@ -337,11 +350,11 @@ class RedisService(OverlayService):
       config.write(source % params)
       logging.info("Data Store Config written to  %s", self.config)
 
-    self.launchcmd = ['redis-server', self.config]
-    self.shutdowncmd = ['redis-cli', 'shutdown']
+    self.launchcmd = 'redis-server %s' % self.config
+    self.shutdowncmd = 'redis-cli shutdown'
 
   def idle(self):
-
+    return False
     if self.connection is None:
       self.connection = redis.StrictRedis(
           host='localhost', port=self._port, decode_responses=True)
@@ -364,20 +377,6 @@ class RedisService(OverlayService):
       self.connection = redis.StrictRedis(
           host='localhost', port=self._port, decode_responses=True)
       self.connection.client_setname("monitor")
-
-    # Check to ensure no clients actively using to the DB  -- hold on this
-    # while True:
-    #   all_idle = True
-    #   for client in self.connection.client_list():
-    #     if client['name'] == 'monitor':
-    #       continue
-    #     if int(client['idle']) == 0:
-    #       logger.debug('[Overlay - %s]  A Client is connected. Waiting and rechecking before stopping.', self._name_svc)
-    #       timmer.sleep(2)
-    #       all_idle = False
-    #       continue
-    #   if all_idle:
-    #     break
 
     info = self.connection.info()
     if info['connected_slaves'] == 0:
@@ -408,7 +407,7 @@ class RedisService(OverlayService):
           logger.debug('[Monitor - %s]  Found a client idle for less than 3 second. Waiting to stop serving.', self._name_svc)
           active_clients = True
       if active_clients:
-        time.sleep(5)
+        time.sleep(1)
         continue
       break
 
@@ -776,8 +775,6 @@ class RedisClient(redis.StrictRedis):
     header = json.loads(elm['header'])
     arr = np.fromstring(elm['data'], dtype=header['dtype'])
     return arr.reshape(header['shape'])
-
-
 
 
 

@@ -10,6 +10,8 @@ import datetime as dt
 
 DO_COV_MAT = False
 
+import overlayService
+
 # For changes to schema
 def updateschema(catalog):
   settings = systemsettings()
@@ -30,36 +32,53 @@ def updateschema(catalog):
 
   catalog.hmset("META_schema", dtype_map)
 
-def calcDEShaw_PCA(catalog):
+def calcDEShaw_PCA(catalog, force=False):
   numPC = 3
-  catalog.delete('subspace:pca')
-  logging.debug("Projecting DEshaw PCA Vectors (assuming PC's are pre-calc'd")
-  pcavect = catalog.loadNPArray('pcaVectors')
-  logging.debug("Loaded PCA Vectors: %s, %s", str(pcavect.shape), str(pcavect.dtype))
-  src = np.load(os.path.join(DEFAULT.DATADIR, 'bpti_10p.npy'))
-  logging.debug("Loaded source points: %s, %s", str(src.shape), str(src.dtype))
-  pcalist = np.zeros(shape=(len(src), numPC))
-  start = dt.datetime.now()
-  pdbfile, dcdfile = getHistoricalTrajectory(0)
-  traj = md.load(dcdfile, top=pdbfile, frame=0)
-  filt = traj.top.select_atom_indices(selection='heavy')
-  for i, conform in enumerate(src):
-    if i % 10000 == 0:
-      logging.debug("Projecting: %d", i)
-    heavy = np.array([conform[k] for k in filt])
-    np.copyto(pcalist[i], np.array([np.dot(heavy.reshape(pc.shape),pc) for pc in pcavect[:numPC]]))
-  end = dt.datetime.now()
-  logging.debug("Projection time = %d", (end-start).seconds)
 
-  rIdx = []
-  for si in pcalist:
-    #  TODO: Verify & check bit packing, pipeline this
-    rIdx.append(catalog.rpush('subspace:pca', bytes(si)))
-  logging.debug("R_Index Created (pca)")
+  numpts = catalog.llen('subspace:pca')
+  if numpts == 0 or force:
+    catalog.delete('subspace:pca')
+    logging.debug("Projecting DEshaw PCA Vectors (assuming PC's are pre-calc'd")
+    pcavect = catalog.loadNPArray('pcaVectors')
+    logging.debug("Loaded PCA Vectors: %s, %s", str(pcavect.shape), str(pcavect.dtype))
+    src = np.load(os.path.join(DEFAULT.DATADIR, 'bpti_10p.npy'))
+    logging.debug("Loaded source points: %s, %s", str(src.shape), str(src.dtype))
+    pcalist = np.zeros(shape=(len(src), numPC))
+    start = dt.datetime.now()
+    pdbfile, dcdfile = getHistoricalTrajectory(0)
+    traj = md.load(dcdfile, top=pdbfile, frame=0)
+    filt = traj.top.select_atom_indices(selection='heavy')
+    for i, conform in enumerate(src):
+      if i % 10000 == 0:
+        logging.debug("Projecting: %d", i)
+      heavy = np.array([conform[k] for k in filt])
+      np.copyto(pcalist[i], np.array([np.dot(heavy.reshape(pc.shape),pc) for pc in pcavect[:numPC]]))
+    end = dt.datetime.now()
+    logging.debug("Projection time = %d", (end-start).seconds)
 
-  cacherawfile = os.path.join(DEFAULT.DATADIR, 'cache_raw')
-  np.save(cacherawfile, src)
+    rIdx = []
+    pipe = catalog.pipeline()
+    for si in pcalist:
+      rIdx.append(pipe.rpush('subspace:pca', bytes(si)))
+    pipe.execute()
+    logging.debug("R_Index Created (pca)")
+  else:
+    logging.info('PCA Already created. Retrieving existing lower dim pts')
+    X = catalog.lrange('subspace:pca', 0, -1)
+    pcalist = np.array([np.fromstring(si) for si in X])
 
+  # HCube leaf size of 500 points
+  logging.info('Creating KD Tree')
+  kd = KDTree(500, data=pcalist)
+  logging.info('Encoding KD Tree')
+  encoded = json.dumps(kd.encode())
+  logging.info('Storing in catalog')
+  catalog.delete('hcube:pca')
+  catalog.set('hcube:pca', encoded)
+  logging.info('PCA Complete')
+
+  # cacherawfile = os.path.join(DEFAULT.DATADIR, 'cache_raw')
+  # np.save(cacherawfile, src)
 
 
 def initializecatalog(catalog):
@@ -106,7 +125,7 @@ def initializecatalog(catalog):
 
   for i in range(5):
     for j in range(5):
-      size = min(DEFAULT.CANDIDATE_POOL_SIZE, len(pools[i][j]))
+      size = min(1000, len(pools[i][j]))
       if size == 0:
         logging.info("  No candidates for pool (%d,%d)", i, j)
       else:
@@ -133,12 +152,6 @@ def initializecatalog(catalog):
   logging.info("Loading centroids from %s", centfile)
   centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
-
-  pcaVectorfile = 'cpca_pc3.npy'
-  logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
-  pcaVectors = np.load(pcaVectorfile)
-  catalog.storeNPArray(pcaVectors, 'pcaVectors')
-  calcDEShaw_PCA(catalog)
 
 
   # Initialize observations matrix
@@ -366,7 +379,6 @@ def seedJob(catalog, num=1):
   """
   settings = systemsettings()
   numLabels  = int(catalog.get('numLabels'))
-
   idx = 0
   for i in range(numLabels):
     for j in range(numLabels):
@@ -377,10 +389,12 @@ def seedJob(catalog, num=1):
         catalog.rpush(kv2DArray.key('candidatePool', i, j), start)
 
         logging.debug("   Selected: BPTI %s, frame: %s", src, frame)
-        pdbfile, archiveFile = getHistoricalTrajectory(int(src))
+        pdbfile, dcdfile = getHistoricalTrajectory(int(src))
+        traj = md.load(dcdfile, top=pdbfile, frame=int(frame))
+        traj.atom_slice(traj.top.select('protein'), inplace=True)
 
         # Generate new set of params/coords
-        jcID, params = generateNewJC(archiveFile, pdbfile, deshaw.TOPO, deshaw.PARM, frame=int(frame))
+        jcID, params = generateNewJC(traj)
 
         # Update Additional JC Params and Decision History, as needed
         config = dict(params,
@@ -388,13 +402,10 @@ def seedJob(catalog, num=1):
             runtime = settings.init['runtime'],
             temp    = 310,
             state   = i,
-            weight  = 0.,
             timestep = 0,
             interval = 500,
             gc      = 1,
-            application   = DEFAULT.APPL_LABEL,
-            converge = 0.,
-            targetBin  = str((i,j)))
+            application   = DEFAULT.APPL_LABEL)
         logging.info("New Simulation Job Created: %s", jcID)
         for k, v in config.items():
           logging.debug("   %s:  %s", k, str(v))
@@ -405,46 +416,43 @@ def seedJob(catalog, num=1):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('-c', '--conf', default='default.conf')
-  parser.add_argument('--initarchive', action='store_true')
+  parser.add_argument('name', default='default')
+  parser.add_argument('--seedjob', action='store_true')
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--updateschema', action='store_true')
-  parser.add_argument('--seedjob', action='store_true')
-  parser.add_argument('--seeddata', action='store_true')
-  parser.add_argument('--reindex', nargs='?', const=10, type=int)
-  parser.add_argument('--loadindex', type=int)
-  parser.add_argument('--num', type=int, default=50)
-  parser.add_argument('--winsize', type=int, default=200)
-  parser.add_argument('--slide', type=int, default=100)
+  parser.add_argument('--initpca', action='store_true')
+
+  # parser.add_argument('--initarchive', action='store_true')
+  # parser.add_argument('--seeddata', action='store_true')
+  # parser.add_argument('--reindex', nargs='?', const=10, type=int)
+  # parser.add_argument('--loadindex', type=int)
+  # parser.add_argument('--num', type=int, default=50)
+  # parser.add_argument('--winsize', type=int, default=200)
+  # parser.add_argument('--slide', type=int, default=100)
   args = parser.parse_args()
 
 
-  confile = args.conf
+  confile = args.name + '.json'
+
   settings = systemsettings()
   settings.applyConfig(confile)
-  catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+  # catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
+  catalog = overlayService.RedisClient(args.name)
 
-  calcDEShaw_PCA(catalog)
-  sys.exit(0)
+  # calcDEShaw_PCA(catalog)
+  # sys.exit(0)
 
   if args.initcatalog:
     settings.envSetup()
     initializecatalog(catalog)
 
-  if args.initarchive:
-    archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-    logging.warning("DON'T DO THIS!")
-    # init_archive(archive)
-    sys.exit(0)
+  if args.initpca:
+    pcaVectorfile = 'cpca_pc3.npy'
+    logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
+    pcaVectors = np.load(pcaVectorfile)
+    catalog.storeNPArray(pcaVectors, 'pcaVectors')
+    calcDEShaw_PCA(catalog)
 
-  if args.loadindex is not None:
-    # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-    index_DEShaw(catalog, archive, args.loadindex, args.num, args.winsize, args.slide)
-    sys.exit(0)
-
-  if args.reindex:
-    # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
-    reindex(archive, args.reindex)
 
   if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
@@ -453,12 +461,25 @@ if __name__ == '__main__':
   if args.seedjob:
     seedJob(catalog)
 
-  if args.seeddata:
-    seedData(catalog)
 
-  logging.debug("Stopping the catalog.")
-  catalog.stop()
-  if os.path.exists('catalog.lock'):
-    os.remove('catalog.lock')
 
+
+  # if args.loadindex is not None:
+  #   # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+  #   index_DEShaw(catalog, archive, args.loadindex, args.num, args.winsize, args.slide)
+  #   sys.exit(0)
+
+  # if args.reindex:
+  #   # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+  #   reindex(archive, args.reindex)
+
+
+  # if args.seeddata:
+  #   seedData(catalog)
+
+  # if args.initarchive:
+  #   archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
+  #   logging.warning("DON'T DO THIS!")
+  #   # init_archive(archive)
+  #   sys.exit(0)
 

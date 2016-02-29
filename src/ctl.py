@@ -109,29 +109,27 @@ def makeLogisticFunc (maxval, steep, midpt):
 
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 
-
 def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=None):
-
+    """Creates input parameters for a new simulation. A source trajectory
+    with starting coordinates is needed along with a topology/force field files
+    (defaults are provided from DEShaw). If no job candidate ID is given
+    a pseudo-random one is assigned as UID
+    """
     logging.debug("Generating new simulation coordinates from:  %s", str(trajectory))
+    # Get a new uid (if needed)
+    jcuid = getUID() if jcid is None else jcid
 
-    # Get a new uid
-    if jcid is None:
-      jcuid = getUID() 
-    else:
-      jcuid = jcid
-
-    #  TODO:  Should coords be pre-fetched and pulled from pre-fetch location?
+    # Prep file structure
     jobdir = os.path.join(DEFAULT.JOBDIR,  jcuid)
     coordFile  = os.path.join(jobdir, '%s_coord.pdb' % jcuid)
     newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
     newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
-
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
-
     # Save this as a temp file to set up simulation input file
     trajectory.save_pdb(coordFile)
 
+    # Create new params
     newsimJob = dict(workdir=jobdir,
         coord   = coordFile,
         pdb     = newPdbFile,
@@ -139,13 +137,12 @@ def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=N
         topo    = topofile,
         parm    = parmfile)
 
+    # run PSFGen to create the NAMD config file
     logging.info("  Running PSFGen to set up simulation pdf/pdb files.")
     stdout = executecmd(psfgen(newsimJob))
     logging.debug("  PSFGen COMPLETE!!\n")
-
     os.remove(coordFile)
     del newsimJob['coord']
-
     return jcuid, newsimJob
 
 def bootstrap (source, N=1000, interval=.95):
@@ -189,6 +186,8 @@ def bootstrap (source, N=1000, interval=.95):
   return probility_est
 
 def q_select (T, value):
+  """SELECT operator
+  """
   idx_list = []
   for i, elm in enumerate(T):
     if elm == value:
@@ -230,29 +229,33 @@ class controlJob(macrothread):
 
     def split(self):
 
-      # catalog = self.getCatalog()
-
-      # TODO:  Provide better organization/sorting of the input queue based on weights
-      # For now: just take the top N
-      # split = self.data['ctlSplitParam']
-      # immed = self.data['LDIndexList'][:split]
-
       immed = [] if len(self.data['completesim']) == 0 else ['completesim']
-      return immed,None
+      return [100], None
 
     # DEFAULT VAL for i for for debugging
     def fetch(self, i=100):
-      print ("FETCHING!!!!!")
-      lastxid = self.catalog.llen('xid:reference')
-      print (' VALS --->   ', self.data['ctlIndexHead'], i, int(lastxid))
-      # end = min(self.data['ctlIndexHead'] + int(i), int(lastxid))
-      return -1
+      lastxid = int(self.catalog.llen('xid:reference'))
+      head = self.data['ctlIndexHead']
+      if head is None:
+        head = 0
+      else:
+        head = int(head)
+      mylimit = 100 #int(i)
+      logging.debug (' Current index head: %d     Total Points:  %d  \
+     Unprocessed:  %d.   My limit:  %d', lastxid, head, (lastxid-head), mylimit)
+
+      # return min(head + mylimit, lastxid)
+      return -1   #FOR now, do all pts
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
 
 
     def backProjection(self, index_list):
+      """Perform back projection function for a list of indices. Return a list 
+      of high dimensional points (one per index). Check cache for each point and
+      condolidate file I/O for all cache misses.
+      """
       source_points = []
       cache_miss = []
       
@@ -329,8 +332,13 @@ class controlJob(macrothread):
 
       return source_traj
 
-    # def execute(self, ld_index):
     def execute(self, thru_index):
+      """Executing rhe Controler Algorithm. Load pre-analyzed lower dimensional
+      subspaces, process user query and identify the sampling space with 
+      corresponding distribution function for each user query. Calculate 
+      convergence rates, run sampler, and then execute fairness policy to
+      distribute resources among users' sampled values.
+      """
       logging.debug('CTL MT')
 
     # PRE-PROCESSING ---------------------------------------------------------------------------------
@@ -340,7 +348,7 @@ class controlJob(macrothread):
       logging.info('TIMESTEP: %d', self.data['timestep'])
 
     # LOAD all new subspaces (?) and values
-      # Load new RMS Labels
+      # Load new RMS Labels -- load all for now
       labeled_pts_rms = self.catalog.lrange('label:rms', 0, -1)
 
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
@@ -460,7 +468,7 @@ class controlJob(macrothread):
         # TODO:  Update/check adaptive runtime, starting state
         jcConfig = dict(params,
               name    = jcID,
-              runtime = 50000,
+              runtime = 10000,
               interval = 500,
               temp    = 310,
               timestep = self.data['timestep'],
