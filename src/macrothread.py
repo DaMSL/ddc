@@ -15,6 +15,7 @@ import redis
 import copy
 import re
 from collections import namedtuple
+import copy
 
 from common import * 
 from slurm import slurm
@@ -163,6 +164,15 @@ class macrothread(object):
     """
     return item
 
+  def preparejob(self, job):
+    """
+    Called just prior to submitting a job on the Queue -- allows inherited macrothread
+    to affect how a job is scheduled (e.g. dynamically setting Slurm params) in the 
+    Manager
+    """
+    pass
+
+
   def configElasPolicy(self):
     """
     Set rescheduling / delay policies for the manager thread 
@@ -272,10 +282,6 @@ class macrothread(object):
       logging.debug("Loading upstream data: %s", self.upstream)
       self.load(self.upstream)
 
-    for k,v in self.data.items():
-      print("  mngrstate:  ", k, v, type(v))
-
-
     # Check for termination  
     if self.term():
       logger.info('TERMINATION condition for ' + self.name)
@@ -327,14 +333,23 @@ class macrothread(object):
     # Dispatch Workers
     else:
       workernum = 1
+
+      # Set baseline slurm params and modules (to allow for dynamic disatching)
+      baseline_param = copy.deepcopy(self.slurmParams)
+      baseline_mods  = copy.deepcopy(self.modules)
       for i in immed:
         logger.debug("%s: scheduling worker, input=%s", self.name, i)
+        self.preparejob(i)
         self.slurmParams['job-name'] = self.toWID(myid, workernum)
         slurm.sbatch(taskid=self.slurmParams['job-name'],
             options = self.slurmParams,
             modules = self.modules,
             cmd = "python3 %s -c %s -w %s" % (self.fname, self.config, str(i)))
         workernum += 1
+        # Reset params and mods
+        self.slurmParams = copy.deepcopy(baseline_param)
+        self.modules     = copy.deepcopy(baseline_mods)
+
 
     # Elas Policy to control manager rescheduling
     delay = self.delay  

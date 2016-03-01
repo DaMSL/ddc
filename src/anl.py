@@ -159,6 +159,7 @@ class analysisJob(macrothread):
       self.delay = self.data['anlDelay']
 
     def execute(self, jobkey):
+      bench = microbench()
       config = self.data[jobkey]
       jobname = unwrapKey(jobkey)
 
@@ -170,7 +171,9 @@ class analysisJob(macrothread):
 
     # 2. Load raw data from trajectory file
       logging.debug("2. Load DCD")
+      bench.start()
       traj = datareduce.filter_heavy(config['dcd'], config['pdb'])
+      bench.mark('File_Load')
       logging.debug('Trajectory Loaded: %s (%s)', config['name'], str(traj))
 
     # 3. Update Catalog with HD points (TODO: cache this)
@@ -179,11 +182,10 @@ class analysisJob(macrothread):
       #  ADD index to catalog
       # Off by 1 error for index values
       file_idx = self.catalog.append({'xid:filelist': [config['dcd']]})[0]
-      print ('FILEIDX  ', file_idx)
       delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
       global_idx = self.catalog.append({'xid:reference': delta_xid_index})
       global_xid_index_slice = [x-1 for x in global_idx]
-      print ('GLOBAL IDX SLICE:    ', global_xid_index_slice)
+      bench.mark('Indx_Update')
 
 
     # 4. Update higher dimensional index
@@ -230,8 +232,13 @@ class analysisJob(macrothread):
       #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
       #     'rms', lambda key: '%d_%d' % key)
       r_idx = []
+      pipe = self.catalog.pipeline()
       for si in rmslist:
-        r_idx.append(self.catalog.rpush('subspace:rms', bytes(si)) - 1)
+        pipe.rpush('subspace:rms', bytes(si))
+      idxlist = pipe.execute()
+      for i in idxlist:
+        r_idx.append(int(i) - 1)
+
       logging.debug("R_Index Created (rms).")
 
       # 4. Apply Heuristics Labeling
@@ -269,7 +276,7 @@ class analysisJob(macrothread):
 
       # Update Catalog
       idxcheck = self.catalog.append({'label:rms': rmslabel})
-      print ('RMS Labels (1-to-1): ', idxcheck)
+      bench.mark('RMS')
 
 
     # 5b. Subspace Calcuation: PCA
@@ -280,26 +287,37 @@ class analysisJob(macrothread):
 
       # 2. Apend subspace in catalog
       p_idx = []
+      pipe = self.catalog.pipeline()
       for si in pcalist:
-        p_idx.append(self.catalog.rpush('subspace:pca', bytes(si)) - 1)
+        pipe.rpush('subspace:pca', bytes(si))
+      idxlist = pipe.execute()
+      for i in idxlist:
+        p_idx.append(int(i) - 1)
       logging.debug("P_Index Created (pca) for delta_S_pca")
-
 
       # 3. Performing tiling over subspace
       #   For Now: Load entire tree into local memory
       hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
       logging.debug('# Loaded keys = %d', len(hcube_mapping.keys()))
 
+      # 4. Pull entire Subspace (for now)  
+      #   Note: this is more efficient than inserting new points
+      #   due to underlying Redis Insertions / Index look up
+      #   If this become a bottleneck, may need to write custom redis client
+      #   connection to persist connection and keep socket open (on both ends)
+      #   Or handle some of this I/O server-side via Lua scipt
+      packed_subspace = self.catalog.lrange('subspace:pca', 0, -1)
+      subspace_pca = np.array([np.fromstring(x) for x in packed_subspace])
+
       # TODO: accessor function is for 1 point (i) and 1 axis (j). 
       #  Optimize by changing to pipeline  retrieval for all points given 
       #  a list of indices with an axis (if nec'y)
-      func = lambda i,j: np.fromstring(self.catalog.lindex('subspace:pca', i))[j]
       logging.debug("Reconstructing the tree...")
-      hcube_tree = KDTree.reconstruct(hcube_mapping, func)
+      hcube_tree = KDTree.reconstruct(hcube_mapping, subspace_pca)
 
-      logging.debug("Inserting Delta_S_pca into KDtree (hcubes)")
-      for i in range(len(pcalist)):
-        hcube_tree.insert(pcalist[i], p_idx[i])
+      # logging.debug("Inserting Delta_S_pca into KDtree (hcubes)")
+      # for i in range(len(pcalist)):
+      #   hcube_tree.insert(pcalist[i], p_idx[i])
 
       # TODO: Ensure hcube_tree is written to catalog
       # TODO: DECIDE on retaining a Reservoir Sample
@@ -307,7 +325,9 @@ class analysisJob(macrothread):
       #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
       #     'pca', 
       #     lambda key: '%d_%d' % key)
+      bench.mark('PCA')
 
+      bench.show()
       return [config['name']]
 
 

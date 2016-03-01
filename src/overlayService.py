@@ -529,7 +529,9 @@ class RedisClient(redis.StrictRedis):
         return
       host = config[0]
       port = config[1]
-      redis.StrictRedis.__init__(self, host=host, port=port, decode_responses=True)
+      self.pool = redis.ConnectionPool(host=host, port=port, db=0, decode_responses=True)
+      redis.StrictRedis.__init__(self, connection_pool=self.pool, decode_responses=True)
+      self.client_setname(getUID())
       self.host = host
       self.port = port
       logging.info('[Redis Client] Connected as client to master at %s on port %s', host, port)
@@ -549,7 +551,9 @@ class RedisClient(redis.StrictRedis):
       connection = pool.get_connection(command_name, **options)
       try:
           connection.send_command(*args)
-          return self.parse_response(connection, command_name, **options)
+          cursor = self.parse_response(connection, command_name, **options)
+          connection.disconnect()
+          return cursor
       except (ConnectionResetError, ConnectionAbortedError, redis.ReadOnlyError) as e:
         logging.warning('[Redis Client] Current Master is busy. It may be trying to shutdown. Wait and try again')
         time.sleep(3)
@@ -713,18 +717,14 @@ class RedisClient(redis.StrictRedis):
         deferredappend.append(key)
       elif self.schema[key] == 'int':
         pipe.incr(key, value)
-        logging.warning("  Increment `%s` as int by %d", key, value)
       elif self.schema[key] == 'float':
         pipe.incrbyfloat(key, value)
-        logging.warning("  Increment `%s` as float by %d", key, value)
       elif self.schema[key] == 'list':
         for val in value:
           pipe.rpush(key, val)
-        logging.warning("  Pushing onto list `%s`:  %s", key, str(value))
       elif self.schema[key] == 'dict':
         for k, v in value:
           pipe.hset(key, k, v)
-        logging.warning("  Updaing hash `%s`:  %s", key, str(value.keys()))
       elif self.schema[key] in ['matrix', 'ndarray']:
         deferredappend.append(key)
       else:

@@ -22,7 +22,7 @@ __status__ = "Development"
 
 class KDTree(object):
   """
-    The KD-Tree contains the leafsize, the backing data accessor function
+    The KD-Tree contains the leafsize, the backing data 
       and a root Node. All nodes in the tree can be one of the following:
       Inner --> will contain the mid or "split" value: the median of all 
         points along its specified axis when the split routine was called. Inner
@@ -30,9 +30,9 @@ class KDTree(object):
       Leaf --> contains list of indices and its hi/lo extents. A leaf is a hypercube
       Note that the root node is a special case
 
-    KDTrees are created using a numpy NDArray -- the data field holds an accessor
-      function. Thus, for reconstruction, the accessor will normally hold a 
-      function call to a data store holding the actual points
+    KDTrees are created using a numpy NDArray -- the data field holds existing, 
+      read-optimized data (NDArray which can be memmapped). For appended data
+      a secondard, write-optimized deque is used
 
     This implementation is designed for encoding and (offline) storage. The encoding
       is a binary key whose length represents a node's deth and value (from R->L)
@@ -190,23 +190,34 @@ class KDTree(object):
 
   def __init__(self, leafsize, data=None):
     """
-    Created new KD-Tree. If data (in ND-Array form) is provided, builds
-    the KD-Tree with the data
+    Created new KD-Tree. 
+    If data (in ND-Array form) is provided, builds the KD-Tree with the data
+    Otherwise, creates an empty one with no data
     """
 
     self.leafsize = leafsize
+    self.data = None
+    self.data_new = deque()
 
     # New Tree
     if data is not None:
       if not isinstance(data, np.ndarray):
         logging.error("Can only instantiate with an NDArray.")
         sys.exit(0)
-      print('DATA Dimensions =', data.shape)
       self.dim = data.shape[1]
       self.root = KDTree.Node(0)
       self.root.configure(np.min(data.T[-1]), np.max(data.T[-1]), deque(np.arange(len(data))))
-      print('ROOT NODE:  ', self.root)
       self.build(data)
+
+  def deref_pt(self, index):
+    if index < len(self.data):
+      return self.data[index] 
+    else:
+      return self.data_new[len(self.data)-index]
+
+
+  def size(self):
+    return len(self.data) + len(self.data_new)
 
 
   def split(self, node, debug='N'):
@@ -214,15 +225,14 @@ class KDTree(object):
     Recursively splits the given node until both child nodes are leaves
     """
     axis = node.depth % self.dim
-    vals = [self.data(i,axis) for i in node.elm]
-
+    vals = [self.deref_pt(i)[axis] for i in node.elm]
     mid = np.median(vals)
     node.mid = mid
     left = deque()
     right = deque()
     while len(node.elm) > 0:
       pt = int(node.elm.popleft())
-      if self.data(pt,axis) >= mid:
+      if self.deref_pt(pt)[axis] >= mid:
         right.append(pt)
       else:
         left.append(pt)
@@ -231,9 +241,6 @@ class KDTree(object):
     node.right = KDTree.Node(node.depth+1)
     node.left.configure(np.min(vals), mid, left)
     node.right.configure(mid, np.max(vals), right)
-    # print(node.depth, debug, node.left.size(), node.right.size(), self.leafsize, end=',   ')
-    # if node.depth==10:
-    #   sys.exit()
     if len(left)> self.leafsize:
       # print(" SPLIT LEFT")
       self.split(node.left, debug='L')
@@ -246,7 +253,7 @@ class KDTree(object):
     """
     Constructs the KD with given data set (of K-dimensional points)
     """
-    self.data = lambda i, j: dataArray[i][j]
+    self.data = dataArray
     self.split(self.root)
 
   def retrieve(self, key):
@@ -268,7 +275,7 @@ class KDTree(object):
         return node.insert(ptIdx)
     else:
       axis = node.depth % self.dim
-      if self.data(ptIdx,axis) < node.mid:
+      if self.deref_pt(ptIdx)[axis] < node.mid:
         return '0' + self.insertPt(ptIdx, node.left)
       else:
         return '1' + self.insertPt(ptIdx, node.right)
@@ -282,9 +289,10 @@ class KDTree(object):
     Returns the key to the node in which the point was inserted
     """
     # Insert new point (grow as needed)
+
     if index is None:
-      index = len(self.data)
-      self.data.append(point)
+      index = len(self.data) + len(self.data_new)
+      self.data_new.append(point) 
     return self.insertPt(index, self.root)
 
 
@@ -314,30 +322,41 @@ class KDTree(object):
     return encoding
 
   @classmethod
-  def reconstruct(cls, mapping, dataAccessorFunc):
+  def reconstruct(cls, mapping, dataArray):
     """
     Create a new KD Tree Object an reconstruct it from the given encoded mapping.
     """
     tree = KDTree(mapping['leafsize'])
     tree.dim = mapping['dim']
-    tree.data = dataAccessorFunc
+    tree.data = dataArray
     tree.root       = KDTree.Node(0)
     tree.root.reconstruct('', mapping['_'], mapping)
+
+    # Consistency Check:
+    globalidxlist = tree.retrieve('')
+    if len(dataArray) < len(globalidxlist):
+      print("WARNING. I am missing data. (# indices > # points)")
+    elif len(dataArray) > len(globalidxlist):
+      # Insert missing keys (assume they are at the end)
+      for idx in range(len(globalidxlist), len(dataArray)):
+        tree.insert(dataArray[idx], idx)
     return tree
 
 
 def testKDTree(X, r):
-  print("TEST KD Tree")
+  print("\n1.  TEST:   KD Tree Build")
   # X = np.random.rand(1000, 3)
   # X = np.load('bpti10.npy', mmap_mode='r')
   kd = KDTree(100, data=X)
-  print("Build Complete.")
-  print("TEST decoding (retrieve a cell)....")
+  print("Tree size = ", kd.size())
+  print("Build Complete.\n")
+  print("2.  TEST:   decoding (retrieve a cell)....")
   for k in ['0', '1', '00']:
     print("Retrieving key: %s" % k)
     hcube = kd.retrieve(k)
     print('  HCube size = %d:   ' % len(hcube), str(list(hcube)[:5]))
-  print("TEST encoding (json up)....")
+  print("Decoding Complete.\n")
+  print("3.  TEST:   encoding (json up)....")
   encoded = kd.encode()
   print("Encoded tree into %d keys" % len(encoded.keys()))
   print('  _Root  Node: %s' % encoded['_'])
@@ -351,15 +370,19 @@ def testKDTree(X, r):
       break
   serialized = json.dumps(encoded)
   print (' # of keys = ', len(encoded.keys()))
-  r.delete('hcube:pca')
-  r.set('hcube:pca', serialized)
+  print("Encoding Complete.\n")
+  r.delete('hcube:test')
+  r.set('hcube:test', serialized)
 
-def testRebuild(r):
-  deserialized = json.loads(r.get('hcube:pca'))
+def testRebuild(X, r):
+  print("4.  TEST:   Rebuild")
+  deserialized = json.loads(r.get('hcube:test'))
   print (' # of keys = ', len(deserialized.keys()))
-  func = lambda i,j: np.fromstring(r.lindex('subspace:pca', i))[j]
+  # func = lambda i,j: np.fromstring(r.lindex('subspace:pca', i))[j]
+  data = X
   print("Reconstructing the tree...")
-  tree = KDTree.reconstruct(deserialized, func)
+  tree = KDTree.reconstruct(deserialized, data)
+  print("Tree size = ", tree.size())
   print (' Recheck source # of keys = ', len(deserialized.keys()))
   print("Retrieving key: %s" % '00')
   hcube = tree.retrieve('00')
@@ -373,11 +396,35 @@ def testRebuild(r):
   print('  _RIGHT Node: %s' % encoded['1'])
   print('eKEY 101 is:  ', encoded['101'])
   print('sKEY 101 is:  ', deserialized['101'])
-  print("Reconstruction Complete.")
   for k in ['0', '1', '00', '00100011100101', '10100011100101']:
     print("Retrieving key: %s" % k)
     hcube = tree.retrieve(k)
     print('  HCube size = %d:   ' % len(hcube), str(list(hcube)[:5]))
+  print("Reconstruction Complete.\n")
+
+  print("5.  TEST:  Size Check")
+  globalidxlist = tree.retrieve('')
+  print('Datasize    = ', len(tree.data))
+  print('NewDatasize = ', len(tree.data_new))
+  print('IdxListsize = ', len(globalidxlist))
+  print('Max Index   = ', max(globalidxlist))
+  print('New Points?  ', (len(tree.data) > len(globalidxlist)))
+
+
+  print("5.  TEST:  Insertion")
+  print("Tree size = ", tree.size())
+  x = np.random.random(3)
+  print("Inserting ",x)
+  key = tree.insert(x)
+  print("Tree size = ", tree.size())
+  xbin = tree.retrieve(key)
+  print("Returned key = ", key, '    Bin contents: ', str(xbin))
+  print('100 Insertions:')
+  for i in range(100):
+    tree.insert(np.random.random(3))
+  print("Tree size = ", tree.size())
+  print("Insertion Complete.\n")
+
 
 
 if __name__ == "__main__":
@@ -386,5 +433,5 @@ if __name__ == "__main__":
   raw = r.lrange('subspace:pca', 0, -1)
   X = np.array([np.fromstring(x) for x in raw])
   testKDTree(X, r)
-  print("Testing the Rebuild")
-  testRebuild(r)
+  d = np.random.random(size=(123,3))
+  testRebuild(np.vstack((X, d)), r)
