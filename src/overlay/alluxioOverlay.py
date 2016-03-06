@@ -29,39 +29,21 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 class AlluxioService(OverlayService):
   """
   """
 
-  def __init__(self, name, port=6379):
+  DEFAULT_PORT = 19999
+
+  def __init__(self, name, role):
     """
     """
-    OverlayService.__init__(self, name, port)
+
+    OverlayService.__init__(self, name, AlluxioService.DEFAULT_PORT)
     self.connection = None
-
-    config = systemsettings()
-    if not config.configured():
-      # For now assume JSON file
-      config.applyConfig(name + '.json')
-
-    # Default Settings
-    # TODO: Set envars via os
-    home = os.getenv('HOME')
-    alluxio_home = os.path.join(home, 'pkg', 'alluxio-1.0.0')
-    self.workdir   = config.WORKDIR  #ini.get('workdir', '.')
-    self.ramdisk = tempfile.mkdtemp()
-    os.environ['ALLUXIO_HOME'] = alluxio_home
-    os.environ['ALLUXIO_MASTER_ADDRESS'] = 'localhost'
-    os.environ['DEFAULT_LIBEXEC_DIR'] = os.path.join(alluxio_home, 'libexec')
-    os.environ['ALLUXIO_RAM_FOLDER'] = self.ramdisk
-    self.MONITOR_WAIT_DELAY    = config.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
-    self.CATALOG_IDLE_THETA    = config.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
-    self.CATALOG_STARTUP_DELAY = config.CATALOG_STARTUP_DELAY #ini.get('catalog_startup_delay', 10)
-
-    logging.debug("Checking ENV:")
-    logging.debug('  ALLUXIO_HOME=%s', executecmd('echo $ALLUXIO_HOME'))
+    self._role = role
 
     # # Check if a connection exists to do an immediate shutdown request
     # if os.path.exists(self.lockfile):
@@ -75,24 +57,37 @@ class AlluxioService(OverlayService):
     return True
 
   def prepare_service(self):
-    # Prepare 
 
-    # System Environment Settings
-    #  READ & SET for EACH 
-    # with open(self.redis_conf_template, 'r') as template:
-    #   source = template.read()
-    #   logging.info("Redis Source Template loaded")
+    config = systemsettings()
+    if not config.configured():
+      # For now assume JSON file
+      config.applyConfig(self._name_app + '.json')
 
-    # params = dict(localdir=DEFAULT.WORKDIR, port=self._port, name=self._name)
-    # params = dict(localdir=self.workdir, port=self._port, name=self._name_app)
+    # Default Settings
+    home = os.getenv('HOME')
+    alluxio_home = os.path.join(home, 'pkg', 'alluxio-1.0.0')
+    self.workdir   = config.WORKDIR  #ini.get('workdir', '.')
+    self.ramdisk = tempfile.mkdtemp()
+    os.environ['ALLUXIO_HOME'] = alluxio_home
+    if self._role == 'SLAVE':
+      os.environ['ALLUXIO_MASTER_ADDRESS'] = self.master
+      self.launchcmd = 'alluxio-start.sh worker Mount'
+    else:
+      os.environ['ALLUXIO_MASTER_ADDRESS'] = 'localhost'
+      self.launchcmd = 'alluxio-start.sh local'
 
-    # # TODO: This should be local
-    # self.config = self._name_app + "_db.conf"
-    # with open(self.config, 'w') as config:
-    #   config.write(source % params)
-    #   logging.info("Data Store Config written to  %s", self.config)
+    os.environ['DEFAULT_LIBEXEC_DIR'] = os.path.join(alluxio_home, 'libexec')
+    os.environ['ALLUXIO_RAM_FOLDER'] = self.ramdisk
+    self.MONITOR_WAIT_DELAY    = config.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
+    self.CATALOG_IDLE_THETA    = config.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
+    self.CATALOG_STARTUP_DELAY = config.CATALOG_STARTUP_DELAY #ini.get('catalog_startup_delay', 10)
 
-    self.launchcmd = 'alluxio-start.sh local'
+    logging.debug("Checking ENV:")
+    logging.debug('  ALLUXIO_HOME=%s', executecmd('echo $ALLUXIO_HOME'))
+    logging.debug('  ALLUXIO_MASTER_ADDRESS=%s', executecmd('echo $ALLUXIO_MASTER_ADDRESS'))
+    logging.debug('  ALLUXIO_RAM_FOLDER=%s', executecmd('echo $ALLUXIO_RAM_FOLDER'))
+
+
     self.shutdowncmd = 'alluxio-stop.sh all'
 
   def idle(self):
@@ -115,5 +110,21 @@ class AlluxioService(OverlayService):
     logging.info("[%s] Removing the ramdisk", self._name_svc)
     shutil.rmtree(self.ramdisk)
 
+  def launch_slave(self):
+    """This is used for the Alluxio Master to launch subsequent worker nodes
+    in a rolling succession
+    """
+    taskid = 'ol-test-sl'
+    params = {'time':'1:0:0', 
+              'nodes':1, 
+              'cpus-per-task':1, 
+              'partition':'debug', 
+              'job-name':taskid,
+              'workdir' : os.getcwd()}
+    environ = {'ALLUXIO_HOME': os.getenv['ALLUXIO_HOME'],
+               'ALLUXIO_MASTER_ADDRESS': self._host,
+               'DEFAULT_LIBEXEC_DIR':  os.getenv['DEFAULT_LIBEXEC_DIR'],
+               'ALLUXIO_RAM_FOLDER': '/tmp/alluxio'}
+    cmd = '\nmkdir -p /tmp/alluxio'
 
 

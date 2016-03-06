@@ -28,7 +28,7 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 np.set_printoptions(precision=5, suppress=True)
 

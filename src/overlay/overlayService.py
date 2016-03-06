@@ -23,7 +23,7 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 # Function to derive signal name from the signum
 #  (This becomes obsolete in Python 3.5 when they are enums)
@@ -44,7 +44,6 @@ class OverlayService(object):
   # SERVICE_HEARTBEAT_DELAY = 5
   # SERVICE_STARTUP_DELAY = 5
 
-
   def __init__(self, name, port, **kwargs):
     self._host = socket.gethostname()
     self._port = port
@@ -52,17 +51,19 @@ class OverlayService(object):
     self._name_app = name
     self.lockfile = '%s_%s.lock' % (self._name_app, self._name_svc)
 
+    self.numslaves = kwargs.get('numslaves', 0)
     self.launchcmd = None
     self.shutdowncmd = None
 
     self._pid = None
 
     self._state = 'INIT'
-    self._role  = 'NONE'
+    self._role  = kwargs.get('role', 'NONE')
 
     # TODO: All services' nodes assume to run on same port (different hosts)
     #  This the master hold only the host name
-    self.master = None
+    self.master = kwargs.get('master', None)
+    self.slavelist = {}
 
     self.terminationFlag = Event()
     self.handoverFlag = Event()
@@ -109,13 +110,6 @@ class OverlayService(object):
     """
     pass
 
-  def getconnection(self):
-    with open(self.lockfile, 'r') as conn:
-      conn_string = conn.read().split(',')
-      host = conn_string[0]
-      port = conn_string[1]
-    return host, port
-
   def idle(self):
     """To define an idle detection method and gracefully shutdown if the service
     is idle. If undefined, idle returns False and the system will always assume
@@ -123,11 +117,42 @@ class OverlayService(object):
     """
     return False
 
+  def launch_slave(self):
+    """For multi-node services, the master node is responsible for starting/stopping
+    all slave nodes. Launch slave is the method called when the master monitor
+    needs to start up a new slave.
+    """
+
+  def stop_slave(self):
+    """For multi-node services, the master node will invoke this to stop a 
+    slave. 
+    TODO: policy development for rotating slave nodes and ensuring they 
+    are either not all stopping concurrently or do exactly that.
+    """
+
   def start(self, as_replica=True):
     """
     """
+    if self._role == 'SLAVE':
+      logging.warning('[%s] Starting as a slave. ')
+      slave_wait_ttl = self.SERVICE_STARTUP_DELAY * 4
+      while slave_wait_ttl > 0:
+        host, port = self.getconnection()
+        if host is not None and self.ping(host):
+          break
+        logging.warning('[%s] My Master is Not alive. Host is %s.  Waiting...', self._name_svc, str(host))
+        sleep(self.SERVICE_STARTUP_DELAY)
+        slave_wait_ttl -= self.SERVICE_STARTUP_DELAY
+        if slave_wait_ttl < 0: 
+          logging.warning('[%s] Could not find a master. Slave is shutting down on %s.  Waiting...', self._name_svc, self._host)
+          return False
+      # Set the master 
+      self.master = host
+      #TODO: 
+      # self.masterport = port
+
     # Check to ensure lock is not already acquired
-    while True:
+    while self.master is None:
       try:
         lock = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.write(lock, bytes('%s,%d' % (self._host, self._port), 'UTF-8'))
@@ -141,7 +166,6 @@ class OverlayService(object):
         logging.debug("[%s] Lock File exists (someone else has acquired it)", self._name_svc)
         host, port = self.getconnection()
         logging.debug("[%s] Checking if service is available on %s, %s", self._name_svc, host, port)
-
         if self.ping(host, port):
           logging.debug("[%s] Running on %s", self._name_svc, host)
           if as_replica:
@@ -163,10 +187,6 @@ class OverlayService(object):
           os.remove(self.lockfile)
           time.sleep(1)
 
-    # if not as_replica:
-    #   logging.debug('[%s] To start as slave, call handover_slave', self._name_svc, host)
-    #   return False
-
     self.prepare_service()
 
     if self.launchcmd is None:
@@ -181,7 +201,6 @@ class OverlayService(object):
     logging.info("[%s] Launching following command %s", self._name_svc, self.launchcmd)    
     args = shlex.split(self.launchcmd)
     service = proc.Popen(args)
-
 
     if service.returncode is not None:
       logging.error("[%s] ERROR starting local service on %s", self._name_svc, self.host)    
@@ -214,7 +233,7 @@ class OverlayService(object):
   def monitor(self):
 
     logging.info("[%s] Monitor Daemon Started.", self._name_svc)
-    logging.debug('\n[Monitor - %s]  Initiated', self._name_svc)
+    logging.debug('\n[%s-Mon]  Initiated', self._name_svc)
 
     # TODO: Move to settings
     missed_hb = 0
@@ -225,17 +244,28 @@ class OverlayService(object):
     timeout = time.time() + self.SERVICE_STARTUP_DELAY
     while not alive:
       if time.time() > timeout:
-        logging.error("[Monitor - %s] Timed Out waiting on the server", self._name_svc)    
+        logging.error("[%s-Mon] Timed Out waiting on the server", self._name_svc)    
         break
       time.sleep(1)
       alive = self.ping()
     if not alive:
-      logging.error("[Monitor - %s] Service never started. You may need to retry.", self._name_svc)    
+      logging.error("[%s-Mon] Service never started. You may need to retry.", self._name_svc)    
       return
 
-    logging.info("[Monitor - %s] Service is up locally. Running the event handler loop.", self._name_svc)    
+    # For multi-node services, the Master monitor process will start up all slaves
+    #  as individual jobs
+    self._state = 'SINGLE'
+    if self.numslaves > 0:
+      logging.info("[%s-Mon] Service is up locally on %s. Preparing to launch %d slaves.", self._name_svc, self.numslaves)    
+
+      # TODO: Thread each slave with a separate monitor or launcher 
+      for i in len(range(self.numslaves)):
+        self.launch_slave()
+
     #  Blocking loop. Will only exit if the term flag is set or by a 
     #   in-loop check every heartbeat (via miss ping, lost pid, or idle timeout)
+    logging.info("[%s-Mon] Service is Operational and READY. Running the event handler loop.", self._name_svc)    
+    self._state = 'READY'
     while not self.terminationFlag.wait(self.SERVICE_HEARTBEAT_DELAY):
 
       if self.shuttingdown.is_set():
@@ -243,13 +273,13 @@ class OverlayService(object):
 
       # TODO:  try/catch service connection errors here
       if self.service.poll():
-        logging.warning("[Monitor - %s] Local Service has STOPPED on %s.", self._name_svc, self._host)
+        logging.warning("[%s-Mon] Local Service has STOPPED on %s.", self._name_svc, self._host)
         break
 
       # Heartbeat
       if not self.ping():
         missed_hb += 1
-        logging.warning("[Monitor - %s]  MISSED Heartbeat on %s. Lost communicate with service for %d seconds.", 
+        logging.warning("[%s-Mon]  MISSED Heartbeat on %s. Lost communicate with service for %d seconds.", 
               self._name_svc, self._host, missed_hb * self.SERVICE_HEARTBEAT_DELAY)
         continue
 
@@ -257,7 +287,7 @@ class OverlayService(object):
 
       # CHECK IDLE TIME
       # if self.idle():
-      #   logging.info("[Monitor - %s] Service is idle. Initiate graceful shutdown (TODO).", self._name_svc)    
+      #   logging.info("[%s-Mon] Service is idle. Initiate graceful shutdown (TODO).", self._name_svc)    
       #   break
 
       if self._role == 'MASTER':
@@ -267,7 +297,7 @@ class OverlayService(object):
           # TODO: Multiple slave
           print (lines, len(lines))
           data = lines[1].split(',')
-          logging.info("[Monitor - %s]  Detected a new slave on %s", self._name_svc, data[1])
+          logging.info("[%s-Mon]  Detected a new slave on %s", self._name_svc, data[1])
           self.handoverFlag.set()
 
       if self.handoverFlag.is_set():
@@ -276,14 +306,14 @@ class OverlayService(object):
           # Handover Control
           next_master = self.handover_to()
           self._role = 'REPLICA'
-          logging.info("[Monitor - %s]  Handover complete. I am now terminating. My role is now %s.", self._name_svc, self._role)
+          logging.info("[%s-Mon]  Handover complete. I am now terminating. My role is now %s.", self._name_svc, self._role)
           # Terminate
           self.terminationFlag.set()
 
         elif self._role == 'REPLICA':
           # Initiate replica protocol and assume role as master
           self.handover_from()
-          logging.info("[Monitor - %s]  Handover complete. I am now the master.", self._name_svc)
+          logging.info("[%s-Mon]  Handover complete. I am now the master.", self._name_svc)
 
           # Re-set lock file (TODO: other slaves)
           self._role = 'MASTER'
@@ -293,10 +323,10 @@ class OverlayService(object):
           os.close(lock)
 
           self.handoverFlag.clear()
-          logging.debug("[Monitor - %s] Handover status is %s.", self._name_svc, (self.handoverFlag.is_set()))
+          logging.debug("[%s-Mon] Handover status is %s.", self._name_svc, (self.handoverFlag.is_set()))
 
         else:
-          logging.error("[Monitor - %s]  Flagged for handover, but cannot (I am neither a master or a replica -- what am I?", self._name_svc)
+          logging.error("[%s-Mon]  Flagged for handover, but cannot (I am neither a master or a replica -- what am I?", self._name_svc)
           self.terminationFlag.set()
 
     self.stop()
@@ -329,5 +359,12 @@ class OverlayService(object):
     self.terminationFlag.set()
     self.stop()
 
+
+  def getconnection(self):
+    with open(self.lockfile, 'r') as conn:
+      conn_string = conn.read().split(',')
+      host = conn_string[0]
+      port = conn_string[1]
+    return host, port
 
 

@@ -13,7 +13,7 @@ __version__ = "0.0.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+ng.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 slurmJob = namedtuple('slurmJob', 'jobid, partition, name, user, state, time, time_limit, nodes, nodelist')
 
@@ -51,7 +51,7 @@ class slurm:
     return [slurmJob(*(job.split())) for job in joblist]
 
   @classmethod
-  def sbatch(cls, taskid, options, modules, cmd):
+  def sbatch(cls, taskid, options, modules, cmd, environ={}):
 
     logging.info("Slurm sbatch Job submitted for " + str(taskid))
 
@@ -69,7 +69,9 @@ class slurm:
     for mod in modules:
       inline += 'module load %s\n' % mod
 
-    inline += 'export JOB_NAME=%s\n' % options['job-name']
+    environ['JOB_NAME'] = options['job-name']
+    for k, v in environ:
+      inline += 'export %s=%s\n' % (k, v) 
     inline += 'echo ================================\n'
     inline += 'echo JOB NAME:  %s\n' % options['job-name']
     inline += '\n%s\n' % cmd

@@ -16,7 +16,7 @@ __version__ = "0.0.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 if __name__ == "__main__":
   # parser = argparse.ArgumentParser()

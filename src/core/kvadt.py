@@ -12,7 +12,7 @@ __version__ = "0.0.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 # NOTE:  Possible bug in Enum class prevents proper init of __members__
 #  Following is a shell of a wrapper type-class for all data types in the system
