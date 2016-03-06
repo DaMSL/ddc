@@ -1,10 +1,22 @@
-from common import *
-import mdtraj as md
+#!/usr/bin/env python
+
 import os
-from collections  import namedtuple
+from collections import namedtuple
+import logging
+
+import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
-import logging
+
+from core.common import *
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 # Predefined topology and parameters for DEShaw BPTI

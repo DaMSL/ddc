@@ -1,302 +1,33 @@
 #!/usr/bin/env python
-"""Cache Implemenation for the Data Driven Control Project
-
-    Cache is designed to hold high dimensional points. An abstract
-    class is provides for future implementation using differing
-    cache and storage policies
+"""Redis Over Service
+    Implementation for both the Redis Server persistent overlay service
+    and the client interface
 """
-import abc
 import os
-import redis
 import time
 import numpy as np
 from collections import deque
 from threading import Thread, Event
 import logging
-import socket
 import argparse
 import sys
 import subprocess as proc
 import shlex
 import json
 
-from common import *
-from kvadt import kv2DArray
+import redis
 
+from core.common import systemsettings, executecmd
+from core.kvadt import kv2DArray, decodevalue
+from overlay.overlayService import OverlayService
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
-__version__ = "0.0.1"
-__email__ = "bring4@jhu.edu"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
 logging.basicConfig(level=logging.DEBUG)
-
-
-class OverlayService(object):
-  """Overlay services provide an abstracted layer of control to 
-  allow an underlying implemented service to operate within
-  a timedelayed HPC environment
-  (TODO:  abstract to other environments)
-  """
-  __metaclass__ = abc.ABCMeta
-
-  # Delay (in sec) to wait 
-  # SERVICE_HEARTBEAT_DELAY = 5
-  # SERVICE_STARTUP_DELAY = 5
-
-
-  def __init__(self, name, port, **kwargs):
-    self._host = socket.gethostname()
-    self._port = port
-    self._name_svc = type(self).__name__
-    self._name_app = name
-    self.lockfile = '%s_%s.lock' % (self._name_app, self._name_svc)
-
-    self.launchcmd = None
-    self.shutdowncmd = None
-
-    self._pid = None
-
-    self._state = 'INIT'
-    self._role  = 'NONE'
-
-    # TODO: All services' nodes assume to run on same port (different hosts)
-    #  This the master hold only the host name
-    self.master = None
-
-    self.terminationFlag = Event()
-    self.handoverFlag = Event()
-
-    self.SERVICE_STARTUP_DELAY = 10
-
-  @abc.abstractmethod
-  def ping(self, host='localhost'):
-    """Method to check if service is running on the given host
-    """
-    pass
-
-  @abc.abstractmethod
-  def handover_to(self):
-    """Invoked to handover services from this instance to a new master
-    """
-    pass
-
-  @abc.abstractmethod
-  def handover_from(self):
-    """Invoked as a callback when another master service is handing over
-    service control (i.e. master duties) to this instance
-    """
-    pass
-
-  def prepare_service(self):
-    """Pre-execution processing (e.g. config file / env creation)
-    """
-    pass
-
-  def getconnection(self):
-    with open(self.lockfile, 'r') as conn:
-      conn_string = conn.read().split(',')
-      host = conn_string[0]
-      port = conn_string[1]
-    return host, port
-
-  def idle(self):
-    """To define an idle detection method and gracefully shutdown if the service
-    is idle. If undefined, idle returns False and the system will always assume
-    that is it never idle.
-    """
-    return False
-
-  def start(self, as_replica=True):
-    """
-    """
-    # Check to ensure lock is not already acquired
-    while True:
-      try:
-        lock = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(lock, bytes('%s,%d' % (self._host, self._port), 'UTF-8'))
-        os.close(lock)
-        logging.debug("[Overlay - %s] Lock File not found (I am creating it from %s)", self._name_svc, self._host)
-        self._state = 'START'
-        self._role  = 'MASTER'
-        self.master = self._host
-        break
-      except FileExistsError as ex:
-        logging.debug("[Overlay - %s] Lock File exists (someone else has acquired it)", self._name_svc)
-        host, port = self.getconnection()
-        logging.debug("[Overlay - %s] Checking if service is available on %s, %s", self._name_svc, host, port)
-
-        if self.ping(host, port):
-          logging.debug("[Overlay - %s] Running on %s", self._name_svc, host)
-          if as_replica:
-            logging.debug("[Overlay - %s] Starting in replica -- will initiate master takeover control protocol", self._name_svc)
-            # If starting up as a replica -- assume immediate replication and control
-            #  of service operation. This will initiate this node to start as a 
-            #  replica and initate replication/handover protocol. Future improvements
-            #  should allow for the system to detect the # of replica (for FT) and 
-            #  flag handover accordingly
-            self._role  = 'REPLICA'
-            self.master = host
-            self.handoverFlag.set()
-            break
-          else:
-            logging.debug('[Overlay - %s] Service already running on %s. To start as slave, call handover_slave', self._name_svc, host)
-            return False
-        else:
-          logging.warning('[Overlay - %s] Service is NOT running. Will attempt to recover and start locally.', self._name_svc)
-          os.remove(self.lockfile)
-          time.sleep(1)
-
-    # if not as_replica:
-    #   logging.debug('[Overlay - %s] To start as slave, call handover_slave', self._name_svc, host)
-    #   return False
-
-    self.prepare_service()
-
-    if self.launchcmd is None:
-      logging.error("[Overlay - %s] Launch Command not set. It needs to be defined.", self._name_svc)
-      return False
-
-    if self.shutdowncmd is None:
-      logging.error("[Overlay - %s] Shutdown Command not set. It needs to be defined.", self._name_svc)
-      return False
-
-    # TODO: Check subproc call here -- should this also be threaded in a python wrap call?
-    args = shlex.split(self.launchcmd)
-    service = proc.Popen(args)
-
-
-    if service.returncode is not None:
-      logging.error("[Overlay - %s] ERROR starting local service on %s", self._name_svc, self.host)    
-      # Exit or Return ???
-      return False
-
-    # Ensure service has started locally
-    svc_up = False
-    timeout = time.time() + self.SERVICE_STARTUP_DELAY
-    while not svc_up:
-      if time.time() > timeout:
-        logging.error("[Overlay - %s] Timed Out waiting on the server", self._name_svc)    
-        break
-      time.sleep(1)
-      svc_up = self.ping()
-
-    if not svc_up:
-      logging.error("[Overlay - %s] Service never started. You may need to retry.", self._name_svc)    
-      return False
-
-    self._state = 'RUNNING'
-    logging.info("[Overlay - %s] My Service started local on %s. Starting the local monitor.", self._name_svc, self._host)    
-
-    self.service = service
-
-    t = Thread(target=self.monitor)
-    t.start()
-    return t
-
-  def monitor(self):
-
-    logging.info("[Overlay - %s] Monitor Daemon Started.", self._name_svc)
-    logging.debug('\n[Monitor - %s]  Initiated', self._name_svc)
-
-    # TODO: Move to settings
-    missed_hb = 0
-    allowed_misshb = 3
-
-    # Redundant check to ensure service has started locally (it should be started already)
-    alive = False
-    timeout = time.time() + self.SERVICE_STARTUP_DELAY
-    while not alive:
-      if time.time() > timeout:
-        logger.error("[Monitor - %s] Timed Out waiting on the server", self._name_svc)    
-        break
-      time.sleep(1)
-      alive = self.ping()
-    if not alive:
-      logger.error("[Monitor - %s] Service never started. You may need to retry.", self._name_svc)    
-      return
-
-    logger.info("[Monitor - %s] Service is up locally. Running the event handler loop.", self._name_svc)    
-    #  Blocking loop. Will only exit if the term flag is set or by a 
-    #   in-loop check every heartbeat (via miss ping, lost pid, or idle timeout)
-    while not self.terminationFlag.wait(DEFAULT.SERVICE_HEARTBEAT_DELAY):
-      # TODO:  try/catch service connection errors here
-      if self.service.poll():
-        logging.warning("[Monitor - %s] Local Service has STOPPED on %s.", self._name_svc, self._host)
-        break
-
-      # Heartbeat
-      if not self.ping():
-        missed_hb += 1
-        logger.warning("[Monitor - %s]  MISSED Heartbeat on %s. Lost communicate with service for %d seconds.", 
-              self._name_svc, self._host, missed_hb * DEFAULT.SERVICE_HEARTBEAT_DELAY)
-        continue
-
-      missed_hb = 0
-
-      # CHECK IDLE TIME
-      # if self.idle():
-      #   logger.info("[Monitor - %s] Service is idle. Initiate graceful shutdown (TODO).", self._name_svc)    
-      #   break
-
-      if self._role == 'MASTER':
-        with open(self.lockfile, 'r') as conn:
-          lines = conn.read().split('\n')
-        if len(lines) > 1:
-          # TODO: Multiple slave
-          print (lines, len(lines))
-          data = lines[1].split(',')
-          logging.info("[Monitor - %s]  Detected a new slave on %s", self._name_svc, data[1])
-          self.handoverFlag.set()
-
-      if self.handoverFlag.is_set():
-        # This service has been flagged to handover control to a new master or from an old one
-        if self._role == 'MASTER':
-          # Handover Control
-          next_master = self.handover_to()
-          self._role = 'REPLICA'
-          logging.info("[Monitor - %s]  Handover complete. I am now terminating. My role is now %s.", self._name_svc, self._role)
-          # Terminate
-          self.terminationFlag.set()
-
-        elif self._role == 'REPLICA':
-          # Initiate replica protocol and assume role as master
-          self.handover_from()
-          logging.info("[Monitor - %s]  Handover complete. I am now the master.", self._name_svc)
-
-          # Re-set lock file (TODO: other slaves)
-          self._role = 'MASTER'
-          os.remove(self.lockfile)
-          lock = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-          os.write(lock, bytes('%s,%d' % (self._host, self._port), 'UTF-8'))
-          os.close(lock)
-
-          self.handoverFlag.clear()
-          logging.debug("[Monitor - %s] Handover status is %s.", self._name_svc, (self.handoverFlag.is_set()))
-
-        else:
-          logger.error("[Monitor - %s]  Flagged for handover, but cannot (I am neither a master or a replica -- what am I?", self._name_svc)
-          self.terminationFlag.set()
-
-    self.stop()
-  
-    # Post-termination logic
-    logging.info("[Overlay - %s] Service is shutdown on %s. Monitor is terminating", self._name_svc, self._host)
-
-  def stop(self):
-    """
-    """
-    logging.debug('MY ROLE = %s', self._role)
-    logging.info('[Overlay - %s] Service shutting down on %s.', self._name_svc, self._host)
-    args = shlex.split(self.shutdowncmd)
-    result = proc.call(args)
-    logging.info("[Overlay - %s] shutdown with return code: %s", self._name_svc, str(result))
-
-    if self._role == 'MASTER':
-      logging.info('[Overlay - %s] Last master shutdown. Removing lockfile', self._name_svc)
-      os.remove(self.lockfile)
-
 
 class RedisService(OverlayService):
   """
@@ -309,6 +40,17 @@ class RedisService(OverlayService):
     """
     OverlayService.__init__(self, name, port)
     self.connection = None
+
+    config = systemsettings()
+    if not config.configured():
+      # For now assume JSON file
+      config.applyConfig(name + '.json')
+
+    self.workdir   = config.WORKDIR  #ini.get('workdir', '.')
+    self.redis_conf_template =  config.REDIS_CONF_TEMPLATE #init.get('redis_conf_template', 'templates/redis.conf.temp')
+    self.MONITOR_WAIT_DELAY    = config.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
+    self.CATALOG_IDLE_THETA    = config.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
+    self.CATALOG_STARTUP_DELAY = config.CATALOG_STARTUP_DELAY #ini.get('catalog_startup_delay', 10)
 
     # Check if a connection exists to do an immediate shutdown request
     if os.path.exists(self.lockfile):
@@ -327,22 +69,12 @@ class RedisService(OverlayService):
 
   def prepare_service(self):
     # Prepare 
-
-    # System Environment Settings
-    #  READ & SET for EACH 
-    workdir   = DEFAULT.WORKDIR  #ini.get('workdir', '.')
-    redis_conf_template =  DEFAULT.REDIS_CONF_TEMPLATE #init.get('redis_conf_template', 'templates/redis.conf.temp')
-    self.MONITOR_WAIT_DELAY    = DEFAULT.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
-    self.CATALOG_IDLE_THETA    = DEFAULT.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
-    self.CATALOG_STARTUP_DELAY = DEFAULT.CATALOG_STARTUP_DELAY #ini.get('catalog_startup_delay', 10)
-
-
-    with open(redis_conf_template, 'r') as template:
+    with open(self.redis_conf_template, 'r') as template:
       source = template.read()
       logging.info("Redis Source Template loaded")
 
     # params = dict(localdir=DEFAULT.WORKDIR, port=self._port, name=self._name)
-    params = dict(localdir=workdir, port=self._port, name=self._name_app)
+    params = dict(localdir=self.workdir, port=self._port, name=self._name_app)
 
     # TODO: This should be local
     self.config = self._name_app + "_db.conf"
@@ -478,42 +210,8 @@ class RedisService(OverlayService):
     logging.debug("[Overlay - %s] Assumed control as MASTER on %s.", self._name_svc, self._host)
     self.connection.slaveof()
 
-
-
-def infervalue(value):
-  try:
-    castedval = None
-    if value.isdigit():
-      castedval = int(value)
-    else:
-      castedval = float(value)
-  except ValueError as ex:
-    castedval = value
-  return castedval
-
-def decodevalue(value):
-  data = None
-  if isinstance(value, list):
-    try:
-      if len(value) == 0:
-        data = []
-      elif value[0].isdigit():
-        data = [int(val) for val in value]
-      else:
-        data = [float(val) for val in value]
-    except ValueError as ex:
-      data = value
-  elif isinstance(value, dict):
-    # logging.debug("Hash Loader")
-    data = {}
-    for k,v in value.items():
-      data[k] = infervalue(v)
-  elif value is None:
-    data = None
-  else:
-    data = infervalue(value)
-  return data
-
+  def tear_down(self):
+    logging.info("[Redis] Tear down complete.")
 
 class RedisClient(redis.StrictRedis):
 
@@ -778,11 +476,11 @@ class RedisClient(redis.StrictRedis):
 
 
 
-def testMaster():
+def test_redismaster():
   server = RedisService('testoverlay')
   server.start()
 
-def testClient(name):
+def test_redisclient(name):
   client = RedisClient(name)
   if not client.isconnected:
     print('I am not connected. Service is not running')
@@ -805,48 +503,26 @@ def testClient(name):
   print(client.get('foo'))
 
 
-if __name__ == "__main__":
-  parser = argparse.ArgumentParser()
-  parser.add_argument('name')
-  parser.add_argument('--client', action='store_true')
-  parser.add_argument('--stop', action='store_true')
-  args = parser.parse_args()
+# if __name__ == "__main__":
+#   parser = argparse.ArgumentParser()
+#   parser.add_argument('name')
+#   parser.add_argument('--client', action='store_true')
+#   parser.add_argument('--stop', action='store_true')
+#   args = parser.parse_args()
 
-  if args.client:
-    testClient(args.name)
-    sys.exit(0)
+#   if args.client:
+#     testClient(args.name)
+#     sys.exit(0)
 
-  settings = systemsettings()
-  settings.applyConfig('%s.json' % args.name)
+#   settings = systemsettings()
+#   settings.applyConfig('%s.json' % args.name)
 
-  server = RedisService(args.name)
-  if args.stop:
-    server.stop()
-  else:
-    server.start()
-
-
+#   server = RedisService(args.name)
+#   if args.stop:
+#     server.stop()
+#   else:
+#     server.start()
 
 
 
-    # ping_interval = OverlayService.SERVICE_HEARTBEAT_DELAY
-    # timeout = time.time() + ping_interval
-    # while not alive:
-    #   if time.time() > timeout:
-    #     logger.warning('\n[Monitor - %s]  Timeout waiting on the service', self._name_svc)
-    #     break
-    #   alive = self.ping()
-    #   if alive
-    #     logger.debug("[Monitor - %s]  Heartbeat local on %s", self._name_svc, self._host)
-    #     # Default to 2 * heartbeat delay () (timeout is effectively two missed heartbeats)
-    #     timeout = time.time() + Overlay.SERVICE_HEARTBEAT_DELAY * 2
-    #     ping_interval = OverlayService.SERVICE_HEARTBEAT_DELAY
-    #   else:
-    #     # Ping every second unti connection is re-established or a timeout
-    #     logger.debug("[Monitor - %s]  Heartbeat local on %s", self._name_svc, self._host)
-    #     ping_interval = 1
-    #   time.sleep(ping_interval)
 
-    # if not alive:
-    #   logger.warning("[Monitor - %s]  MISSED Heartbeat on %s. Cannot ping the service", self._name_svc, self._host)
-    #   return

@@ -8,16 +8,18 @@
 """
 
 from collections import deque
-import numpy as np
 import sys
 import json
 
+import numpy as np
 
 __author__ = "Benjamin Ring"
-__copyright__ = "Copyright 2015, Data Driven Control"
-__version__ = "0.0.1"
-__email__ = "bring4@jhu.edu"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 class KDTree(object):

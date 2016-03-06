@@ -11,24 +11,24 @@ import os
 import subprocess as proc
 import argparse
 import abc
-import redis
 import copy
 import re
 from collections import namedtuple
 import copy
 
-from common import * 
-from slurm import slurm
-import overlayService
+import redis
+
+from .core.common import * 
+from .core.slurm import slurm
+from .overlay.redisOverlay import RedisClient
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
-__version__ = "0.0.1"
-__email__ = "bring4@jhu.edu"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
 
 class macrothread(object):
@@ -465,13 +465,13 @@ class macrothread(object):
 
     if not self.catalog:
       # self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-      self.catalog = overlayService.RedisClient(DEFAULT.APPL_LABEL)
+      self.catalog = RedisClient(DEFAULT.APPL_LABEL)
 
     if self.catalog.isconnected and self.catalog.ping():
       logging.info('Catalog service is connected')
     else:
       logging.info("Catalog service is not running. Starting the service now")
-      service = overlayService.RedisService(DEFAULT.APPL_LABEL)
+      service = RedisService(DEFAULT.APPL_LABEL)
       self.localcatalogserver = service.start()
       logging.info("Catalog service started as a background thread.")
       #  TODO: Quit and self-reschedule???

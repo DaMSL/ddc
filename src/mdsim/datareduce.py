@@ -1,7 +1,16 @@
+#!/usr/bin/env python
 import numpy as np
 import mdtraj as md
-import deshaw
 
+import simmd.deshaw as deshaw
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
+logging.basicConfig(level=logging.DEBUG)
 
 def PCA(src, pc, numpc=3):
   # TODO: Check size requirements
@@ -9,8 +18,6 @@ def PCA(src, pc, numpc=3):
   for i, s in enumerate(src):
     np.copyto(projection[i], np.array([np.dot(s.flatten(),v) for v in pc[:numpc]]))
   return projection
-
-
 
 def load_trajectory(dcdfile, pdbfile=None):
   if pdbfile is None:

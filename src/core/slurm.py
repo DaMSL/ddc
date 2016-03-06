@@ -1,21 +1,36 @@
+#!/usr/bin/env python
+
 import time
 import subprocess as proc
-from common import *
-
-
 from collections import namedtuple
+import logging
+import argparse
+import pytest
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.0.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
+logging.basicConfig(level=logging.DEBUG)
+
 slurmJob = namedtuple('slurmJob', 'jobid, partition, name, user, state, time, time_limit, nodes, nodelist')
 
 
-
 def chmodX(path):
+    """Shell wrapper routine to set POSIX permission mode
+    """
     mode = os.stat(path).st_mode
     mode |= (mode & 0o444) >> 2 
     os.chmod(path, mode)
 
-
-
 class slurm:
+  """Slurm interface for peforming simple SLURM operations. Only includes the ability
+  to schedule a job and to retrieve job information (for now)
+  For simplicity, SLURM interaction is performed via shell-based actions using
+  a subprocess Popen object and all current methods are static class methods
+  """
 
   @classmethod
   def info(cls):
@@ -129,22 +144,21 @@ class slurm:
     return out
 
 
-
-if __name__ == '__main__':
+def test_slurm():
   print ("Testing slurm routines\n")
   result = slurm.info()
+  assert True == True, 'Testing'
   print (result)
   print ()
-  result = slurm.schedule('0001', "/ring/ddc/hello.sh")
-  print (result)
+  # result = slurm.schedule('0001', "/ring/ddc/hello.sh")
+  # print (result)
 
-  print ()
-  result = slurm.parallel('0002', "memcached -vvv -u root", 2)
-  print (result)
+  # print ()
+  # result = slurm.parallel('0002', "memcached -vvv -u root", 2)
+  # print (result)
 
   print ()
   print ("Currently running jobs:")
   for job in slurm.getJobs():
     print (job.name, job.state, job.nodes, ': ', job.nodelist)
   print (result)
-

@@ -1,8 +1,18 @@
+#!/usr/bin/env python
+
 import abc
+
 import redis
+import logging
 import numpy as np
 
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.0.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
+logging.basicConfig(level=logging.DEBUG)
 
 # NOTE:  Possible bug in Enum class prevents proper init of __members__
 #  Following is a shell of a wrapper type-class for all data types in the system
@@ -23,8 +33,53 @@ import numpy as np
 
 
 
+def infervalue(value):
+  """For use with Dynamic dispatching
+  """
+  try:
+    castedval = None
+    if value.isdigit():
+      castedval = int(value)
+    else:
+      castedval = float(value)
+  except ValueError as ex:
+    castedval = value
+  return castedval
+
+def decodevalue(value):
+  """For use with K-V Stores to dynamically dispath string based data types
+  """
+  data = None
+  if isinstance(value, list):
+    try:
+      if len(value) == 0:
+        data = []
+      elif value[0].isdigit():
+        data = [int(val) for val in value]
+      else:
+        data = [float(val) for val in value]
+    except ValueError as ex:
+      data = value
+  elif isinstance(value, dict):
+    # logging.debug("Hash Loader")
+    data = {}
+    for k,v in value.items():
+      data[k] = infervalue(v)
+  elif value is None:
+    data = None
+  else:
+    data = infervalue(value)
+  return data
+
+
+
 #  K-V ADT Nucleaus of a type-wrapper class
 class kvadt(object):
+  """The Key-Value Abstract Data Type (kvadt) is employed with key-value
+  stores to faciltate dynamic disatching of serialized, string-stored data
+  into non-primitve data types (anything other than str, int, float, list, dict)
+  """
+
   __metaclass__ = abc.ABCMeta
 
   def __init__(self, database, name):
@@ -58,18 +113,6 @@ class kvadt(object):
     Returns redis key, given the adt index
     """
     raise NotImplemented
-
-
-
-
-
-
-def fromByte(dataType):
-  if dataType == int:
-    return lambda x: int(x)
-  if dataType == float:
-    return lambda x: float(x)
-  return lambda x: x
 
 
 
@@ -168,27 +211,22 @@ class kv2DArray(kvadt):
       logging.info('   ' + " ".join([fmt%x for x in row]))
 
 
-
-if __name__ == '__main__':
-
+def runtest():
   try:
-
     r = redis.StrictRedis()
     test2d_Stor = kv2DArray(r, 'test2d', 3)
     test2d = test2d_Stor.get()
     print(test2d)
-
     test2d_Stor.incr(1,1,12)
-
     delta = np.zeros(shape=(3,3))
     delta[1][2] = 5
-
     test2d_Stor.merge(delta)
     test2d = test2d_Stor.get()
     print(test2d)
-
     t2 = test2d_Stor
     print(t2)
-
   except redis.ConnectionError as ex:
     print("Make sure Redis is up")
+
+if __name__ == '__main__':
+  runtest()

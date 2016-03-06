@@ -1,13 +1,12 @@
+#!/usr/bin/env python
+"""Common definitions and methods
+"""  
 import logging
 import os
 import shutil
 import uuid
 import subprocess as proc
 import numpy as np
-# import nearpy
-# from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections, UniBucket
-# from nearpy.distances import EuclideanDistance
-# from nearpy.storage import RedisStorage
 import sys
 import random
 import string
@@ -16,6 +15,13 @@ import pickle
 import datetime as dt
 from collections import OrderedDict
 
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
+logging.basicConfig(level=logging.DEBUG)
 
 def executecmd(cmd):
   task = proc.Popen(cmd, shell=True,
@@ -80,19 +86,19 @@ class systemsettings:
     self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
     self.DATADIR = os.path.join(self.WORKDIR, 'data', application)
 
-    self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
+    # Overlay Service generic (or should this unique to ea. service????)
     self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
     self.CATALOG_IDLE_THETA    = ini.get('catalog_idle_theta', 300)
     self.CATALOG_STARTUP_DELAY = ini.get('catalog_startup_delay', 10)
     self.SERVICE_HEARTBEAT_DELAY = ini.get('catalog_heartbeat_delay', 15)
 
+    # Redis Service specific settings
+    self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
+
+    # <DEPPRICATE>
     self.catalogConfig  = dict(
         name=ini.get('catalog_name', application),
         port=ini.get('catalog_port', '6379') )
-
-
-
-    # Remainder COULD all move to catalog
     self.archiveConfig  = dict(
         name=ini.get('archive_name', 'archive'),
         port=ini.get('archive_port', '6380') )

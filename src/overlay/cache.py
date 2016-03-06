@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 """Cache Implemenation for the Data Driven Control Project
 
     Cache is designed to hold high dimensional points. An abstract
@@ -11,14 +12,14 @@ import redis
 import numpy as np
 from collections import deque
 import logging
-logging.basicConfig(level=logging.DEBUG)
 
 __author__ = "Benjamin Ring"
-__copyright__ = "Copyright 2015, Data Driven Control"
-__version__ = "0.0.1"
-__email__ = "bring4@jhu.edu"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
+logging.basicConfig(level=logging.DEBUG)
 
 
 class CacheStorage(object):

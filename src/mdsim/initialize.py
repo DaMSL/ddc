@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 from simmd import *
 from anl import *
 from ctl import *
@@ -7,6 +9,8 @@ import math
 import json
 import bisect
 import datetime as dt
+
+
 
 DO_COV_MAT = False
 

@@ -1,31 +1,36 @@
+#!/usr/bin/env python
+
 import argparse
 import sys
 import os
 import sys
 import json
+from random import choice, randint
+from collections import namedtuple, deque, OrderedDict
 
 import mdtraj as md
 import numpy as np
-np.set_printoptions(precision=5, suppress=True)
-
 from numpy import linalg as LA
-import nearpy
-from nearpy.storage.storage_redis import RedisStorage
-from nearpy.hashes import RandomBinaryProjections, PCABinaryProjections
 
-from collections import namedtuple, deque, OrderedDict
-
-import redisCatalog
-from common import *
-from macrothread import macrothread
-from kvadt import kv2DArray
-from slurm import slurm
-from random import choice, randint
-from deshaw import *
+from core.common import *
+from core.macrothread import macrothread
+from core.kvadt import kv2DArray
+from core.slurm import slurm
+from core.kdtree import KDTree
 from indexing import *
-from kdtree import KDTree
-import datareduce
-import deshaw
+import mdsim.datareduce as datareduce
+import mdsim.deshaw as deshaw
+from overlay.redisOverlay import RedisCatalog
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
+logging.basicConfig(level=logging.DEBUG)
+
+np.set_printoptions(precision=5, suppress=True)
 
 def psfgen(params):
   return '''psfgen << ENDMOL
