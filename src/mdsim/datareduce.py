@@ -1,8 +1,10 @@
 #!/usr/bin/env python
+import logging
+
 import numpy as np
 import mdtraj as md
 
-import simmd.deshaw as deshaw
+import mdsim.deshaw as deshaw
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"

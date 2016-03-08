@@ -2,11 +2,12 @@
 
 #SBATCH
 #SBATCH --job-name=overlay
-#SBATCH --time=0:05:0
+#SBATCH --time=4:00:0
 #SBATCH --ntasks=2
 #SBATCH --cpus-per-task=1
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/overlay-%j.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
+#SBATCH --partition=lrgmem
 
 NR_PROCS=$(($SLURM_NTASKS))
 

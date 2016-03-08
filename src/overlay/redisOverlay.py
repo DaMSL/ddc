@@ -17,7 +17,7 @@ import json
 
 import redis
 
-from core.common import systemsettings, executecmd
+from core.common import systemsettings, executecmd, getUID
 from core.kvadt import kv2DArray, decodevalue
 from overlay.overlayService import OverlayService
 
@@ -96,7 +96,7 @@ class RedisService(OverlayService):
       if client['name'] == 'monitor':
         continue
       if int(client['idle']) < self.CATALOG_IDLE_THETA:
-        logger.debug('[Monitor - %s]  Service was idle for more than %d seconds. Stopping.', self._name_svc, CATALOG_IDLE_THETA)
+        logging.debug('[Monitor - %s]  Service was idle for more than %d seconds. Stopping.', self._name_svc, CATALOG_IDLE_THETA)
         return True
     return False
 
@@ -133,10 +133,10 @@ class RedisService(OverlayService):
         if client['name'] == 'monitor' or client['flags'] == 'S':
           continue
         if 'x' in client['flags'] or int(client['multi']) > 0:
-          logger.debug('[Monitor - %s]  Found a client processing a pipeline. Waiting.', self._name_svc)
+          logging.debug('[Monitor - %s]  Found a client processing a pipeline. Waiting.', self._name_svc)
           active_clients = True
         if int(client['idle']) < 3:
-          logger.debug('[Monitor - %s]  Found a client idle for less than 3 second. Waiting to stop serving.', self._name_svc)
+          logging.debug('[Monitor - %s]  Found a client idle for less than 3 second. Waiting to stop serving.', self._name_svc)
           active_clients = True
       if active_clients:
         time.sleep(1)
@@ -306,7 +306,7 @@ class RedisClient(redis.StrictRedis):
         deferredsave.append(key)
       else:
         pipe.set(key, value)
-      logger.debug("  Saving data elm  `%s` as %s ", key, type(data[key]))
+      logging.debug("  Saving data elm  `%s` as %s ", key, type(data[key]))
 
     result = pipe.execute()
 
@@ -409,7 +409,7 @@ class RedisClient(redis.StrictRedis):
     deferredappend = []
     pipe = self.pipeline()
     for key, value in data.items():
-      logger.debug("Appending data elm  `%s` of type, %s", key, type(data[key]))
+      logging.debug("Appending data elm  `%s` of type, %s", key, type(data[key]))
       if key not in self.schema.keys():
         logging.warning("  KEY `%s` not found in local schema! Will try Dynamic Append")
         deferredappend.append(key)

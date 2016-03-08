@@ -18,9 +18,9 @@ import copy
 
 import redis
 
-from .core.common import * 
-from .core.slurm import slurm
-from .overlay.redisOverlay import RedisClient
+from core.common import * 
+from core.slurm import slurm
+from overlay.redisOverlay import RedisClient
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -71,7 +71,7 @@ class macrothread(object):
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
-    self.slurmParams = {'time':'1:0:0', 
+    self.slurmParams = {'time':'4:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
               'partition':DEFAULT.PARTITION, 
@@ -82,6 +82,8 @@ class macrothread(object):
     self.job_id    = None
     self.seq_num   = None
 
+    # To help debugging
+    self.singleuse = False
 
   #  Job ID Management  
   #  Sequence ALL JOBS --- good for up to 10,000 managers and 100 concurrently launched workers
@@ -137,11 +139,11 @@ class macrothread(object):
   # TODO:  Eventually we may want multiple up/down streams
   def setStream(self, upstream, downstream):
     if upstream is None:
-      logger.info("Upstream data `%s` not defined", upstream)
+      logging.info("Upstream data `%s` not defined", upstream)
     self.upstream = upstream
 
     if downstream is None:
-      logger.warning("Downstream data `%s` not defined in schema", downstream)
+      logging.warning("Downstream data `%s` not defined in schema", downstream)
     self.downstream = downstream
 
   # Implementation methods for macrothreads
@@ -268,13 +270,13 @@ class macrothread(object):
   # Manager Algorithm
   def manager(self, fork=False):
 
-    logger.debug("\n==========================\n  MANAGER:  %s", self.name)
+    logging.debug("\n==========================\n  MANAGER:  %s", self.name)
 
 
     # Check global termination:
     term_flag = self.data['terminate']
     if term_flag and term_flag.lower() in ['halt', 'stop', 'now']:
-      logger.info('RECEIVED TERMINATION FLAG. Shutting down')
+      logging.info('RECEIVED TERMINATION FLAG. Shutting down')
       sys.exit(0)
 
     # Load Data from Thread's State and Upstream thread
@@ -284,7 +286,7 @@ class macrothread(object):
 
     # Check for termination  
     if self.term():
-      logger.info('TERMINATION condition for ' + self.name)
+      logging.info('TERMINATION condition for ' + self.name)
       # sys.exit(0)
 
     # Set Elasticity Policy
@@ -327,7 +329,7 @@ class macrothread(object):
     # No Jobs to run.... Delay and then rerun later
     if len(immed) == 0:
       delay = int(self.delay)
-      logger.debug("MANAGER %s: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
+      logging.debug("MANAGER %s: No Available input data. Delaying %d seconds and rescheduling...." % (self.name, delay))
       self.slurmParams['begin'] = 'now+%d' % delay
 
     # Dispatch Workers
@@ -338,7 +340,7 @@ class macrothread(object):
       baseline_param = copy.deepcopy(self.slurmParams)
       baseline_mods  = copy.deepcopy(self.modules)
       for i in immed:
-        logger.debug("%s: scheduling worker, input=%s", self.name, i)
+        logging.debug("%s: scheduling worker, input=%s", self.name, i)
         self.preparejob(i)
         self.slurmParams['job-name'] = self.toWID(myid, workernum)
         slurm.sbatch(taskid=self.slurmParams['job-name'],
@@ -349,6 +351,11 @@ class macrothread(object):
         # Reset params and mods
         self.slurmParams = copy.deepcopy(baseline_param)
         self.modules     = copy.deepcopy(baseline_mods)
+
+    # Single use exit:
+    if self.singleuse:
+      logging.debug("SINGLE USE INVOKED. No more managers will run ")
+      return 0
 
 
     # Elas Policy to control manager rescheduling
@@ -373,21 +380,21 @@ class macrothread(object):
     # Other interal thread state is saved back to catalog
     self.save(self._mut)
 
-    logger.debug("==========================")
+    logging.debug("==========================")
     return 0
 
 
   def worker(self, i):
-    logger.debug("\n--------------------------\n   WORKER:  %s", self.name)
+    logging.debug("\n--------------------------\n   WORKER:  %s", self.name)
     # TODO: Optimization Notifications
     #  catalog.notify(i, "active")
 
-    logger.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
+    logging.info("WORKER Fetching Input parameters/data for input:  %s", str(i))
     jobInput = self.fetch(i)
 
-    logger.debug("Starting WORKER  Execution  ---->>")
+    logging.debug("Starting WORKER  Execution  ---->>")
     result = self.execute(jobInput)
-    logger.debug("<<----  WORKER Execution Complete")
+    logging.debug("<<----  WORKER Execution Complete")
 
     # Ensure returned results are a list
     if type(result) != list:
@@ -420,7 +427,7 @@ class macrothread(object):
     logging.debug("Saving all mutable state items")
     self.save(self._mut)
 
-    logger.debug("--------------------------")
+    logging.debug("--------------------------")
 
 
   def addArgs(self):
@@ -430,6 +437,7 @@ class macrothread(object):
       parser.add_argument('-c', '--config', default='default.conf')
       parser.add_argument('-i', '--init', action='store_true')
       parser.add_argument('-d', '--debug', action='store_true')
+      parser.add_argument('-s', '--single', action='store_true')
       self.parser = parser
     return self.parser
 
@@ -457,6 +465,9 @@ class macrothread(object):
     if args.debug:
       logging.debug("DEBUGGING: %s", self.name)
 
+    if args.single:
+      logging.debug("Macrothread running in single exection Mode (only 1 manager will execute).")
+      self.singleuse = True
 
     if args.init:
       sys.exit(0)
@@ -479,16 +490,16 @@ class macrothread(object):
     self.catalog.loadSchema()   # Should this be called from within the catalog module?
 
     # Load data from Catalog
-    logger.info("Loading Thread State for from catalog:")
+    logging.info("Loading Thread State for from catalog:")
     self.load(self._mut, self._immut, self._append)
 
     if args.workinput:
-      logger.debug("Running worker.")
+      logging.debug("Running worker.")
       self.worker(args.workinput)
     else:
       self.manager()
 
     if self.localcatalogserver:
-      logger.debug("This thread is running the catalog. Waiting on local service to terminate...")
+      logging.debug("This thread is running the catalog. Waiting on local service to terminate...")
       self.localcatalogserver.join()
       self.localcatalogserver = None

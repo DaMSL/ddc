@@ -7,16 +7,17 @@ import logging
 import argparse
 import pytest
 
+from core.common import systemsettings
+
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
 __version__ = "0.0.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-ng.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 slurmJob = namedtuple('slurmJob', 'jobid, partition, name, user, state, time, time_limit, nodes, nodelist')
-
 
 def chmodX(path):
     """Shell wrapper routine to set POSIX permission mode
@@ -55,6 +56,7 @@ class slurm:
 
     logging.info("Slurm sbatch Job submitted for " + str(taskid))
 
+    config = systemsettings()
     inline = '#!/bin/bash -l\n\n#SBATCH\n'
 
     for k, v in options.items():
@@ -63,14 +65,14 @@ class slurm:
       else:  
         inline += '#SBATCH --%s=%s\n' % (k, str(v))
 
-    joboutput = "%s/%s.out" % (DEFAULT.LOGDIR, str(taskid))
+    joboutput = "%s/%s.out" % (config.LOGDIR, str(taskid))
     inline += '#SBATCH --output=%s\n' % joboutput
 
     for mod in modules:
       inline += 'module load %s\n' % mod
 
     environ['JOB_NAME'] = options['job-name']
-    for k, v in environ:
+    for k, v in environ.items():
       inline += 'export %s=%s\n' % (k, v) 
     inline += 'echo ================================\n'
     inline += 'echo JOB NAME:  %s\n' % options['job-name']
@@ -89,7 +91,6 @@ class slurm:
     logging.info("Slurm Batch Job Submitted. Output follows:")
     logging.info(stdout.decode())
     return stdout.decode()
-
 
   @classmethod
   def schedule(cls, jobid, cmd, **kwargs):

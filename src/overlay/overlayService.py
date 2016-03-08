@@ -269,6 +269,7 @@ class OverlayService(object):
     while not self.terminationFlag.wait(self.SERVICE_HEARTBEAT_DELAY):
 
       if self.shuttingdown.is_set():
+        logging.warning("[%s-Mon] Detectd Service was flagged to shutdown. Monitor is halting.", self._name_svc)
         break
 
       # TODO:  try/catch service connection errors here
@@ -342,7 +343,11 @@ class OverlayService(object):
       logging.debug('MY ROLE = %s', self._role)
       if self._role == 'MASTER':
         logging.info('[%s] Last master shutdown. Removing lockfile', self._name_svc)
-        os.remove(self.lockfile)
+        host, port = self.getconnection()
+        if host == self._host:
+          os.remove(self.lockfile)
+        else:
+         logging.info('[%s] This master is shutting down, but detected someone else.', self._name_svc)
 
       logging.info('[%s] Service shutting down on %s.', self._name_svc, self._host)
       args = shlex.split(self.shutdowncmd)
@@ -359,12 +364,15 @@ class OverlayService(object):
     self.terminationFlag.set()
     self.stop()
 
-
   def getconnection(self):
-    with open(self.lockfile, 'r') as conn:
-      conn_string = conn.read().split(',')
-      host = conn_string[0]
-      port = conn_string[1]
-    return host, port
+    try:
+      with open(self.lockfile, 'r') as conn:
+        conn_string = conn.read().split(',')
+        host = conn_string[0]
+        port = conn_string[1]
+      return host, port
+    except FileNotFoundError:
+      logging.waring("WARNING!  Lock file is missing.")
+      return None, None
 
 

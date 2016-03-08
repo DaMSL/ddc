@@ -78,6 +78,9 @@ class AlluxioService(OverlayService):
 
     os.environ['DEFAULT_LIBEXEC_DIR'] = os.path.join(alluxio_home, 'libexec')
     os.environ['ALLUXIO_RAM_FOLDER'] = self.ramdisk
+    os.environ['ALLUXIO_UNDERFS_ADDRESS'] = config.ALLUXIO_UNDERFS
+    os.environ['ALLUXIO_WORKER_MEMORY_SIZE'] = config.ALLUXIO_WORKER_MEM
+
     self.MONITOR_WAIT_DELAY    = config.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
     self.CATALOG_IDLE_THETA    = config.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
     self.CATALOG_STARTUP_DELAY = config.CATALOG_STARTUP_DELAY #ini.get('catalog_startup_delay', 10)
@@ -114,8 +117,8 @@ class AlluxioService(OverlayService):
     """This is used for the Alluxio Master to launch subsequent worker nodes
     in a rolling succession
     """
-    taskid = 'ol-test-sl'
-    params = {'time':'1:0:0', 
+    taskid = 'osvc-alx'
+    params = {'time':'4:0:0', 
               'nodes':1, 
               'cpus-per-task':1, 
               'partition':'debug', 
@@ -127,4 +130,80 @@ class AlluxioService(OverlayService):
                'ALLUXIO_RAM_FOLDER': '/tmp/alluxio'}
     cmd = '\nmkdir -p /tmp/alluxio'
 
+
+class AlluxioClient(object):
+  """Alluxio Client interface for performing POSIX-like operations on the 
+  Alluxio distributed in-memory file system. Client object uses the 
+  Alluxio Shell executable command (via terminal command line); 
+
+  TODO: Future implementation should implement via jython or jcc
+  wrapped over the Java AlluxioShell Class
+  """
+
+  def __init__(self, home=None, master=None):
+
+    config = systemsettings()
+    # Require alluxio home to be defined
+    if home is None and os.getenv('ALLUXIO_HOME') is None:
+      logging.error('[AlluxioClient] ALLUXIO_HOME is not set or provided. Cannot create shell client')
+      return
+    elif home is not None:
+      self._home = home
+      os.environ['ALLUXIO_HOME'] = home
+    else:
+      self._home = os.getenv('ALLUXIO_HOME')
+
+    # Find master using AlluxioService lock file 
+    if master is None:
+      lockfile = '%s_%s.lock' % (config.name, 'AlluxioService')
+      if not os.path.exists(lockfile):
+        logging.error('[AlluxioClient] Alluxio service is not running.')
+        return
+      with open(lockfile, 'r') as conn:
+        conn_string = conn.read().split(',')
+        master = conn_string[0]
+    self.set_master(master)
+
+  def set_master(self, master):
+    self._master = master
+    os.environ['ALLUXIO_MASTER_ADDRESS'] = master
+
+  # Copy local file into Alluxio
+  def put(self, localfile, destdir=''):
+    if not os.path.exists(localfile):
+      logging.error('[AlluxioClient] File does not exist: %s', localfile)
+      return
+    cmd = 'alluxio fs copyFromLocal %s /%s' % (localfile, destdir)
+    out = executecmd(cmd)
+
+  # Retrieve file from Alluxio
+  def get(self, destdir):
+    cmd = 'alluxio fs cat %s /%s' % (localfile, destdir)
+    contents = executecmd(cmd)
+    return contents
+
+  # Retrieve file from Alluxio
+  def cp(self, remotefile, destdir):
+    cmd = 'alluxio fs copyToLocal /%s %s/%s' % (remotefile, destdir, remotefile)
+    logging.debug('[AlxClient] cp cmd: %s', cmd)
+    contents = executecmd(cmd)
+    logging.debug('CP results: %s', contents)
+    return contents
+
+
+
+  @classmethod
+  def package_cmd(cls, cmd, args=[]):
+    cmd_line = ['alluxio', 'fs', cmd]
+    cmd_line.extend(args)
+    return cmd_line
+
+  @classmethod
+  def ls(cls, destdir=''):
+    args = ['/' + destdir]
+    cmd = package_alluxio_cmd('ls', args)
+    out = executecmd(cmd)
+
+
+    return out
 

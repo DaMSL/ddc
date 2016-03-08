@@ -95,6 +95,10 @@ class systemsettings:
     # Redis Service specific settings
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
 
+    # Alluxio Service specific settings
+    self.ALLUXIO_UNDERFS = os.path.join(self.WORKDIR, 'alluxio', application)
+    self.ALLUXIO_WORKER_MEM = '20GB'
+
     # <DEPPRICATE>
     self.catalogConfig  = dict(
         name=ini.get('catalog_name', application),
@@ -136,14 +140,15 @@ class systemsettings:
     self.schema = defaults['schema']
     self.init = defaults['init']
 
+    # TODO: Migration to system settings accessors....
+    self.name = self.APPL_LABEL
+
     # make_config_file = 'default.conf'
 
     # if make_config_file:
     #   data = {'settings': ini, 'schema': self.schema}
     #   with open(make_config_file, 'w') as f:
     #     f.write(json.dumps(data, sort_keys=True, indent=4))
-
-
 
     self._configured = True
 
@@ -164,7 +169,7 @@ class systemsettings:
     self.NUM_VAR = n
   
   def envSetup(self):
-    for d in [self.JOBDIR, self.LOGDIR, self.DATADIR]:
+    for d in [self.JOBDIR, self.LOGDIR, self.DATADIR, self.ALLUXIO_UNDERFS]:
       if not os.path.exists(d):
         os.mkdir(d)
 
