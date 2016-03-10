@@ -49,7 +49,7 @@ class microbench:
         timelist.append('##    %7.2f  %s' % (t, label))
       else:
         timelist.append('##    %4d       %s' % (t, label))
-    print ('\n##    TIME   EVENT')
+    print ('##    TIME   EVENT')
     print ('  ------  ---------')
     for t in timelist:
       print(t)

@@ -83,10 +83,10 @@ def loadDEShawTraj(start, end=-1, filt='heavy'):
     trajectory = trajectory.join(traj) if trajectory else traj
   return trajectory
 
-def deshawReference():
+def deshawReference(atomfilter='heavy'):
   pdbfile, dcdfile = getHistoricalTrajectory(0)
   traj = md.load(dcdfile, top=pdbfile, frame=0)
-  filt = traj.top.select_atom_indices(selection='heavy')
+  filt = traj.top.select_atom_indices(selection=atomfilter)
   traj.atom_slice(filt, inplace=True)
   return traj
 

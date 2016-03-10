@@ -44,7 +44,7 @@ def updateschema(catalog):
 
   catalog.hmset("META_schema", dtype_map)
 
-DESHAW_PTS_FILE =  'bpti_10p.npy'
+DESHAW_PTS_FILE =  os.getenv('HOME') + '/work/data/debug/bpti_10p.npy'
 DESHAW_SAMPLE_FACTOR = 10  # As in 1/10th of full data set
 
 def calcDEShaw_PCA(catalog, force=False):
@@ -56,7 +56,7 @@ def calcDEShaw_PCA(catalog, force=False):
     logging.debug("Projecting DEshaw PCA Vectors (assuming PC's are pre-calc'd")
     pcavect = catalog.loadNPArray('pcaVectors')
     logging.debug("Loaded PCA Vectors: %s, %s", str(pcavect.shape), str(pcavect.dtype))
-    src = np.load(os.path.join(DEFAULT.DATADIR, DESHAW_PTS_FILE))
+    src = np.load(DESHAW_PTS_FILE)
     logging.debug("Loaded source points: %s, %s", str(src.shape), str(src.dtype))
     pcalist = np.zeros(shape=(len(src), numPC))
     start = dt.datetime.now()

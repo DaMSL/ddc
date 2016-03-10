@@ -29,7 +29,7 @@ def load_trajectory(dcdfile, pdbfile=None):
 
 def filter_heavy(source, pdbfile=None):
   """
-  Apply heavy atom filter. If no PDD file is provided, assume it is
+  Apply heavy atom filter. If no PDB file is provided, assume it is
   saved along side the dcd file, but with .pdb extension
   """
   if isinstance(source, md.Trajectory):

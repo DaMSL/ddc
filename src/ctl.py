@@ -80,14 +80,17 @@ def bootstrap (source, samplesize=.1, N=10, interval=.95):
     probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
   return probility_est
 
-def q_select (T, value):
+def q_select (T, value, limit=None):
   """SELECT operator
   """
   idx_list = []
   for i, elm in enumerate(T):
     if elm == value:
       idx_list.append(i)
-  return idx_list
+  if limit is None or len(idx_list) < limit:
+    return idx_list
+  else:
+    return idx_list[:limit]
 
 class controlJob(macrothread):
     def __init__(self, fname):
@@ -157,7 +160,8 @@ class controlJob(macrothread):
       cache_miss = []
       
       # DEShaw topology is assumed here
-      ref = deshaw.deshawReference()
+      ref = deshaw.deshawReference(atomfilter='all')
+      ref.atom_slice(ref.top.select('protein'), inplace=True)
 
       #  TODO: MOVE TO CACHE ???
       logging.debug('Checking cache for %d points to back-project', len(index_list))
@@ -172,9 +176,13 @@ class controlJob(macrothread):
       # Package all cached points into one trajectory
       logging.debug('Cache hits: %d points.', len(source_points))
       if len(source_points) > 0:
-        source_traj = md.Trajectory(source_points, ref.top)
+        source_traj_cached = md.Trajectory(source_points, ref.top)
       else:
-        source_traj = None
+        source_traj_cached = None
+
+      # All files were cached. Return back-projected points
+      if len(cache_miss) == 0:
+        return source_traj_cached
 
       # Archive File retrieval for all cache-miss points
       # TODO:  May need to deference to local RMS Subspace first, then Back to high-dim
@@ -219,6 +227,7 @@ class controlJob(macrothread):
       # print ('filelist --> ', filelist)
         
       # Add high-dim points to list of source points in a trajectory
+      source_points_uncached = []
       for idx in atomfilter.keys():
         if idx >= 0:
           filename = self.catalog.lindex('xid:filelist', idx)
@@ -227,15 +236,14 @@ class controlJob(macrothread):
           filename = deshaw.getDEShawfilename(-1 * idx)
           traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
         traj.atom_slice(traj.top.select('protein'), inplace=True)
-        traj = traj.slice(atomfilter[idx])
-        if source_traj is None:
-          source_traj = traj
-        else:
-          if source_traj.unitcell_vectors is None and traj.unitcell_vectors is not None:
-            source_traj.unitcell_vectors = traj.unitcell_vectors
-          source_traj.join(traj)
+        filtered = traj.slice(atomfilter[idx])
+        source_points_uncached.extend(filtered.xyz)
+      source_traj_uncached = md.Trajectory(np.array(source_points_uncached), ref.top)
 
-      return source_traj
+      if source_traj_cached is None:
+        return source_traj_uncached
+      else:
+        return source_traj_cached.join(source_traj_uncached)
 
     def execute(self, thru_index):
       """Executing the Controler Algorithm. Load pre-analyzed lower dimensional
@@ -290,25 +298,32 @@ class controlJob(macrothread):
       hcube_tree = KDTree.reconstruct(hcube_mapping, pca_subspace)
       bench.mark('KDTreee_build')
 
-    # Calculate veriable PDF estimations for each subspace via bootstrapping:
+    # Calculate variable PDF estimations for each subspace via bootstrapping:
       logging.debug("=======================  <SUBSPACE CONVERENCE>  =========================")
 
       # Bootstrap current sample for RMS
       logging.info("RMS Labels for %d points loaded. Bootstrapping.....", len(labeled_pts_rms))
       pdf_rms = bootstrap(labeled_pts_rms)
       logging.info("Bootstrap complete. PDF for each (observed) variable:")
-      for k, p in pdf_rms.items():
-        logging.info('##CONV  %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f', k, p[0], p[1], p[2], p[3])
+      for k, p in sorted(pdf_rms.items(), key=lambda x: x[0]):
+        print('##CONV %03d %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f' % (self.data['timestep'], k, p[0], p[1], p[2], p[3]))
       bench.mark('Bootstrap:RMS')
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
       #   Using RMS and PCA, umbrella sample transitions out of state 3
 
-      # 1. get all points in state label=(3,2) in RMS (from new sample only????):
-      label = str(list(pdf_rms.keys())[0])
-      logging.debug('SELECT points in label, %s', str(label))
-      rms_indexlist = q_select(labeled_pts_rms, label)
+      # 1. get all points in some state
+      #####  Experment #1: Round-Robin each of 25 bins
+      current_target = self.data['timestep']
+      while True:
+        A = (current_target % 25) // 5
+        B = current_target % 5
+        label = str((A, B))
+        logging.debug('SELECT points in label, %s', str(label))
+        rms_indexlist = q_select(labeled_pts_rms, label, limit=500)
+        if len(rms_indexlist) > 0:
+          break
       logging.debug("  num pts selected:  %d", len(rms_indexlist))
       bench.mark('Select:RMS_bin')
 
@@ -374,7 +389,7 @@ class controlJob(macrothread):
       # Select N=20 new candidates
       #  TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
       candidates = np.random.choice(list(umbrella.keys()), 
-           size=10, replace=True, p = list(umbrella.values()))
+           size=50, replace=True, p = list(umbrella.values()))
 
       print ('CANDIDATE HCUBES: ', candidates)
       # 2nd Selection Level: pick an index for each chosen cube (uniform)
@@ -396,7 +411,7 @@ class controlJob(macrothread):
         # TODO:  Update/check adaptive runtime, starting state
         jcConfig = dict(params,
               name    = jcID,
-              runtime = 10000,
+              runtime = 50000,
               interval = 500,
               temp    = 310,
               timestep = self.data['timestep'],
@@ -417,16 +432,18 @@ class controlJob(macrothread):
       logging.debug("============================  <POST-PROCESSING & OUTPUT>  =============================")
           
       # Clear current queue, mark previously queues jobs for GC, push new queue
-      if self.catalog.llen('jcqueue') > 0:
+      qlen = self.catalog.llen('jcqueue')
+      logging.debug('Current queue len;   %s', str(qlen))
+      if qlen > 0:
         curqueue = self.catalog.lrange('jcqueue', 0, -1)
-        self.catalog.delete('jcqueue')
-        existing_queue = deque(curqueue) 
-        logging.info("Marking %d obsolete jobs for garbage collection", len(existing_queue))
-        while len(existing_queue) > 0:
-          config = existing_queue.popleft()
+        logging.info("Marking %d obsolete jobs for garbage collection", len(curqueue))
+        for jc_key in curqueue:
+          key = wrapKey('jc', jc_key)
+          config = self.catalog.hgetall(key)
           config['gc'] = 0
           # Add gc jobs it to the state to write back to catalog (flags it for gc)
-          self.addMut(wrapKey('jc', config['name']), config)
+          self.addMut(key, config)
+        self.catalog.delete('jcqueue')
 
       self.data['jcqueue'] = list(jcqueue.keys())
 
@@ -438,6 +455,7 @@ class controlJob(macrothread):
         self.addMut(wrapKey('jc', jcid), config)
  
       bench.mark('PostProcessing')
+      print ('## TS=%d' % self.data['timestep'])
       bench.show()
 
       return list(jcqueue.keys())

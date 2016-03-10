@@ -20,7 +20,7 @@ import redis
 
 from core.common import * 
 from core.slurm import slurm
-from overlay.redisOverlay import RedisClient
+from overlay.redisOverlay import RedisService, RedisClient
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
