@@ -11,7 +11,4 @@ fi
 module load redis
 module load namd
 
-srun -N 1 -n 1 -c 1 -p $PART -J sm-0000.00 -o ${1}-s.log python src/simanl.py -c ${1} &
-sleep 3
-
 srun -N 1 -n 1 -c 1 -p $PART -J cm-0000.00 -o ${1}.c.log python src/ctl.py -c ${1} &

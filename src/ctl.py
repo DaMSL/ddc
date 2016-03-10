@@ -4,6 +4,7 @@ import argparse
 import sys
 import os
 import sys
+import math
 import json
 from random import choice, randint
 from collections import namedtuple, deque, OrderedDict
@@ -13,14 +14,14 @@ import numpy as np
 from numpy import linalg as LA
 
 from core.common import *
-from core.macrothread import macrothread
+from macro.macrothread import macrothread
 from core.kvadt import kv2DArray
 from core.slurm import slurm
 from core.kdtree import KDTree
-from indexing import *
 import mdsim.datareduce as datareduce
 import mdsim.deshaw as deshaw
-from overlay.redisOverlay import RedisCatalog
+from mdsim.simtool import generateNewJC
+from overlay.redisOverlay import RedisClient
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -32,125 +33,14 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 np.set_printoptions(precision=5, suppress=True)
 
-def psfgen(params):
-  return '''psfgen << ENDMOL
-
-# 1. Load Topology File
-topology %(topo)s
-
-# 2. Load Protein
-segment BPTI {pdb %(coord)s}
-
-# 3. Patch protein segment
-patch DISU BPTI:5 BPTI:55
-patch DISU BPTI:14 BPTI:38
-patch DISU BPTI:30 BPTI:51
-
-# 4. Define aliases
-pdbalias atom ILE CD1 CD ;
-pdbalias atom ALA H HN ;
-#pdbalias atom ALA OXT O ;
-pdbalias atom ARG H HN ;
-#pdbalias atom ARG H2 HN;
-#pdbalias atom ARG H3 HN;
-pdbalias atom ARG HB3 HB1 ;
-pdbalias atom ARG HD3 HD1 ;
-pdbalias atom ARG HG3 HG1 ;
-pdbalias atom ASN H HN ;
-pdbalias atom ASN HB3 HB1 ;
-pdbalias atom ASP H HN ;
-pdbalias atom ASP HB3 HB1 ;
-pdbalias atom CYS H HN ;
-pdbalias atom CYS HB3 HB1 ;
-pdbalias atom GLN H HN ;
-pdbalias atom GLN HB3 HB1 ;
-pdbalias atom GLN HG3 HG1 ;
-pdbalias atom GLU H HN ;
-pdbalias atom GLU HB3 HB1 ;
-pdbalias atom GLU HG3 HG1 ;
-pdbalias atom GLY H HN ;
-pdbalias atom GLY HA3 HA1 ;
-pdbalias atom ILE H HN ;
-pdbalias atom ILE HD11 HD1 ;
-pdbalias atom ILE HD12 HD2 ;
-pdbalias atom ILE HD13 HD3 ;
-pdbalias atom ILE HG13 HG11 ;
-pdbalias atom LEU H HN ;
-pdbalias atom LEU HB3 HB1 ;
-pdbalias atom LYS H HN ;
-pdbalias atom LYS HB3 HB1 ;
-pdbalias atom LYS HD3 HD1 ;
-pdbalias atom LYS HE3 HE1 ;
-pdbalias atom LYS HG3 HG1 ;
-pdbalias atom MET H HN ;
-pdbalias atom MET HB3 HB1 ;
-pdbalias atom MET HG3 HG1 ;
-pdbalias atom PHE H HN ;
-pdbalias atom PHE HB3 HB1 ;
-pdbalias atom PRO HB3 HB1 ;
-pdbalias atom PRO HD3 HD1 ;
-pdbalias atom PRO HG3 HG1 ;
-pdbalias atom SER H HN ;
-pdbalias atom SER HB3 HB1 ;
-pdbalias atom SER HG HG1 ;
-pdbalias atom THR H HN ;
-pdbalias atom TYR H HN ;
-pdbalias atom TYR HB3 HB1 ;
-pdbalias atom VAL H HN ;
-
-# 5. Read protein coordinates from PDB file & set coords
-coordpdb %(coord)s BPTI
-guesscoord
-
-# 6. Output psf/pdb files
-writepsf %(psf)s
-writepdb %(pdb)s
-
-ENDMOL''' % params
-
 
 def makeLogisticFunc (maxval, steep, midpt):
   return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
 
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 
-def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=None):
-    """Creates input parameters for a new simulation. A source trajectory
-    with starting coordinates is needed along with a topology/force field files
-    (defaults are provided from DEShaw). If no job candidate ID is given
-    a pseudo-random one is assigned as UID
-    """
-    logging.debug("Generating new simulation coordinates from:  %s", str(trajectory))
-    # Get a new uid (if needed)
-    jcuid = getUID() if jcid is None else jcid
 
-    # Prep file structure
-    jobdir = os.path.join(DEFAULT.JOBDIR,  jcuid)
-    coordFile  = os.path.join(jobdir, '%s_coord.pdb' % jcuid)
-    newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
-    newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
-    if not os.path.exists(jobdir):
-      os.makedirs(jobdir)
-    # Save this as a temp file to set up simulation input file
-    trajectory.save_pdb(coordFile)
-
-    # Create new params
-    newsimJob = dict(workdir=jobdir,
-        coord   = coordFile,
-        pdb     = newPdbFile,
-        psf     = newPsfFile,
-        topo    = topofile,
-        parm    = parmfile)
-
-    # run PSFGen to create the NAMD config file
-    logging.info("  Running PSFGen to set up simulation pdf/pdb files.")
-    stdout = executecmd(psfgen(newsimJob))
-    logging.debug("  PSFGen COMPLETE!!\n")
-    os.remove(coordFile)
-    del newsimJob['coord']
-    return jcuid, newsimJob
-
-def bootstrap (source, N=1000, interval=.95):
+def bootstrap (source, samplesize=.1, N=10, interval=.95):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
   """
@@ -161,21 +51,21 @@ def bootstrap (source, N=1000, interval=.95):
   V = set()
   for i in source:
     V.add(i)
-  print ("BS: labels ", str(V))
-  L = len(source)
+  # print ("BS: labels ", str(V))
+  L = round(len(source) * samplesize)
 
-  # Calculate mu_hat from bootstrap
-  mu_hat = {}
-  groupby = {v_i: 0 for v_i in V}
-  for s in source:
-    groupby[s] += 1
-  for v_i in V:
-    mu_hat[v_i] = groupby[v_i]/L
+  # Calculate mu_hat from bootstrap -- REMOVED
+  # mu_hat = {}
+  # groupby = {v_i: 0 for v_i in V}
+  # for s in source:
+  #   groupby[s] += 1
+  # for v_i in V:
+  #   mu_hat[v_i] = groupby[v_i]/L
 
   # Iterate for each bootstrap and generate statistical distributions
   boot = {i : [] for i in V}
   for i in range(N):
-    strap   = [source[np.random.randint(L)] for n in range(L)]
+    strap   = [source[np.random.randint(len(source))] for n in range(L)]
     groupby = {v_i: 0 for v_i in V}
     for s in strap:
       groupby[s] += 1
@@ -186,7 +76,7 @@ def bootstrap (source, N=1000, interval=.95):
     P_i = np.mean(boot[v_i])
     delta  = np.array(sorted(boot[v_i]))  #CHECK IF mu or P  HERE
     ciLO = delta[round(N*ci_lo)]
-    ciHI = delta[round(N*ci_hi)]
+    ciHI = delta[math.floor(N*ci_hi)]
     probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
   return probility_est
 
@@ -224,7 +114,7 @@ class controlJob(macrothread):
 
 
       # Update Base Slurm Params
-      self.slurmParams['cpus-per-task'] = 1
+      self.slurmParams['cpus-per-task'] = 24
 
       self.modules.add('namd')
 
@@ -235,22 +125,24 @@ class controlJob(macrothread):
     def split(self):
 
       immed = [] if len(self.data['completesim']) == 0 else ['completesim']
-      return [100], None
+      return [1000], None
 
     # DEFAULT VAL for i for for debugging
-    def fetch(self, i=100):
-      lastxid = int(self.catalog.llen('xid:reference'))
-      head = self.data['ctlIndexHead']
-      if head is None:
-        head = 0
-      else:
-        head = int(head)
-      mylimit = 100 #int(i)
-      logging.debug (' Current index head: %d     Total Points:  %d  \
-     Unprocessed:  %d.   My limit:  %d', lastxid, head, (lastxid-head), mylimit)
+    def fetch(self, i=1000):
+      return 1000 #num_to_process   #FOR now, do all pts
+     #  lastxid = int(self.catalog.llen('xid:reference'))
+     #  head = self.data['ctlIndexHead']
+     #  if head is None:
+     #    head = 0
+     #  else:
+     #    head = int(head)
+     #  mylimit = int(i)
+     #  num_to_process = head+mylimit if (lastxid-head) > mylimit else -1
+     #  logging.debug (' Current index head: %d    Total Pts :  %d  \
+     # Unprocessed:  %d.   My limit:  %d', head, lastxid, (lastxid-head), mylimit)
 
-      # return min(head + mylimit, lastxid)
-      return -1   #FOR now, do all pts
+     #  # return min(head + mylimit, lastxid)
+      return 1000 #num_to_process   #FOR now, do all pts
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
@@ -268,9 +160,9 @@ class controlJob(macrothread):
       ref = deshaw.deshawReference()
 
       #  TODO: MOVE TO CACHE ???
-      logging.debug('Checking cache for %d points for reweighting', len(index_list))
+      logging.debug('Checking cache for %d points to back-project', len(index_list))
       for i in index_list:
-        pt = None   #  pt = cache.request(i)  
+        pt = None   #  pt = cache.request(i)  NO CACHE !!!!!!
         if pt is None:
           # TODO: File retrieval
           cache_miss.append(i)
@@ -278,7 +170,7 @@ class controlJob(macrothread):
           source_points.append(pt)
 
       # Package all cached points into one trajectory
-      logging.debug('Consolidating %d points for all cache hits', len(source_points))
+      logging.debug('Cache hits: %d points.', len(source_points))
       if len(source_points) > 0:
         source_traj = md.Trajectory(source_points, ref.top)
       else:
@@ -300,16 +192,22 @@ class controlJob(macrothread):
       #  Account for DEShaw Files (derived from index if index not in catalog)
       atomfilter = {}
       for i, idx in enumerate(framelist):
+        # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
         if idx is None:
-          dcdfile_num = cache_miss[i] // 100
-          frame = (cache_miss[i] - 100*dcdfile_num) * 10
-          # Use negation to indicate DEShaw file (not in fileindex in catalog)
-          file_index = (-1 * dcdfile_num)
+          is_deshaw = True
         else:
           file_index, frame = eval(idx)
+          is_deshaw = (file_index < 0)
+        if is_deshaw:
+            dcdfile_num = frame // 1000
+            frame = frame - 1000*dcdfile_num
+            # Use negation to indicate DEShaw file (not in fileindex in catalog)
+            file_index = (-1 * dcdfile_num)
         if file_index not in atomfilter:
           atomfilter[file_index] = []
         atomfilter[file_index].append(frame)
+      logging.debug('Back projecting %s points from %d different files.', 
+        len(framelist), len(atomfilter))
 
       # # Get List of files
       # filelist = {}
@@ -328,23 +226,26 @@ class controlJob(macrothread):
         else:
           filename = deshaw.getDEShawfilename(-1 * idx)
           traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
-          traj.atom_slice(traj.top.select('protein'), inplace=True)
+        traj.atom_slice(traj.top.select('protein'), inplace=True)
         traj = traj.slice(atomfilter[idx])
         if source_traj is None:
           source_traj = traj
         else:
-          source_traj.join(traj, check_topology=False)
+          if source_traj.unitcell_vectors is None and traj.unitcell_vectors is not None:
+            source_traj.unitcell_vectors = traj.unitcell_vectors
+          source_traj.join(traj)
 
       return source_traj
 
     def execute(self, thru_index):
-      """Executing rhe Controler Algorithm. Load pre-analyzed lower dimensional
+      """Executing the Controler Algorithm. Load pre-analyzed lower dimensional
       subspaces, process user query and identify the sampling space with 
       corresponding distribution function for each user query. Calculate 
       convergence rates, run sampler, and then execute fairness policy to
       distribute resources among users' sampled values.
       """
       logging.debug('CTL MT')
+      bench = microbench()
 
     # PRE-PROCESSING ---------------------------------------------------------------------------------
       logging.debug("============================  <PRE-PROCESS>  =============================")
@@ -354,9 +255,16 @@ class controlJob(macrothread):
 
     # LOAD all new subspaces (?) and values
       # Load new RMS Labels -- load all for now
+      bench.start()
+      logging.debug('Loading RMS Labels')
       labeled_pts_rms = self.catalog.lrange('label:rms', 0, -1)
-
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
+      if thru_index == -1:
+        self.data['ctlIndexHead'] = self.catalog.llen('label:rms')
+      else:
+        self.data['ctlIndexHead'] = thru_index 
+      
+      logging.debug('  total RMS to process: %d', len(labeled_pts_rms))
       # varest_counts_rms = {}
       # total = 0
       # for i in labeled_pts_rms:
@@ -367,43 +275,54 @@ class controlJob(macrothread):
 
       # Load PCA Subspace of hypecubes
       hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
-      logging.debug('# Loaded keys = %d', len(hcube_mapping.keys()))
-
+      logging.debug('  # Loaded PCA keys = %d', len(hcube_mapping.keys()))
+      bench.mark('LD:Hcubes:%d' % len(hcube_mapping.keys()))
       # TODO: accessor function is for 1 point (i) and 1 axis (j). 
       #  Optimize by changing to pipeline  retrieval for all points given 
       #  a list of indices with an axis
-      func = lambda i,j: np.fromstring(self.catalog.lindex('subspace:pca', i))[j]
-      logging.debug("Reconstructing the tree...")
-      hcube_tree = KDTree.reconstruct(hcube_mapping, func)
+      # LOAD in enture PCA Subspace
+
+      #  TODO: Approximiation HERE <<--------------
+      # func = lambda i,j: np.fromstring(self.catalog.lindex('subspace:pca', i))[j]
+      pca_subspace = np.array([np.fromstring(pt) for pt in self.catalog.lrange('subspace:pca', 0, -1)])
+      bench.mark('LD:pcasubspace:%d' % len(pca_subspace))
+      logging.debug("Reconstructing the tree... (%d pca pts)", len(pca_subspace))
+      hcube_tree = KDTree.reconstruct(hcube_mapping, pca_subspace)
+      bench.mark('KDTreee_build')
 
     # Calculate veriable PDF estimations for each subspace via bootstrapping:
       logging.debug("=======================  <SUBSPACE CONVERENCE>  =========================")
 
-      # FOR NOW LOAD ALL and bootstrap that.....
-      logging.info("RMS Labels for _each_ point loaded. Bootstrapping.....")
+      # Bootstrap current sample for RMS
+      logging.info("RMS Labels for %d points loaded. Bootstrapping.....", len(labeled_pts_rms))
       pdf_rms = bootstrap(labeled_pts_rms)
-      logging.info("Bootstrap complete. PDF for each variable:")
+      logging.info("Bootstrap complete. PDF for each (observed) variable:")
       for k, p in pdf_rms.items():
         logging.info('##CONV  %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f', k, p[0], p[1], p[2], p[3])
+      bench.mark('Bootstrap:RMS')
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
       #   Using RMS and PCA, umbrella sample transitions out of state 3
 
-      # 1. get all points in state label=(3,2) in RMS:
-      label = '(3, 2)'
-      print('Projecting points in label: ', str(label))
+      # 1. get all points in state label=(3,2) in RMS (from new sample only????):
+      label = str(list(pdf_rms.keys())[0])
+      logging.debug('SELECT points in label, %s', str(label))
       rms_indexlist = q_select(labeled_pts_rms, label)
+      logging.debug("  num pts selected:  %d", len(rms_indexlist))
+      bench.mark('Select:RMS_bin')
 
       #  REWEIGHT OPERATION
       # Back-project all points to higher dimension <- as consolidatd trajectory
       source_traj = self.backProjection(rms_indexlist)
       traj = datareduce.filter_heavy(source_traj)
-      logging.debug('Consolidated all RMS points in HD space: %s', str(traj))
+      logging.debug('(BACK)PROJECT RMS points in HD space: %s', str(traj))
+      bench.mark('BackProject:RMS_To_HD')
 
       # 2. project into PCA space 
       rms_proj_pca = datareduce.PCA(traj.xyz, self.data['pcaVectors'], 3)
       logging.debug('Projects to PCA:  %s', str(rms_proj_pca.shape))
+      bench.mark('Project:RMS_To_PCA')
 
       # 3. Map into existing hcubes  (project only for now)
       #  A -> PCA  and B -> RMS
@@ -439,6 +358,7 @@ class controlJob(macrothread):
       # TODO: Factor in RMS weight
       comb_wgt = {k: gamma(wgt_A[k], wgt_B[k]) for k in hcube_B.keys()}
       total = sum(comb_wgt.values())
+      bench.mark('GammaFunc')
 
       umbrella = OrderedDict()
       for k, v in comb_wgt.items():
@@ -461,8 +381,11 @@ class controlJob(macrothread):
       sampled_set = []
       for i in candidates:
         selected_index = np.random.choice(list(hcube_A[i]) + list(hcube_B[i]))
+        logging.debug('BACK-PROJECT HighDim Index # %d', selected_index)
         traj = self.backProjection([selected_index])
         sampled_set.append(traj)
+      bench.mark('Sampler')
+
 
       # REDO CACHE CHECK FROM ABOVE!!!!!
     # Generate new starting positions
@@ -488,21 +411,22 @@ class controlJob(macrothread):
         jcqueue[jcID] = jcConfig
         logging.info("New Job Candidate Completed:  %s   #%d on the Queue", jcID, len(jcqueue))
 
+      bench.mark('GenInputParams')
+
     #  POST-PROCESSING  -------------------------------------
       logging.debug("============================  <POST-PROCESSING & OUTPUT>  =============================")
           
       # Clear current queue, mark previously queues jobs for GC, push new queue
-      pipe = self.catalog.pipeline()
-      pipe.lrange('jcqueue', 0, -1)
-      pipe.delete('jcqueue')
-      cursor = pipe.execute()
-      existing_queue = deque(cursor[0])
-      logging.info("Marking %d obsolete jobs for garbage collection", len(existing_queue))
-      while len(existing_queue) > 0:
-        config = existingQueue.popleft()
-        config['gc'] = 0
-        # Add gc jobs it to the state to write back to catalog (flags it for gc)
-        self.addMut(wrapKey('jc', config['name']), config)
+      if self.catalog.llen('jcqueue') > 0:
+        curqueue = self.catalog.lrange('jcqueue', 0, -1)
+        self.catalog.delete('jcqueue')
+        existing_queue = deque(curqueue) 
+        logging.info("Marking %d obsolete jobs for garbage collection", len(existing_queue))
+        while len(existing_queue) > 0:
+          config = existing_queue.popleft()
+          config['gc'] = 0
+          # Add gc jobs it to the state to write back to catalog (flags it for gc)
+          self.addMut(wrapKey('jc', config['name']), config)
 
       self.data['jcqueue'] = list(jcqueue.keys())
 
@@ -513,6 +437,9 @@ class controlJob(macrothread):
         # config['converge'] = self.data['converge']
         self.addMut(wrapKey('jc', jcid), config)
  
+      bench.mark('PostProcessing')
+      bench.show()
+
       return list(jcqueue.keys())
 
 
@@ -533,7 +460,7 @@ if __name__ == '__main__':
             (4, 2108, 258)]
     print('GEN DATA!')
 
-    #  REDO WELL
+    #  REDO WELLs
     for well in wells:
       state, win, frame = well
 

@@ -54,7 +54,10 @@ if __name__ == "__main__":
   if args.command == 'start':
     logging.info('Service: START')
     t = service.start()
-    t.join()
+    if t is not None:
+      t.join()
+    else:
+      logging.error("Service failed to start")
   elif args.command == 'stop':
     logging.info('Service: STOP')
     service.stop()

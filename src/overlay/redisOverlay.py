@@ -283,7 +283,7 @@ class RedisClient(redis.StrictRedis):
     logging.debug("Loading system schema")
 
     self.schema = self.hgetall('META_schema')
-    for k, v in self.schema.items(): print("  ",k, v)
+    # for k, v in self.schema.items(): print("  ",k, v)
 
   def clear(self):
     self.flushdb()

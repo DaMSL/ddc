@@ -75,7 +75,7 @@ def loadDEShawTraj(start, end=-1, filt='heavy'):
   for seqnum in range(start, end):
     pdbfile, dcdfile = getHistoricalTrajectory(seqnum)
     if not os.path.exists(dcdfile):
-      logging.info('%s   File not exists. Continuing with what I got', f)
+      logging.info('%s   File not exists. Continuing with what I got', dcdfile)
       break
     logging.info("LOADING:  %s", os.path.basename(dcdfile))
     traj = md.load(dcdfile, top=pdbfile)

@@ -1,20 +1,28 @@
 #!/usr/bin/env python
 
-from simmd import *
-from anl import *
-from ctl import *
-import deshaw
-from indexing import *
+# from simmd import *
+# from anl import *
+# from ctl import *
+import argparse
 import math
 import json
 import bisect
 import datetime as dt
 
+import mdtraj as md
+import numpy as np
+
+from core.common import *
+import mdsim.deshaw as deshaw
+from overlay.redisOverlay import RedisClient
+from core.kvadt import kv2DArray
+from core.slurm import slurm
+from core.kdtree import KDTree
+from mdsim.simtool import generateNewJC
 
 
 DO_COV_MAT = False
 
-import overlayService
 
 # For changes to schema
 def updateschema(catalog):
@@ -36,6 +44,9 @@ def updateschema(catalog):
 
   catalog.hmset("META_schema", dtype_map)
 
+DESHAW_PTS_FILE =  'bpti_10p.npy'
+DESHAW_SAMPLE_FACTOR = 10  # As in 1/10th of full data set
+
 def calcDEShaw_PCA(catalog, force=False):
   numPC = 3
 
@@ -45,23 +56,25 @@ def calcDEShaw_PCA(catalog, force=False):
     logging.debug("Projecting DEshaw PCA Vectors (assuming PC's are pre-calc'd")
     pcavect = catalog.loadNPArray('pcaVectors')
     logging.debug("Loaded PCA Vectors: %s, %s", str(pcavect.shape), str(pcavect.dtype))
-    src = np.load(os.path.join(DEFAULT.DATADIR, 'bpti_10p.npy'))
+    src = np.load(os.path.join(DEFAULT.DATADIR, DESHAW_PTS_FILE))
     logging.debug("Loaded source points: %s, %s", str(src.shape), str(src.dtype))
     pcalist = np.zeros(shape=(len(src), numPC))
     start = dt.datetime.now()
-    pdbfile, dcdfile = getHistoricalTrajectory(0)
+    pdbfile, dcdfile = deshaw.getHistoricalTrajectory(0)
     traj = md.load(dcdfile, top=pdbfile, frame=0)
     filt = traj.top.select_atom_indices(selection='heavy')
+    pipe = catalog.pipeline()
     for i, conform in enumerate(src):
       if i % 10000 == 0:
         logging.debug("Projecting: %d", i)
       heavy = np.array([conform[k] for k in filt])
       np.copyto(pcalist[i], np.array([np.dot(heavy.reshape(pc.shape),pc) for pc in pcavect[:numPC]]))
+      raw_index = i * DESHAW_SAMPLE_FACTOR
+      pipe.rpush('xid:reference', '(-1, %d)' % raw_index)
     end = dt.datetime.now()
     logging.debug("Projection time = %d", (end-start).seconds)
 
     rIdx = []
-    pipe = catalog.pipeline()
     for si in pcalist:
       rIdx.append(pipe.rpush('subspace:pca', bytes(si)))
     pipe.execute()
@@ -84,18 +97,18 @@ def calcDEShaw_PCA(catalog, force=False):
   # cacherawfile = os.path.join(DEFAULT.DATADIR, 'cache_raw')
   # np.save(cacherawfile, src)
 
-
 def initializecatalog(catalog):
   settings = systemsettings()
-  if not settings.configured():
-    settings.applyConfig()
 
   # TODO:  Job ID Management
   ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
   for k,v in ids.items():
     settings.schema[k] = type(v).__name__
 
-  logging.debug("Catalog found on `%s`. Clearing it.", catalog.host)
+  logging.debug("Clearing Catalog.")
+  if not catalog.isconnected:
+    logging.warning('Catalog is not started. Please start it first.')
+    sys.exit(0)
   catalog.clear()
 
   logging.debug("Loading schema into catalog.")
@@ -114,7 +127,7 @@ def initializecatalog(catalog):
 
   #  Create Candidate Pools from RMSD for all source DEShaw data
   logging.info("Loading DEShaw RMS Values")
-  rms = np.load('rmsd.npy')
+  rms = np.load('data/rmsd.npy')
   stddev = 1.1136661550671645
   theta = stddev / 4
   logging.info("Creating candidate pools")
@@ -152,16 +165,16 @@ def initializecatalog(catalog):
         pipe.rpush(kv2DArray.key('candidatePool', i, j), c)
   pipe.execute()
 
-  centfile = 'centroid.npy'
+  centfile = 'data/centroid.npy'
   logging.info("Loading centroids from %s", centfile)
   centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
 
 
   # Initialize observations matrix
-  logging.info('Initializing lauch, observe, and runtime matrices')
+  logging.info('Initializing observe and runtime matrices')
   observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
-  launch = kv2DArray(catalog, 'launch', mag=numLabels, init=0)
+  # launch = kv2DArray(catalog, 'launch', mag=numLabels, init=0)
   runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
 
 def init_archive(archive, hashsize=8):
@@ -393,7 +406,7 @@ def seedJob(catalog, num=1):
         catalog.rpush(kv2DArray.key('candidatePool', i, j), start)
 
         logging.debug("   Selected: BPTI %s, frame: %s", src, frame)
-        pdbfile, dcdfile = getHistoricalTrajectory(int(src))
+        pdbfile, dcdfile = deshaw.getHistoricalTrajectory(int(src))
         traj = md.load(dcdfile, top=pdbfile, frame=int(frame))
         traj.atom_slice(traj.top.select('protein'), inplace=True)
 
@@ -425,6 +438,7 @@ if __name__ == '__main__':
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--updateschema', action='store_true')
   parser.add_argument('--initpca', action='store_true')
+  parser.add_argument('--all', action='store_true')
 
   # parser.add_argument('--initarchive', action='store_true')
   # parser.add_argument('--seeddata', action='store_true')
@@ -435,23 +449,22 @@ if __name__ == '__main__':
   # parser.add_argument('--slide', type=int, default=100)
   args = parser.parse_args()
 
-
   confile = args.name + '.json'
 
   settings = systemsettings()
   settings.applyConfig(confile)
-  # catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-  catalog = overlayService.RedisClient(args.name)
+  catalog = RedisClient(args.name)
 
+  # TO Recalculate PCA Vectors from DEShaw (~30-40 mins at 10% of data)
   # calcDEShaw_PCA(catalog)
   # sys.exit(0)
 
-  if args.initcatalog:
+  if args.initcatalog or args.all:
     settings.envSetup()
     initializecatalog(catalog)
 
-  if args.initpca:
-    pcaVectorfile = 'cpca_pc3.npy'
+  if args.initpca or args.all:
+    pcaVectorfile = 'data/cpca_pc3.npy'
     logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
     pcaVectors = np.load(pcaVectorfile)
     catalog.storeNPArray(pcaVectors, 'pcaVectors')
@@ -462,7 +475,8 @@ if __name__ == '__main__':
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     updateschema(catalog)
 
-  if args.seedjob:
+  if args.seedjob or args.all:
+    executecmd('module load namd')
     seedJob(catalog)
 
 

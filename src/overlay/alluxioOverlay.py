@@ -71,15 +71,23 @@ class AlluxioService(OverlayService):
     os.environ['ALLUXIO_HOME'] = alluxio_home
     if self._role == 'SLAVE':
       os.environ['ALLUXIO_MASTER_ADDRESS'] = self.master
-      self.launchcmd = 'alluxio-start.sh worker Mount'
+      self.launchcmd = 'alluxio-start.sh worker Mount -f'
     else:
       os.environ['ALLUXIO_MASTER_ADDRESS'] = 'localhost'
-      self.launchcmd = 'alluxio-start.sh local'
+      self.launchcmd = 'alluxio-start.sh local -f'
+
+
 
     os.environ['DEFAULT_LIBEXEC_DIR'] = os.path.join(alluxio_home, 'libexec')
     os.environ['ALLUXIO_RAM_FOLDER'] = self.ramdisk
     os.environ['ALLUXIO_UNDERFS_ADDRESS'] = config.ALLUXIO_UNDERFS
     os.environ['ALLUXIO_WORKER_MEMORY_SIZE'] = config.ALLUXIO_WORKER_MEM
+
+
+    # logdir = os.path.join(alluxio_home, 'logs', self._host)
+    # if not os.path.exists(logdir):
+    #   os.mkdir(logdir)
+    # os.environ['ALLUXIO_LOGS_DIR'] = logdir
 
     self.MONITOR_WAIT_DELAY    = config.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
     self.CATALOG_IDLE_THETA    = config.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
@@ -112,6 +120,8 @@ class AlluxioService(OverlayService):
   def tear_down(self):
     logging.info("[%s] Removing the ramdisk", self._name_svc)
     shutil.rmtree(self.ramdisk)
+    logging.info("[%s] Removing the Under FS (on local /tmp)", self._name_svc)
+    shutil.rmtree(config.ALLUXIO_UNDERFS)
 
   def launch_slave(self):
     """This is used for the Alluxio Master to launch subsequent worker nodes

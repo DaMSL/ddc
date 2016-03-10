@@ -145,7 +145,7 @@ class OverlayService(object):
         slave_wait_ttl -= self.SERVICE_STARTUP_DELAY
         if slave_wait_ttl < 0: 
           logging.warning('[%s] Could not find a master. Slave is shutting down on %s.  Waiting...', self._name_svc, self._host)
-          return False
+          return None
       # Set the master 
       self.master = host
       #TODO: 
@@ -181,7 +181,7 @@ class OverlayService(object):
             break
           else:
             logging.debug('[%s] Service already running on %s. To start as slave, call handover_slave', self._name_svc, host)
-            return False
+            return None
         else:
           logging.warning('[%s] Service is NOT running. Will attempt to recover and start locally.', self._name_svc)
           os.remove(self.lockfile)
@@ -191,11 +191,11 @@ class OverlayService(object):
 
     if self.launchcmd is None:
       logging.error("[%s] Launch Command not set. It needs to be defined.", self._name_svc)
-      return False
+      return None
 
     if self.shutdowncmd is None:
       logging.error("[%s] Shutdown Command not set. It needs to be defined.", self._name_svc)
-      return False
+      return None
 
     # TODO: Check subproc call here -- should this also be threaded in a python wrap call?
     logging.info("[%s] Launching following command %s", self._name_svc, self.launchcmd)    
@@ -205,10 +205,10 @@ class OverlayService(object):
     if service.returncode is not None:
       logging.error("[%s] ERROR starting local service on %s", self._name_svc, self.host)    
       # Exit or Return ???
-      return False
+      return None
 
     # Ensure service has started locally
-    svc_up = False
+    svc_up = None
     timeout = time.time() + self.SERVICE_STARTUP_DELAY
     while not svc_up:
       if time.time() > timeout:
@@ -219,7 +219,7 @@ class OverlayService(object):
 
     if not svc_up:
       logging.error("[%s] Service never started. You may need to retry.", self._name_svc)    
-      return False
+      return None
 
     self._state = 'RUNNING'
     logging.info("[%s] My Service started local on %s. Starting the local monitor.", self._name_svc, self._host)    

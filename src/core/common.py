@@ -42,11 +42,17 @@ class microbench:
       label = 'mark-%02d' % len(self.tick.keys())
     self.tick[label] = dt.datetime.now()
   def show(self):
+    timelist = []
+    for label, ts in self.tick.items():
+      t = (ts-self._begin).total_seconds()
+      if t < 10.:
+        timelist.append('##    %7.2f  %s' % (t, label))
+      else:
+        timelist.append('##    %4d       %s' % (t, label))
     print ('\n##    TIME   EVENT')
     print ('  ------  ---------')
-    for label, ts in self.tick.items():
-      t = (ts-self._begin).seconds
-      print('##    %4d  %s' % (t, label))
+    for t in timelist:
+      print(t)
 
 def singleton(cls):
     instances = {}
@@ -96,7 +102,10 @@ class systemsettings:
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
 
     # Alluxio Service specific settings
-    self.ALLUXIO_UNDERFS = os.path.join(self.WORKDIR, 'alluxio', application)
+    # FOR shared Lustre (not working!)
+    # self.ALLUXIO_UNDERFS = os.path.join(self.WORKDIR, 'alluxio', application)
+    # FOR local UFS (will need to clean up!)
+    self.ALLUXIO_UNDERFS = '/tmp/alluxio'
     self.ALLUXIO_WORKER_MEM = '20GB'
 
     # <DEPPRICATE>

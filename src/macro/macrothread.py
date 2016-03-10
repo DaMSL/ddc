@@ -44,7 +44,10 @@ class macrothread(object):
     args = self.parser.parse_args()
     self.config = args.config
 
-    #  apply global settings (TODO: Move to system pro-proc)    
+    #  apply global settings (TODO: Move to system pro-proc)
+    # Default to json ini file:
+    if not self.config.endswith('json'):
+      self.config += '.json'
     DEFAULT.applyConfig(self.config)
 
     # Thread State
@@ -123,7 +126,6 @@ class macrothread(object):
   def addMut(self, key, value=None):
     self._mut.append(key)
     if value is not None:
-      print ("ADDING MUTABLE DATA:  ", key)
       self.data[key] = value
 
   def addImmut(self, key, value=None):
