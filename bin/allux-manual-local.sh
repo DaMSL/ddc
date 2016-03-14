@@ -22,5 +22,5 @@ alluxio formatWorker
 alluxio-start.sh master
 master=$!
 alluxio-start.sh worker Mount
-wait master
+#wait master
 

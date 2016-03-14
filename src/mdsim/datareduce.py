@@ -48,3 +48,20 @@ def filter_heavy(source, pdbfile=None):
   return traj
 
 
+def get_pairlist(traj):
+  N = traj.n_atoms
+  pairs = np.array([(i, j) for i in range(N-1) for j in range(i+1, N)])
+  return pairs
+
+
+# sums = np.zeros(shape=(5, 58, 3))
+# Convert a trajectory (or traj list) to distance space
+#  By default, this will compute ALL pair-wise distances and return
+#  a vectors (or list of vectors if list of trajectories is provided)
+def distance_space(traj):
+  if isinstance(traj, list):
+    pairs = get_pairlist(traj[0])
+    return [md.compute_distances(k,pairs) for k in traj]
+  else:
+    pairs = get_pairlist(traj)
+    return md.compute_distances(traj,pairs)

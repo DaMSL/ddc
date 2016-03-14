@@ -117,6 +117,7 @@ class simulationJob(macrothread):
 
   def execute(self, job):
 
+  # EXECUTE SIMULATION ---------------------------------------------------------
     # Prepare & source to config file
     with open(self.data['sim_conf_template'], 'r') as template:
       source = template.read()
@@ -203,8 +204,9 @@ class simulationJob(macrothread):
     key = wrapKey('jc', job['name'])
     self.data[key]['dcd'] = dcdFile
 
+  # ANALYSIS   ------- ---------------------------------------------------------
     #  ANALYSIS ALGORITHM
-    # 1. With combined Sim-analysis: file is loaded locally from shared mem
+  # 1. With combined Sim-analysis: file is loaded locally from shared mem
     logging.debug("2. Load DCD")
     traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
     bench.mark('File_Load')
@@ -221,7 +223,7 @@ class simulationJob(macrothread):
     global_xid_index_slice = [x-1 for x in global_idx]
     bench.mark('Indx_Update')
 
-  # 4. Update higher dimensional index
+  # 3. Update higher dimensional index
     # Logical Sequence # should be unique seq # derived from manager (provides this
     #  worker's instantiation with a unique ID for indexing)
     mylogical_seqnum = str(self.seqNumFromID())
@@ -232,9 +234,13 @@ class simulationJob(macrothread):
     # for i in range(traj.n_frames):
     #   cache.insert(global_xid_index_slice[i], traj.xyz[i])
 
-    # 5a. Subspace Calcuation: RMS
+  # 4a. Subspace Calcuation: RMS
     #------ A:  RMSD  ------------------
       #     S_A = rmslist
+      #  RMSD is calculated on the Ca ('alpha') atoms in distance space
+      #   whereby all pairwise distances are calculated for each frame.
+      #   Pairwise distances are plotted in euclidean space
+      #   Distance to each of the 5 pre-calculated centroids is calculated
 
       # 1. Calc RMS for each conform to all centroids
     logging.debug("3. RMS Calculation")

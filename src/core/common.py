@@ -136,6 +136,8 @@ class systemsettings:
 
     #  PARAMS TO BE SET:
     self.OBS_NOISE = ini.get('obs_noise', 10000)
+    self.RUNTIME_FIXED = ini.get('runtime', 100000)
+    self.DCDFREQ = ini.get('dcdfreq', 500)
 
 
     # Config Schema -- placed here for now (TODO: Split????)    

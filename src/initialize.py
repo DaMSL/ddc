@@ -417,6 +417,7 @@ def seedJob(catalog, num=1):
         config = dict(params,
             name    = jcID,
             runtime = settings.init['runtime'],
+            dcdfreq = settings.init['dcdfreq'],
             temp    = 310,
             state   = i,
             timestep = 0,

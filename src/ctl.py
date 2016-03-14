@@ -8,6 +8,7 @@ import math
 import json
 from random import choice, randint
 from collections import namedtuple, deque, OrderedDict
+from threading import Thread
 
 import mdtraj as md
 import numpy as np
@@ -40,7 +41,7 @@ def makeLogisticFunc (maxval, steep, midpt):
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 
 
-def bootstrap (source, samplesize=.1, N=10, interval=.95):
+def bootstrap (source, samplesize=.1, N=50, interval=.95):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
   """
@@ -52,7 +53,11 @@ def bootstrap (source, samplesize=.1, N=10, interval=.95):
   for i in source:
     V.add(i)
   # print ("BS: labels ", str(V))
+
+  #  EXPERIMENT #1, 4+:  SAMPLE SIZE WAS 10%
   L = round(len(source) * samplesize)
+  #  EXPERIMENT #2&3:  FIXED SAMPLE SIZE OF 100K (or less)
+  # L = min(len(source), 100000)
 
   # Calculate mu_hat from bootstrap -- REMOVED
   # mu_hat = {}
@@ -80,6 +85,54 @@ def bootstrap (source, samplesize=.1, N=10, interval=.95):
     probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
   return probility_est
 
+
+def bootstrap_by_state (source, samplesize=.1, N=50, interval=.95):
+  """
+  Bootstrap algorithm for sampling and confidence interval estimation
+  """
+  ci_lo = (1. - interval)/2
+  ci_hi  = 1. - ci_lo
+
+  # Get unique label/category/hcube ID's
+  V = set()
+  for i in source:
+    V.add(i)
+
+  #  EXPERIMENT #1, 4+:  SAMPLE SIZE WAS 10%
+  L = round(len(source) * samplesize)
+  #  EXPERIMENT #2&3:  FIXED SAMPLE SIZE OF 100K (or less)
+  # L = min(len(source), 100000)
+
+  # Iterate for each bootstrap and generate statistical distributions
+  boot = {i : [] for i in V}
+  for i in range(N):
+    strap   = [source[np.random.randint(len(source))] for n in range(L)]
+    groupby = {v_i: 0 for v_i in V}
+    totals = [0 for i in range(5)]
+    for s in strap:
+      groupby[s] += 1
+    for v_i in V:
+      A, B = eval(v_i)
+      if A != B:
+        totals[A] += groupby[v_i]
+    for v_i in V:
+      A, B = eval(v_i)
+      if A != B:  
+        boot[v_i].append(groupby[v_i]/totals[A])
+  probility_est = {}
+  for v_i in V:
+    A, B = eval(v_i)
+    if A == B:
+      probility_est[v_i] = (0, 0, 0, 0.)
+    else:
+      P_i = np.mean(boot[v_i])
+      delta  = np.array(sorted(boot[v_i]))  #CHECK IF mu or P  HERE
+      ciLO = delta[round(N*ci_lo)]
+      ciHI = delta[math.floor(N*ci_hi)]
+      probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
+  return probility_est
+
+
 def q_select (T, value, limit=None):
   """SELECT operator
   """
@@ -90,7 +143,8 @@ def q_select (T, value, limit=None):
   if limit is None or len(idx_list) < limit:
     return idx_list
   else:
-    return idx_list[:limit]
+    return np.random.choice(idx_list, limit)
+
 
 class controlJob(macrothread):
     def __init__(self, fname):
@@ -105,8 +159,8 @@ class controlJob(macrothread):
       self.addImmut('ctlDelay')
       self.addImmut('numLabels')
       self.addImmut('terminate')
-      self.addImmut('weight_alpha')
-      self.addImmut('weight_beta')
+      self.addImmut('backproj:approxlimit')
+      self.addImmut('numresources')
 
       self.addImmut('launch')
       self.addAppend('timestep')
@@ -120,6 +174,8 @@ class controlJob(macrothread):
       self.slurmParams['cpus-per-task'] = 24
 
       self.modules.add('namd')
+
+      self.trajlist_async = deque()
 
     def term(self):
       # For now
@@ -150,19 +206,37 @@ class controlJob(macrothread):
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
 
+    # FOR THREADING
+    # def trajLoader(self, indexlist):
+    #   for idx, framelist in indexlist:
+    #     logging.debug(" Threaded Traj Loader for idx#%d", idx)
+    #     if idx >= 0:
+    #       filename = self.catalog.lindex('xid:filelist', idx)
+    #       traj = datareduce.load_trajectory(filename)
+    #     else:
+    #       filename = deshaw.getDEShawfilename(-idx, fullpath=True) % (-idx)
+    #       traj = md.load(filename, top=deshaw.PDB_FILE)
+    #       # traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
+    #     traj.atom_slice(traj.top.select('protein'), inplace=True)
+    #     self.trajlist_async.append(traj.slice(framelist))
+    #     logging.debug('FILE ld complete for %s.  # Traj Loaded = %d', filename, len(self.trajlist_async))
 
     def backProjection(self, index_list):
       """Perform back projection function for a list of indices. Return a list 
       of high dimensional points (one per index). Check cache for each point and
       condolidate file I/O for all cache misses.
       """
+      bench = microbench()
       source_points = []
       cache_miss = []
+
+      self.trajlist_async = deque()
       
       # DEShaw topology is assumed here
+      bench.start()
       ref = deshaw.deshawReference(atomfilter='all')
       ref.atom_slice(ref.top.select('protein'), inplace=True)
-
+      bench.mark('LD:ref')
       #  TODO: MOVE TO CACHE ???
       logging.debug('Checking cache for %d points to back-project', len(index_list))
       for i in index_list:
@@ -186,10 +260,12 @@ class controlJob(macrothread):
 
       # Archive File retrieval for all cache-miss points
       # TODO:  May need to deference to local RMS Subspace first, then Back to high-dim
+      bench.mark('Cache:Hit')
       pipe = self.catalog.pipeline()
       for pt in cache_miss:
         pipe.lindex('xid:reference', pt)
       framelist = pipe.execute()
+      bench.mark('LD:Redis:xidlist')
       # for i in range(len(framelist)):
       #   if framelist[i] is None:
       #     dcdfile_num = cache_miss[i] // 100
@@ -216,6 +292,7 @@ class controlJob(macrothread):
         atomfilter[file_index].append(frame)
       logging.debug('Back projecting %s points from %d different files.', 
         len(framelist), len(atomfilter))
+      bench.mark('GroupBy:Files')
 
       # # Get List of files
       # filelist = {}
@@ -227,18 +304,44 @@ class controlJob(macrothread):
       # print ('filelist --> ', filelist)
         
       # Add high-dim points to list of source points in a trajectory
+      # Optimized for parallel file loading
       source_points_uncached = []
-      for idx in atomfilter.keys():
+      loader_threads = []
+      logging.debug('Sequentially Loading all trajectories')
+      # Parallel this to factor of 23
+      thread_indexlist = {i: [] for i in range(23)}
+      for i, idx in enumerate(atomfilter.keys()):
+      #   thread_indexlist[i%23].append((idx, atomfilter[idx]))
+      # for i, idx in thread_indexlist.items():
+      #   t = Thread(target=self.trajLoader, args=([idx]))
+      #   t.start()
+      #   loader_threads.append(t)
         if idx >= 0:
           filename = self.catalog.lindex('xid:filelist', idx)
           traj = datareduce.load_trajectory(filename)
         else:
-          filename = deshaw.getDEShawfilename(-1 * idx)
-          traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
+          filename = deshaw.getDEShawfilename(-idx, fullpath=True) % (-idx)
+          traj = md.load(filename, top=deshaw.PDB_FILE)
+          # traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
         traj.atom_slice(traj.top.select('protein'), inplace=True)
         filtered = traj.slice(atomfilter[idx])
+
         source_points_uncached.extend(filtered.xyz)
+        bench.mark('LD:File:%s'%filename)
+      # bench.mark('LD:ASYNC:Threaded')
+      # logging.debug('All Thread launched. # Threads = %d', len(loader_threads))
+      # for t in loader_threads:
+      #   t.join()
+      # logging.debug('All Thread complete')
+      # bench.mark('LD:ASYNC:Loaded')
+      # while len(self.trajlist_async) > 0:
+      #   tr = self.trajlist_async.popleft()
+      #   source_points_uncached.extend(tr.xyz)
+      logging.debug('All Data collected Total # points = %d', len(source_points_uncached))
+      # bench.mark('LD:ASYNC:Collected')
       source_traj_uncached = md.Trajectory(np.array(source_points_uncached), ref.top)
+      bench.mark('Build:Traj')
+      # bench.show()
 
       if source_traj_cached is None:
         return source_traj_uncached
@@ -272,7 +375,7 @@ class controlJob(macrothread):
       else:
         self.data['ctlIndexHead'] = thru_index 
       
-      logging.debug('  total RMS to process: %d', len(labeled_pts_rms))
+      logging.debug('##TOTAL_RMS: %d', len(labeled_pts_rms))
       # varest_counts_rms = {}
       # total = 0
       # for i in labeled_pts_rms:
@@ -303,8 +406,9 @@ class controlJob(macrothread):
 
       # Bootstrap current sample for RMS
       logging.info("RMS Labels for %d points loaded. Bootstrapping.....", len(labeled_pts_rms))
-      pdf_rms = bootstrap(labeled_pts_rms)
+      pdf_rms = bootstrap_by_state(labeled_pts_rms)
       logging.info("Bootstrap complete. PDF for each (observed) variable:")
+
       for k, p in sorted(pdf_rms.items(), key=lambda x: x[0]):
         print('##CONV %03d %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f' % (self.data['timestep'], k, p[0], p[1], p[2], p[3]))
       bench.mark('Bootstrap:RMS')
@@ -314,16 +418,47 @@ class controlJob(macrothread):
       #   Using RMS and PCA, umbrella sample transitions out of state 3
 
       # 1. get all points in some state
-      #####  Experment #1: Round-Robin each of 25 bins
-      current_target = self.data['timestep']
+      #####  Experment #1: Round-Robin each of 25 bins (do loop to prevent select from empty bin)
+      # target_bin = self.data['timestep']
+      # while True:
+      #   A = (target_bin % 25) // 5
+      #   B = target_bin % 5
+      #   label = str((A, B))
+      #   logging.debug('SELECT points in label, %s', str(label))
+      #   rms_indexlist = q_select(labeled_pts_rms, label, limit=500)
+      #   if len(rms_indexlist) > 0:
+      #     break
+
+      #####  EXPERIMENT #2,3:  Select the least converged start state from RMS
+      conv_startstate = [0 for i in range(5)]
+      conv_num = [0 for i in range(5)]
+      for k, p in sorted(pdf_rms.items()):
+        A, B = eval(k)
+        conv_startstate[A] += float(p[3])
+        conv_num[A] += 1
+      for i in range(5):
+        if conv_num[i] == 0:
+          conv_startstate[i] = 0
+        else:    
+          conv_startstate[i] /= conv_num[i]
+        logging.debug("##STATE_CONV %d %4.2f", i, conv_startstate[i])
+      target_state = np.argmax(conv_startstate)
+      rms_indexlist = []
+      # Using Appoximation (otherwise this would be VERY long)
+      selectsizelimit = self.data['backproj:approxlimit'] // 4
       while True:
-        A = (current_target % 25) // 5
-        B = current_target % 5
-        label = str((A, B))
-        logging.debug('SELECT points in label, %s', str(label))
-        rms_indexlist = q_select(labeled_pts_rms, label, limit=500)
+        logging.debug('SELECT points which started in state: %d', target_state)
+        for B in range(5):
+          if target_state == B:
+            continue
+          label = str((target_state, B))
+          rms_indexlist.extend(q_select(labeled_pts_rms, label, limit=selectsizelimit))
         if len(rms_indexlist) > 0:
           break
+        # If no points, then select a random start state until we get one:
+        logging.debug("NO POINTS to Sample!! Selecting a random start state")
+        target_state = np.random.randint(5)
+
       logging.debug("  num pts selected:  %d", len(rms_indexlist))
       bench.mark('Select:RMS_bin')
 
@@ -342,45 +477,51 @@ class controlJob(macrothread):
       # 3. Map into existing hcubes  (project only for now)
       #  A -> PCA  and B -> RMS
       #   TODO:  Insert here and deal with collapsing geometric hcubes in KDTree
+      # Initiaze the set of "projected" hcubes in B
       hcube_B = {}
+      # Project every selected point into PCA and then group by hcube
       for i in range(len(rms_proj_pca)):
-        hcube = hcube_tree.project(rms_proj_pca[i])
+        hcube = hcube_tree.project(rms_proj_pca[i], maxdepth=8)
         # print('POJECTING ', i, '  ', rms_proj_pca[i], '  ---->  ', hcube)
         if hcube not in hcube_B:
           hcube_B[hcube] = []
         hcube_B[hcube].append(i)
+      # Gather the hcube stats for wgt calc
       hcube_sizes = [len(k) for k in hcube_B.keys()]
       low_dim = max(hcube_sizes) + 1
       total = sum(hcube_sizes)
-      # CHeck wght calc
+      # calc Wght
       wgt_B = {k: len(hcube_B[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
-      comb_wgt = {k: wgt_B[k] for k in hcube_B.keys()}
 
       logging.debug('Projected %d points into PCA. Found the following keys:', len(rms_proj_pca))
+
+      # Get all original HCubes from A for "overlapping" hcubes
       hcube_A = {}
       for k in hcube_B.keys():
         hcube_A[k] = hcube_tree.retrieve(k)
-        logging.debug('   %15s  ->  %d A-pts    %d B-pts', k, len(hcube_A[k]), len(hcube_B[k]))
       hcube_sizes = [len(k) for k in hcube_A.keys()]
       low_dim = max(hcube_sizes) + 1
       total = sum(hcube_sizes)
       wgt_A = {k: len(hcube_A[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
-      comb_wgt = {k: wgt_A[k] for k in hcube_B.keys()}
 
+      #  GAMMA FUNCTION EXPR # 1 & 2
+      # gamma = lambda a, b : a * b
 
-      #  GAMMA FUNCTION
-      gamma = lambda a, b : a * b
+      #  GAMMA FUNCTION EXPR # 3
+      gamma = lambda a, b : (a + b) / 2
+
       # TODO: Factor in RMS weight
       comb_wgt = {k: gamma(wgt_A[k], wgt_B[k]) for k in hcube_B.keys()}
       total = sum(comb_wgt.values())
       bench.mark('GammaFunc')
 
+      # Umbrella Sampling
       umbrella = OrderedDict()
       for k, v in comb_wgt.items():
-        logging.debug('   %15s  ->  %4d A-pts   %4d B-pts   (wgt=%0.3f)', k, len(hcube_A[k]), len(hcube_B[k]),  v/total)
         umbrella[k] = (v/total) 
+        logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)  (ubrellaW=%0.3f)', 
+          k, len(hcube_A[k]), wgt_A[k], len(hcube_B[k]), wgt_B[k], comb_wgt[k], umbrella[k])
       keys = umbrella.keys()
-
     
     # EXECUTE SAMPLER
       logging.debug("=======================  <DATA SAMPLER>  =========================")
@@ -388,8 +529,9 @@ class controlJob(macrothread):
       # 1st Selection level: pick a HCube
       # Select N=20 new candidates
       #  TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
+      numresources = self.data['numresources']
       candidates = np.random.choice(list(umbrella.keys()), 
-           size=50, replace=True, p = list(umbrella.values()))
+           size=100, replace=True, p = list(umbrella.values()))
 
       print ('CANDIDATE HCUBES: ', candidates)
       # 2nd Selection Level: pick an index for each chosen cube (uniform)
@@ -404,6 +546,7 @@ class controlJob(macrothread):
 
       # REDO CACHE CHECK FROM ABOVE!!!!!
     # Generate new starting positions
+      settings = systemsettings()
       jcqueue = OrderedDict()
       for start_traj in sampled_set:
         jcID, params = generateNewJC(start_traj)
@@ -411,12 +554,13 @@ class controlJob(macrothread):
         # TODO:  Update/check adaptive runtime, starting state
         jcConfig = dict(params,
               name    = jcID,
-              runtime = 50000,
+              runtime = settings.RUNTIME_FIXED,
+              dcdfreq = settings.DCDFREQ,
               interval = 500,
               temp    = 310,
               timestep = self.data['timestep'],
               gc      = 1,
-              application   = DEFAULT.APPL_LABEL)
+              application   = settings.APPL_LABEL)
 
         logging.info("New Simulation Job Created: %s", jcID)
         for k, v in jcConfig.items():

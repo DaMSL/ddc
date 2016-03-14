@@ -54,7 +54,12 @@ class AlluxioService(OverlayService):
     """Heartbeat to the local Redis Server
     """
     # TODO: curl cmd to web U/I
-    return True
+    cmd = 'alluxio fs touch /ping'
+    results = executecmd(cmd)
+    check = results.split()
+    if len(check) == 0:
+      return False
+    return (check[0] == '/ping')
 
   def prepare_service(self):
 
@@ -68,6 +73,7 @@ class AlluxioService(OverlayService):
     alluxio_home = os.path.join(home, 'pkg', 'alluxio-1.0.0')
     self.workdir   = config.WORKDIR  #ini.get('workdir', '.')
     self.ramdisk = tempfile.mkdtemp()
+    self.hdd = '/tmp/alluxio/hdd'
     os.environ['ALLUXIO_HOME'] = alluxio_home
     if self._role == 'SLAVE':
       os.environ['ALLUXIO_MASTER_ADDRESS'] = self.master
@@ -76,13 +82,16 @@ class AlluxioService(OverlayService):
       os.environ['ALLUXIO_MASTER_ADDRESS'] = 'localhost'
       self.launchcmd = 'alluxio-start.sh local -f'
 
-
-
     os.environ['DEFAULT_LIBEXEC_DIR'] = os.path.join(alluxio_home, 'libexec')
     os.environ['ALLUXIO_RAM_FOLDER'] = self.ramdisk
     os.environ['ALLUXIO_UNDERFS_ADDRESS'] = config.ALLUXIO_UNDERFS
     os.environ['ALLUXIO_WORKER_MEMORY_SIZE'] = config.ALLUXIO_WORKER_MEM
 
+    if not os.path.exists(config.ALLUXIO_UNDERFS):
+      os.mkdir(config.ALLUXIO_UNDERFS)
+
+    if not os.path.exists(self.hdd):
+      os.mkdir(self.hdd)
 
     # logdir = os.path.join(alluxio_home, 'logs', self._host)
     # if not os.path.exists(logdir):
@@ -98,6 +107,7 @@ class AlluxioService(OverlayService):
     logging.debug('  ALLUXIO_MASTER_ADDRESS=%s', executecmd('echo $ALLUXIO_MASTER_ADDRESS'))
     logging.debug('  ALLUXIO_RAM_FOLDER=%s', executecmd('echo $ALLUXIO_RAM_FOLDER'))
 
+    executecmd('alluxio format')
 
     self.shutdowncmd = 'alluxio-stop.sh all'
 
@@ -118,6 +128,7 @@ class AlluxioService(OverlayService):
     logging.info("[%s] INITIATED Handover <Not Implemented>", self._name_svc)
 
   def tear_down(self):
+    config = systemsettings()
     logging.info("[%s] Removing the ramdisk", self._name_svc)
     shutil.rmtree(self.ramdisk)
     logging.info("[%s] Removing the Under FS (on local /tmp)", self._name_svc)
@@ -199,6 +210,18 @@ class AlluxioClient(object):
     contents = executecmd(cmd)
     logging.debug('CP results: %s', contents)
     return contents
+
+  def mkdir(self, dirname):
+    cmd = 'alluxio fs mkdir /%s' % (dirname)
+    logging.debug('[AlxClient] mkdir cmd: %s', cmd)
+    contents = executecmd(cmd)
+    return contents
+
+  def touch(self, filename):
+    cmd = 'alluxio fs mkdir /%s' % (filename)
+    logging.debug('[AlxClient] touch cmd: %s', cmd)
+    contents = executecmd(cmd)
+    return (contents == '/%s has been created' % filename)
 
 
 

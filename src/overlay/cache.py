@@ -49,7 +49,7 @@ class CacheStorage(object):
     pass
 
 
-class CacheStoreNDArry(CacheStorage):
+class CacheStoreNDArray(CacheStorage):
   """Implements a cache using a fixed size NDArray
   """
 

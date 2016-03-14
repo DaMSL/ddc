@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH
-#SBATCH --job-name=osvc-alx
-#SBATCH --time=4:00:0
+#SBATCH --job-name=testalx
+#SBATCH --time=0:30:0
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/overlay-%j.out

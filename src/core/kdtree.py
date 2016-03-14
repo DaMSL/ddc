@@ -299,21 +299,21 @@ class KDTree(object):
     return self.insertPt(index, self.root)
 
 
-  def project(self, point, node=None):
+  def project(self, point, node=None, maxdepth=-1):
     """
     projects this point into the tree and Returns the key to the node
     Does NOT insert the point
     """
     if node is None:
       node = self.root
-    if node.elm is not None:
+    if node.elm is not None or node.depth == maxdepth:
       return ''
     else:
       axis = node.depth % self.dim
       if point[axis] < node.mid:
-        return '0' + self.project(point, node.left)
+        return '0' + self.project(point, node.left, maxdepth)
       else:
-        return '1' + self.project(point, node.right)
+        return '1' + self.project(point, node.right, maxdepth)
 
 
   def encode(self):

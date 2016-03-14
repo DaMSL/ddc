@@ -47,7 +47,9 @@ class OverlayService(object):
   def __init__(self, name, port, **kwargs):
     self._host = socket.gethostname()
     self._port = port
-    self._name_svc = type(self).__name__
+
+    svc_name = kwargs.get('svc_name', type(self).__name__)
+    self._name_svc = svc_name
     self._name_app = name
     self.lockfile = '%s_%s.lock' % (self._name_app, self._name_svc)
 
