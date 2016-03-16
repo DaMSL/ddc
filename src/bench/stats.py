@@ -2,9 +2,15 @@ import sqlite3
 import sys
 import os
 from collections import OrderedDict
+import datetime as dt
+import subprocess as proc
 
+import mdtraj as md
 import matplotlib.pyplot as plt
 import numpy as np
+
+
+
 
 HOME = os.environ['HOME']
 
@@ -43,8 +49,60 @@ def scrap_cw(appl_name):
   for k, v in sorted(data.items()):
     print(k, np.mean([float(p[1]) for p in v]))
 
-
-
-
-
 dbDisabled = False
+
+
+
+def genarr(sf = 1):
+  return np.random.random(int(sf * (2**27)))
+
+def iotest(sf=1):
+  for loc in ['/tmp', home+'/scratch', '/dev/shm/tmp']:
+    arr = genarr(sf)
+    data = []
+    print('\nDest: ', loc)
+    for i in range(5):
+      t = timecmd(lambda: np.save(loc+'/arr.npy', arr)) 
+      data.append(t)
+    print('Avg time [%s]  ' % loc, np.mean(data))
+
+
+def timecmd(cmd, verbose=True):
+  start = dt.datetime.now()
+  cmd()
+  end = dt.datetime.now()
+  diff = (end-start).total_seconds()
+  if verbose:
+    print ('  Time: ', diff)
+  return diff 
+
+loc = '/dev/shm/tmp'
+data = []
+for i in range(5):
+  t = timecmd(lambda: md.load(loc+'/bpti-all-03%d.dcd'%i, top=loc+'/bpti-all.pdb'))
+  data.append(t)
+print('Avg time [%s]  ' % loc, np.mean(data))
+
+idxfilt = [23, 46, 125, 154, 202, 209, 211, 344, 555, 666]
+
+  # home = os.environ['HOME']
+  # dcd = home + '/work/bpti/' + filename
+  # pdb = home + '/work/bpti/bpti-all.pdb'
+
+
+def timeld(n):
+  start = dt.datetime.now()
+  tr = md.load('bpti-all-1%03d.dcd'%n, top=pdb)
+  tr.atom_slice(tr.top.select('protein'), inplace=True)
+  filtered = tr.slice(idxfilt)
+  end = dt.datetime.now()
+  print ('Time: ', (end-start).total_seconds())
+  return filtered
+
+def timefld(n):
+  start = dt.datetime.now()
+  tr = md.load_frame('bpti-all-1%03d.dcd'%n, 23, top=pdb)
+  tr.atom_slice(tr.top.select('protein'), inplace=True)
+  end = dt.datetime.now()
+  print ('Time: ', (end-start).total_seconds())
+  return tr

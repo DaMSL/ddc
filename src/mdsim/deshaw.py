@@ -9,6 +9,8 @@ import numpy as np
 from numpy import linalg as LA
 
 from core.common import *
+#?????
+from mdtools.datareduce import *
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -19,7 +21,6 @@ __status__ = "Development"
 logging.basicConfig(level=logging.DEBUG)
 
 
-topo = None
 
 # Predefined topology and parameters for DEShaw BPTI
 TOPO  = os.getenv('HOME') +  "/bpti/amber/top_all22_prot.inp"
@@ -31,32 +32,45 @@ PARM  = os.getenv('HOME') +  "/bpti/amber/par_all22_prot.inp"
 
 # Hard Coded for now
 RAW_ARCHIVE = os.getenv('HOME') + '/work/bpti'
-PDB_FILE    = os.getenv('HOME') + '/work/bpti/bpti-all.pdb'
-PDB_PROT_FILE = os.getenv('HOME') + '/work/bpti/bpti-prot.pdb'
+PDB_ALL    = RAW_ARCHIVE + '/bpti-all.pdb'
+PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
+
+DCD_ALL  = lambda i: RAW_ARCHIVE + '/bpti-all-' + \
+  '%03d.dcd'%i if int(i) < 1000 else '%04d.dcd'%i
+DCD_PROT = lambda i: RAW_ARCHIVE + '/bpti-prot-%02d.dcd' % i
 
 label =namedtuple('window', 'time state')
 
-def loadTopo():
-  global topo
-  topo = md.load(PDB_FILE)
+#  GLOBAL Topology and Filter data
+# TODO: Move to class
+topo = md.load(PDB_PROT)
 
-
-def atomfilter(filt):
-  if topo is None:
-    loadTopo()
-  atomfilter = {
+atom_filter = {
     'minimal': topo.top.select_atom_indices('minimal'),
     'heavy'  : topo.top.select_atom_indices('heavy'),
     'alpha'  : topo.top.select_atom_indices('alpha')
   }
+
+
+def atomfilter(filt):
+  global atom_filter, topo
+
   # TODO:  handle more complicated queries (or pass thru)
-  if filt in atomfilter.keys():
-    return atomfilter[filt]
+  if filt in atom_filter.keys():
+    return atom_filter[filt]
   else
     return None
 
+def indexToRef(index, scale=40):
+  numFramePerFile
+  numFiles = scale
+
+
+
 
 def loadLabels(fn=None):
+  """Load all pre-labeled states from DEShaw (as named Tuple)
+  """
   if fn is None:
     fn = os.path.join(os.getenv('HOME'), 'ddc', 'bpti_labels_ms.txt')
   label =namedtuple('window', 'time state')
@@ -68,22 +82,64 @@ def loadLabels(fn=None):
   return win
 
 def loadlabels_aslist(filename=None):
-  if fn is None:
-    fn = os.path.join(os.getenv('HOME'), 'ddc', , 'data', 'bpti_labels_ms.txt')
-  with open(fn) as src:
+  """Load all pre-labeled states from DEShaw (as list of int)
+  """
+  if filename is None:
+    filename = os.path.join(os.getenv('HOME'), 'ddc', 'data', 'bpti_labels_ms.txt')
+  with open(filename) as src:
     lines = src.read().strip().split('\n')
   label = [int(l.split()[1]) for l in lines]
   return label
 
 def getLabelList(labels):
+  """Get list of states (future: for dynamic state discovery)
+  """
   labelset = set()
   for lab in labels:
     labelset.add(lab.state)
   return sorted(list(labelset))
 
 
+def load_all_traj():
+  """Load all pre-labeled states from DEShaw (as list of int)
+  """
+  pdb='/bpti/bpti-prot/bpti-prot.pdb'
+  dcd = lambda x: '/bpti/bpti-prot/bpti-prot-%02d.dcd' % x
+  tr = []
+  for i in range(11):
+    print ('loading ', i)
+    start = dt.datetime.now()
+    tr.append(md.load(dcd(i), top=pdb))
+    end = dt.datetime.now()
+    print((end-start).total_seconds())
+  retun tr
+
+
+def loadpts(skip=40, filt=None):
+  """Loads all DEShaw Points as one long NDarray. Skip value is used 
+  to load fewer frames
+  """
+  pts = []
+  for i in range(42):
+    print('loading file: ', i)
+    traj = md.load(DCD_PROT(i), top=PDB_PROT, stride=skip)
+    if filt is not None:
+      traj.atom_slice(filt, inplace=True)
+    for i in traj.xyz:
+      pts.append(i)
+  return np.array(pts)
+
+
+
 def getDEShawfilename(seqnum, fullpath=False):
     filename = 'bpti-all-%03d.dcd' if int(seqnum) < 1000 else 'bpti-all-%04d.dcd'
+    if fullpath:
+      filename = os.path.join(RAW_ARCHIVE, filename)
+    return filename
+
+
+def getDEShawfilename_prot(seqnum, fullpath=False):
+    filename = 'bpti-prot-%02d.dcd' % seqnum
     if fullpath:
       filename = os.path.join(RAW_ARCHIVE, filename)
     return filename

@@ -115,6 +115,7 @@ def initializecatalog(catalog):
   updateschema(catalog)
   catalog.loadSchema()
 
+  # Set defaults vals for schema
   initvals = {i:settings.init[i] for i in settings.init.keys() if settings.schema[i] in ['int', 'float', 'list', 'dict', 'str']}
   catalog.save(initvals)
   for k, v in initvals.items():

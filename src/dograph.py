@@ -1,5 +1,6 @@
 import os
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from collections import OrderedDict
 import numpy as np
 
@@ -49,6 +50,61 @@ def scrape_cw(appl_name):
 def printconvergence(data):
   for k, v in sorted(data.items()):
     print(k, np.mean([float(p[1]) for p in v]))
+
+def dotgraph(X, Y, title, L=None):
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  if L is None:
+    plt.scatter(X, Y)
+  else:
+    plt.scatter(X, Y, c=L)
+  plt.ylabel(title)
+  # plt.legend()
+  plt.savefig(loc + '/' + title + '.png')
+  plt.close()
+
+def dotgraph3D(X, Y, Z, title, L=None):
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  fig = plt.figure()
+  ax = Axes3D(fig)
+  if L is None:
+    ax.scatter(X, Y, Z)
+  else:
+    ax.scatter(X, Y, Z, c=L)
+  plt.ylabel(title)
+  # plt.legend()
+  plt.savefig(loc + '/' + title + '_3d.png')
+  plt.close()
+
+
+
+
+encode = [0, 4, 2, 3, 1]
+gmm_res = [encode[g] for g in gmmfull5]
+gmmc = [np.argmax(np.bincount(gmm_res[i:i+25])) for i in range(0, 103125, 25)]
+gmmd = [gmm_res[i] for i in range(12, 103125, 25)]
+gmme = []
+for i in range(0, 103125, 25):
+  counts = np.bincount(gmm_res[i:i+25])
+  idx = np.argsort(counts)[::-1]
+  if len(idx) == 1 or counts[idx[0]] > 20:
+    gmme.append((idx[0], idx[0]))
+  else:
+    gmme.append((idx[0], idx[1]))
+
+stats = [0, 0, 0]
+for z in range(4125):
+  if gmme[z][0] == gmme[z][1] == labels[z]:
+    stats[0] += 1
+  elif gmme[z][0] == labels[z] or gmme[z][1] == labels[z]:
+    stats[1] += 1
+  else:
+    stats[2] += 1
+
+  stats[int(z[0]==z[1])] += 1
+  if z[0]!=z[1]:
+    print (z)
+
+
 
 def plotconvergence(appl_name, data):
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')

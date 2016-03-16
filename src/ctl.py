@@ -177,6 +177,8 @@ class controlJob(macrothread):
 
       self.trajlist_async = deque()
 
+      self.cacheclient = None
+
     def term(self):
       # For now
       return False
@@ -234,9 +236,41 @@ class controlJob(macrothread):
       
       # DEShaw topology is assumed here
       bench.start()
+
+      # TODO::: GET PreLoadedFile!!!!
       ref = deshaw.deshawReference(atomfilter='all')
       ref.atom_slice(ref.top.select('protein'), inplace=True)
       bench.mark('LD:ref')
+
+
+      pipe = self.catalog.pipeline()
+      for pt in index_list:
+        pipe.lindex('xid:reference', pt)
+      framelist = pipe.execute()
+      bench.mark('LD:Redis:xidlist')
+
+      atomfilter = {}
+      for i, idx in enumerate(framelist):
+        # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
+        if idx is None:
+          is_deshaw = True
+        else:
+          file_index, frame = eval(idx)
+          is_deshaw = (file_index < 0)
+        if is_deshaw:
+            dcdfile_num = frame // 100000
+            frame = frame - (100000)*dcdfile_num
+            # Use negation to indicate DEShaw file (not in fileindex in catalog)
+            file_index = (-1 * dcdfile_num)
+        if file_index not in atomfilter:
+          atomfilter[file_index] = []
+        atomfilter[file_index].append(frame)
+      logging.debug('Back projecting %s points from %d different files.', 
+        len(framelist), len(atomfilter))
+      bench.mark('GroupBy:Files')
+
+
+
       #  TODO: MOVE TO CACHE ???
       logging.debug('Checking cache for %d points to back-project', len(index_list))
       for i in index_list:
@@ -260,12 +294,12 @@ class controlJob(macrothread):
 
       # Archive File retrieval for all cache-miss points
       # TODO:  May need to deference to local RMS Subspace first, then Back to high-dim
-      bench.mark('Cache:Hit')
-      pipe = self.catalog.pipeline()
-      for pt in cache_miss:
-        pipe.lindex('xid:reference', pt)
-      framelist = pipe.execute()
-      bench.mark('LD:Redis:xidlist')
+      # bench.mark('Cache:Hit')
+      # pipe = self.catalog.pipeline()
+      # for pt in cache_miss:
+      #   pipe.lindex('xid:reference', pt)
+      # framelist = pipe.execute()
+      # bench.mark('LD:Redis:xidlist')
       # for i in range(len(framelist)):
       #   if framelist[i] is None:
       #     dcdfile_num = cache_miss[i] // 100
@@ -274,25 +308,25 @@ class controlJob(macrothread):
           
       # ID unique files and Build index filter for each unique file
       #  Account for DEShaw Files (derived from index if index not in catalog)
-      atomfilter = {}
-      for i, idx in enumerate(framelist):
-        # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
-        if idx is None:
-          is_deshaw = True
-        else:
-          file_index, frame = eval(idx)
-          is_deshaw = (file_index < 0)
-        if is_deshaw:
-            dcdfile_num = frame // 1000
-            frame = frame - 1000*dcdfile_num
-            # Use negation to indicate DEShaw file (not in fileindex in catalog)
-            file_index = (-1 * dcdfile_num)
-        if file_index not in atomfilter:
-          atomfilter[file_index] = []
-        atomfilter[file_index].append(frame)
-      logging.debug('Back projecting %s points from %d different files.', 
-        len(framelist), len(atomfilter))
-      bench.mark('GroupBy:Files')
+      # atomfilter = {}
+      # for i, idx in enumerate(framelist):
+      #   # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
+      #   if idx is None:
+      #     is_deshaw = True
+      #   else:
+      #     file_index, frame = eval(idx)
+      #     is_deshaw = (file_index < 0)
+      #   if is_deshaw:
+      #       dcdfile_num = frame // 1000
+      #       frame = frame - 1000*dcdfile_num
+      #       # Use negation to indicate DEShaw file (not in fileindex in catalog)
+      #       file_index = (-1 * dcdfile_num)
+      #   if file_index not in atomfilter:
+      #     atomfilter[file_index] = []
+      #   atomfilter[file_index].append(frame)
+      # logging.debug('Back projecting %s points from %d different files.', 
+      #   len(framelist), len(atomfilter))
+      # bench.mark('GroupBy:Files')
 
       # # Get List of files
       # filelist = {}
@@ -363,6 +397,10 @@ class controlJob(macrothread):
 
       self.data['timestep'] += 1
       logging.info('TIMESTEP: %d', self.data['timestep'])
+
+      settings = systemsettings()
+      # Connect to the cache
+      self.cacheclient = CacheClient(settings.APPL_LABEL)
 
     # LOAD all new subspaces (?) and values
       # Load new RMS Labels -- load all for now
@@ -546,7 +584,6 @@ class controlJob(macrothread):
 
       # REDO CACHE CHECK FROM ABOVE!!!!!
     # Generate new starting positions
-      settings = systemsettings()
       jcqueue = OrderedDict()
       for start_traj in sampled_set:
         jcID, params = generateNewJC(start_traj)
