@@ -111,9 +111,9 @@ class KDTree(object):
       """
       if self.mid is None:
         val = self.lo if mykey[-1] == '0' else self.hi
-        return {mykey: {'val': val, 'elm': None if self.elm is None else list(self.elm)}}
+        return {mykey: {'val': float(val), 'elm': None if self.elm is None else list(self.elm)}}
       else:
-        encoding = {mykey: {'val': self.mid, 'elm': None}}
+        encoding = {mykey: {'val': float(self.mid), 'elm': None}}
         encoding.update(self.left.encode(mykey+'0'))
         encoding.update(self.right.encode(mykey+'1'))
         return encoding
@@ -191,13 +191,17 @@ class KDTree(object):
 
 
 
-  def __init__(self, leafsize, data=None):
+  def __init__(self, leafsize, maxdepth=None, data=None):
     """
     Created new KD-Tree. 
     If data (in ND-Array form) is provided, builds the KD-Tree with the data
     Otherwise, creates an empty one with no data
+
+    If the maxdepth is defined, it will override the leafsize. 
+    Note that leafsize or maxdepth must be defined; 
     """
 
+    self.maxdepth = maxdepth
     self.leafsize = leafsize
     self.data = None
     self.data_new = deque()
@@ -244,12 +248,14 @@ class KDTree(object):
     node.right = KDTree.Node(node.depth+1)
     node.left.configure(np.min(vals), mid, left)
     node.right.configure(mid, np.max(vals), right)
-    if len(left)> self.leafsize:
-      # print(" SPLIT LEFT")
-      self.split(node.left, debug='L')
-    if len(right)> self.leafsize:
-      # print(" SPLIT RIGHT")
-      self.split(node.right, debug='R')
+
+    if self.maxdepth is not None and (node.depth+1) < self.maxdepth:
+      if len(left)> self.leafsize:
+        # print(" SPLIT LEFT")
+        self.split(node.left, debug='L')
+      if len(right)> self.leafsize:
+        # print(" SPLIT RIGHT")
+        self.split(node.right, debug='R')
 
 
   def build(self, dataArray):
@@ -271,7 +277,8 @@ class KDTree(object):
     assumes: KD.data is an function to retrieve point with the given ptIndex
     """
     if node.elm is not None:
-      if node.size() >= self.leafsize:
+      if (node.size() >= self.leafsize) and \
+         (self.maxdepth is None or node.depth < self.maxdepth):
         self.split(node)
         return self.insertPt(ptIdx, node)
       else:
@@ -299,14 +306,14 @@ class KDTree(object):
     return self.insertPt(index, self.root)
 
 
-  def project(self, point, node=None, maxdepth=-1):
+  def project(self, point, node=None, probedepth=-1):
     """
     projects this point into the tree and Returns the key to the node
     Does NOT insert the point
     """
     if node is None:
       node = self.root
-    if node.elm is not None or node.depth == maxdepth:
+    if node.elm is not None or node.depth == probedepth:
       return ''
     else:
       axis = node.depth % self.dim
@@ -320,7 +327,10 @@ class KDTree(object):
     """
     Convert KD-Tree in a serializable form (python dict)
     """
-    encoding =  {'_': self.root.mid, 'leafsize':self.leafsize, 'dim':self.dim}
+    encoding =  {'_': float(self.root.mid), 
+                 'leafsize':self.leafsize, 
+                 'maxdepth':self.maxdepth,
+                 'dim':self.dim}
     encoding.update(self.root.encode(''))
     return encoding
 
@@ -329,7 +339,7 @@ class KDTree(object):
     """
     Create a new KD Tree Object an reconstruct it from the given encoded mapping.
     """
-    tree = KDTree(mapping['leafsize'])
+    tree = KDTree(mapping['leafsize'], maxdepth=mapping['maxdepth'])
     tree.dim = mapping['dim']
     tree.data = dataArray
     tree.root       = KDTree.Node(0)

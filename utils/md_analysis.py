@@ -32,6 +32,9 @@ f_alpha = topo.top.select_atom_indices('alpha')
 f_heavy = topo.top.select_atom_indices('heavy')
 
 
+
+
+
 def loadpts(skip=40, filt=None):
   pts = []
   for i in range(42):
@@ -45,7 +48,7 @@ def loadpts(skip=40, filt=None):
 
 
 #Frame Every 10 ns
-xyz = loadpts(filt=f_alpha)
+xyz = loadpts(skip=1, filt=f_alpha)
 
 
 def calc_covar(xyz, size_ns, framestep):
@@ -145,7 +148,7 @@ def loadbpti():
     tr.append(md.load(dcd(i), top=pdb))
     end = dt.datetime.now()
     print((end-start).total_seconds())
-  retun tr
+  return tr
 
 def get_pairlist(traj):
   N = traj.n_atoms
@@ -215,39 +218,39 @@ def check_bpti_rms(traj_list, centroid, skip=40):
 
 
 def check_bpti_rms_trans(traj_list, centroid, skip=40):
-traj_list = prdist
-centroid = cent_d
-skip=100
-exact_hit = 0
-total_miss = 0
-det_trans = 0
-total = 0
-tdist = 0.
-wdist = 0.
-tlist = []
-theta = 0.15
-for n, traj in enumerate(traj_list[:10]):
-  print ('checking traj #', n)
-  for i in range(0, len(traj), skip):
-    idx = (n*400)  + (i // 1000)
-    labeled_state = label[idx]
-    dist = [np.sum(LA.norm(traj[i] - C)) for C in centroid]
-    prox = np.argsort(dist)
-    A = prox[0]
-    B = prox[1]
-    delta = dist[B] - dist[A]
-    if delta > theta:
-      B = A
-    if labeled_state == A == B:
-      exact_hit += 1
-      wdist += delta
-    elif labeled_state == A or labeled_state == B:
-      det_trans += 1
-      tdist += delta
-      tlist.append((idx, (A, B), labeled_state))
-    else:
-      total_miss += 1
-    total += 1
+  traj_list = prdist
+  centroid = cent_d
+  skip=100
+  exact_hit = 0
+  total_miss = 0
+  det_trans = 0
+  total = 0
+  tdist = 0.
+  wdist = 0.
+  tlist = []
+  theta = 0.15
+  for n, traj in enumerate(traj_list[:10]):
+    print ('checking traj #', n)
+    for i in range(0, len(traj), skip):
+      idx = (n*400)  + (i // 1000)
+      labeled_state = label[idx]
+      dist = [np.sum(LA.norm(traj[i] - C)) for C in centroid]
+      prox = np.argsort(dist)
+      A = prox[0]
+      B = prox[1]
+      delta = dist[B] - dist[A]
+      if delta > theta:
+        B = A
+      if labeled_state == A == B:
+        exact_hit += 1
+        wdist += delta
+      elif labeled_state == A or labeled_state == B:
+        det_trans += 1
+        tdist += delta
+        tlist.append((idx, (A, B), labeled_state))
+      else:
+        total_miss += 1
+      total += 1
 
 print ('Hit rate:  %5.2f  (%d)' % ((exact_hit/(total)), exact_hit))
 print ('Miss rate: %5.2f  (%d)' % ((total_miss/(total)), total_miss))

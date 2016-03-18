@@ -230,6 +230,8 @@ class OverlayService(object):
 
     t = Thread(target=self.monitor)
     t.start()
+
+    
     return t
 
   def monitor(self):

@@ -19,10 +19,12 @@ from macro.macrothread import macrothread
 from core.kvadt import kv2DArray
 from core.slurm import slurm
 from core.kdtree import KDTree
-import mdsim.datareduce as datareduce
-import mdsim.deshaw as deshaw
-from mdsim.simtool import generateNewJC
+import datatools.datareduce as datareduce
+import datatools.datacalc as datacalc
+import mdtools.deshaw as deshaw
+from mdtools.simtool import generateNewJC
 from overlay.redisOverlay import RedisClient
+from overlay.cacheOverlay import CacheClient
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -242,7 +244,6 @@ class controlJob(macrothread):
       ref.atom_slice(ref.top.select('protein'), inplace=True)
       bench.mark('LD:ref')
 
-
       pipe = self.catalog.pipeline()
       for pt in index_list:
         pipe.lindex('xid:reference', pt)
@@ -251,6 +252,7 @@ class controlJob(macrothread):
 
       atomfilter = {}
       for i, idx in enumerate(framelist):
+        print (i, idx)
         # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
         if idx is None:
           is_deshaw = True
@@ -258,8 +260,8 @@ class controlJob(macrothread):
           file_index, frame = eval(idx)
           is_deshaw = (file_index < 0)
         if is_deshaw:
-            dcdfile_num = frame // 100000
-            frame = frame - (100000)*dcdfile_num
+            dcdfile_num = -index_list[i] // 100000
+            frame = -index_list[i] - (100000)*dcdfile_num
             # Use negation to indicate DEShaw file (not in fileindex in catalog)
             file_index = (-1 * dcdfile_num)
         if file_index not in atomfilter:
@@ -354,8 +356,8 @@ class controlJob(macrothread):
           filename = self.catalog.lindex('xid:filelist', idx)
           traj = datareduce.load_trajectory(filename)
         else:
-          filename = deshaw.getDEShawfilename(-idx, fullpath=True) % (-idx)
-          traj = md.load(filename, top=deshaw.PDB_FILE)
+          filename = deshaw.getDEShawfilename_prot(-idx, fullpath=True)
+          traj = md.load(filename, top=deshaw.PDB_PROT)
           # traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
         traj.atom_slice(traj.top.select('protein'), inplace=True)
         filtered = traj.slice(atomfilter[idx])
@@ -402,18 +404,24 @@ class controlJob(macrothread):
       # Connect to the cache
       self.cacheclient = CacheClient(settings.APPL_LABEL)
 
+      # create the "binlist":
+      numLabels = self.data['numLabels']
+      binlist = [(A, B) for A in range(numLabels) for B in range(numLabels)]
+
     # LOAD all new subspaces (?) and values
       # Load new RMS Labels -- load all for now
       bench.start()
       logging.debug('Loading RMS Labels')
-      labeled_pts_rms = self.catalog.lrange('label:rms', 0, -1)
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
-      if thru_index == -1:
-        self.data['ctlIndexHead'] = self.catalog.llen('label:rms')
+      start_index = max(0, self.data['ctlIndexHead'])
+      if thru_index == -1 or thru_index >= self.catalog.llen('label:rms'):
+        self.data['ctlIndexHead'] = int(self.catalog.llen('label:rms'))
       else:
-        self.data['ctlIndexHead'] = thru_index 
+        self.data['ctlIndexHead'] = int(thru_index)
+
+      labeled_pts_rms = self.catalog.lrange('label:rms', start_index, self.data['ctlIndexHead'])
       
-      logging.debug('##TOTAL_RMS: %d', len(labeled_pts_rms))
+      logging.debug('##NUM_RMS_THIS_ROUND: %d', len(labeled_pts_rms))
       # varest_counts_rms = {}
       # total = 0
       # for i in labeled_pts_rms:
@@ -422,7 +430,7 @@ class controlJob(macrothread):
       #     varest_counts_rms[i] = 0
       #   varest_counts_rms[i] += 1
 
-      # Load PCA Subspace of hypecubes
+      # Load PCA Subspace of hypecubes  (for read only)
       hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
       logging.debug('  # Loaded PCA keys = %d', len(hcube_mapping.keys()))
       bench.mark('LD:Hcubes:%d' % len(hcube_mapping.keys()))
@@ -433,7 +441,11 @@ class controlJob(macrothread):
 
       #  TODO: Approximiation HERE <<--------------
       # func = lambda i,j: np.fromstring(self.catalog.lindex('subspace:pca', i))[j]
-      pca_subspace = np.array([np.fromstring(pt) for pt in self.catalog.lrange('subspace:pca', 0, -1)])
+      packed_subspace = self.catalog.lrange('subspace:pca', 0, -1)
+      pca_subspace = np.zeros(shape=(len(packed_subspace), settings.PCA_NUMPC))
+      for x in packed_subspace:
+        pca_subspace = np.fromstring(x, dtype=np.float32, count=settings.PCA_NUMPC)
+
       bench.mark('LD:pcasubspace:%d' % len(pca_subspace))
       logging.debug("Reconstructing the tree... (%d pca pts)", len(pca_subspace))
       hcube_tree = KDTree.reconstruct(hcube_mapping, pca_subspace)
@@ -444,12 +456,19 @@ class controlJob(macrothread):
 
       # Bootstrap current sample for RMS
       logging.info("RMS Labels for %d points loaded. Bootstrapping.....", len(labeled_pts_rms))
-      pdf_rms = bootstrap_by_state(labeled_pts_rms)
-      logging.info("Bootstrap complete. PDF for each (observed) variable:")
 
-      for k, p in sorted(pdf_rms.items(), key=lambda x: x[0]):
-        print('##CONV %03d %s:  u=%0.4f  CI_lo=%0.4f  CI_hi=%0.4f  conv=%0.4f' % (self.data['timestep'], k, p[0], p[1], p[2], p[3]))
-      bench.mark('Bootstrap:RMS')
+      pdf_rms = datacalc.posterior_prob(labeled_pts_rms)
+
+      logging.info("Posterer PDF for each variable:")
+      pipe = self.catalog.pipeline()
+      for v_i in binlist:
+        key = str(v_i)
+        A, B = eval(key)
+        val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
+        pipe.rpush('boot:%d_%d', val)
+        print('##VAL %03d %s:  %0.4f' % (self.data['timestep'], key, val))
+      pipe.execute()
+      bench.mark('PosteriorPDF:RMS')
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
@@ -468,98 +487,150 @@ class controlJob(macrothread):
       #     break
 
       #####  EXPERIMENT #2,3:  Select the least converged start state from RMS
-      conv_startstate = [0 for i in range(5)]
-      conv_num = [0 for i in range(5)]
-      for k, p in sorted(pdf_rms.items()):
-        A, B = eval(k)
-        conv_startstate[A] += float(p[3])
-        conv_num[A] += 1
-      for i in range(5):
-        if conv_num[i] == 0:
-          conv_startstate[i] = 0
-        else:    
-          conv_startstate[i] /= conv_num[i]
-        logging.debug("##STATE_CONV %d %4.2f", i, conv_startstate[i])
-      target_state = np.argmax(conv_startstate)
-      rms_indexlist = []
-      # Using Appoximation (otherwise this would be VERY long)
-      selectsizelimit = self.data['backproj:approxlimit'] // 4
-      while True:
-        logging.debug('SELECT points which started in state: %d', target_state)
-        for B in range(5):
-          if target_state == B:
-            continue
-          label = str((target_state, B))
-          rms_indexlist.extend(q_select(labeled_pts_rms, label, limit=selectsizelimit))
-        if len(rms_indexlist) > 0:
-          break
-        # If no points, then select a random start state until we get one:
-        logging.debug("NO POINTS to Sample!! Selecting a random start state")
-        target_state = np.random.randint(5)
+      # conv_startstate = [0 for i in range(5)]
+      # conv_num = [0 for i in range(5)]
+      # for k, p in sorted(pdf_rms.items()):
+      #   A, B = eval(k)
+      #   conv_startstate[A] += float(p[3])
+      #   conv_num[A] += 1
+      # for i in range(5):
+      #   if conv_num[i] == 0:
+      #     conv_startstate[i] = 0
+      #   else:    
+      #     conv_startstate[i] /= conv_num[i]
+      #   logging.debug("##STATE_CONV %d %4.2f", i, conv_startstate[i])
+      # target_state = np.argmax(conv_startstate)
+      # rms_indexlist = []
+      # # Using Appoximation (otherwise this would be VERY long)
+      # selectsizelimit = self.data['backproj:approxlimit'] // 4
+      # while True:
+      #   logging.debug('SELECT points which started in state: %d', target_state)
+      #   for B in range(5):
+      #     if target_state == B:
+      #       continue
+      #     label = str((target_state, B))
+      #     rms_indexlist.extend(q_select(labeled_pts_rms, label, limit=selectsizelimit))
+      #   if len(rms_indexlist) > 0:
+      #     break
+      #   # If no points, then select a random start state until we get one:
+      #   logging.debug("NO POINTS to Sample!! Selecting a random start state")
+      #   target_state = np.random.randint(5)
 
-      logging.debug("  num pts selected:  %d", len(rms_indexlist))
-      bench.mark('Select:RMS_bin')
+      ###### EXPERIMENT #4:  UNIFORM (w/updated Convergence)
+      pipe = self.catalog.pipeline()
+      for b in binlist:
+        pipe.llen('varbin:rms:%d_%d' % (A, B))
+      length = pipe.execute()
+
+
+      logging.info('Variable bins sizes follows')
+      idxlist = {}
+      for i, b in enumerate(binlist):
+        idxlist[b] = length[i]
+        logging.info('  %s:  %d', b, length[i])
+
+      ## UNIFORM SAMPLER
+      numresources = self.data['numresources']
+
+      quota = numresources // len(binlist)
+      sel = 0
+      pipe = self.catalog.pipeline()
+      logging.debug("Uniform Sampling on %d resources", numresources)
+
+      rmslabel = deshaw.labelDEShaw_rmsd()
+      deshaw_samples = {b:[] for b in binlist}
+      for i, b in enumerate(rmslabel):
+        deshaw_samples[b].append(i)
+
+      selected_indices = []
+      while numresources > 0:
+        i = sel%25
+        if length[i] is not None and length[i] > 0:
+          index = np.random.randint(length[i])
+          logging.debug('SAMPLER: selecting index #%d from bin %s', index, str(binlist[i]))
+          selected_indices.append(self.catalog.lindex('varbin:rms:%d_%d' % binlist[i], index))
+          numresources -= 1
+        elif len(deshaw_samples[binlist[i]]) > 0:
+          index = np.random.choice(deshaw_samples[binlist[i]])
+          logging.debug('SAMPLER: selecting DEShaw index #%d from bin %s', index, str(binlist[i]))
+          # Negation indicates an historical index number
+          selected_indices.append(-index)
+          numresources -= 1
+        else:
+          logging.info("NO Candidates for bin: %s", binlist[i])
+        sel += 1
+
+      
+      sampled_set = []
+      for i in selected_indices:
+        traj = self.backProjection([i])
+        sampled_set.append(traj)
+      bench.mark('Sampler')
 
       #  REWEIGHT OPERATION
+      reweight = False
       # Back-project all points to higher dimension <- as consolidatd trajectory
-      source_traj = self.backProjection(rms_indexlist)
-      traj = datareduce.filter_heavy(source_traj)
-      logging.debug('(BACK)PROJECT RMS points in HD space: %s', str(traj))
-      bench.mark('BackProject:RMS_To_HD')
+      if reweight:
+        source_traj = self.backProjection(rms_indexlist)
+        traj = datareduce.filter_heavy(source_traj)
+        logging.debug('(BACK)PROJECT RMS points in HD space: %s', str(traj))
+        bench.mark('BackProject:RMS_To_HD')
 
-      # 2. project into PCA space 
-      rms_proj_pca = datareduce.PCA(traj.xyz, self.data['pcaVectors'], 3)
-      logging.debug('Projects to PCA:  %s', str(rms_proj_pca.shape))
-      bench.mark('Project:RMS_To_PCA')
+        # 2. project into PCA space 
+        rms_proj_pca = datareduce.PCA(traj.xyz, self.data['pcaVectors'], 3)
+        logging.debug('Projects to PCA:  %s', str(rms_proj_pca.shape))
+        bench.mark('Project:RMS_To_PCA')
 
-      # 3. Map into existing hcubes  (project only for now)
-      #  A -> PCA  and B -> RMS
-      #   TODO:  Insert here and deal with collapsing geometric hcubes in KDTree
-      # Initiaze the set of "projected" hcubes in B
-      hcube_B = {}
-      # Project every selected point into PCA and then group by hcube
-      for i in range(len(rms_proj_pca)):
-        hcube = hcube_tree.project(rms_proj_pca[i], maxdepth=8)
-        # print('POJECTING ', i, '  ', rms_proj_pca[i], '  ---->  ', hcube)
-        if hcube not in hcube_B:
-          hcube_B[hcube] = []
-        hcube_B[hcube].append(i)
-      # Gather the hcube stats for wgt calc
-      hcube_sizes = [len(k) for k in hcube_B.keys()]
-      low_dim = max(hcube_sizes) + 1
-      total = sum(hcube_sizes)
-      # calc Wght
-      wgt_B = {k: len(hcube_B[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
+        # 3. Map into existing hcubes  (project only for now)
+        #  A -> PCA  and B -> RMS
+        #   TODO:  Insert here and deal with collapsing geometric hcubes in KDTree
+        # Initiaze the set of "projected" hcubes in B
+        hcube_B = {}
+        # Project every selected point into PCA and then group by hcube
+        for i in range(len(rms_proj_pca)):
+          hcube = hcube_tree.project(rms_proj_pca[i], maxdepth=8)
+          # print('POJECTING ', i, '  ', rms_proj_pca[i], '  ---->  ', hcube)
+          if hcube not in hcube_B:
+            hcube_B[hcube] = []
+          hcube_B[hcube].append(i)
+        # Gather the hcube stats for wgt calc
+        hcube_sizes = [len(k) for k in hcube_B.keys()]
+        low_dim = max(hcube_sizes) + 1
+        total = sum(hcube_sizes)
+        # calc Wght
+        wgt_B = {k: len(hcube_B[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
 
-      logging.debug('Projected %d points into PCA. Found the following keys:', len(rms_proj_pca))
+        logging.debug('Projected %d points into PCA. Found the following keys:', len(rms_proj_pca))
 
-      # Get all original HCubes from A for "overlapping" hcubes
-      hcube_A = {}
-      for k in hcube_B.keys():
-        hcube_A[k] = hcube_tree.retrieve(k)
-      hcube_sizes = [len(k) for k in hcube_A.keys()]
-      low_dim = max(hcube_sizes) + 1
-      total = sum(hcube_sizes)
-      wgt_A = {k: len(hcube_A[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
+        # Get all original HCubes from A for "overlapping" hcubes
+        hcube_A = {}
+        for k in hcube_B.keys():
+          hcube_A[k] = hcube_tree.retrieve(k)
+        hcube_sizes = [len(k) for k in hcube_A.keys()]
+        low_dim = max(hcube_sizes) + 1
+        total = sum(hcube_sizes)
+        wgt_A = {k: len(hcube_A[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
 
-      #  GAMMA FUNCTION EXPR # 1 & 2
-      # gamma = lambda a, b : a * b
+        #  GAMMA FUNCTION EXPR # 1 & 2
+        # gamma = lambda a, b : a * b
 
-      #  GAMMA FUNCTION EXPR # 3
-      gamma = lambda a, b : (a + b) / 2
+        #  GAMMA FUNCTION EXPR # 3
+        gamma = lambda a, b : (a + b) / 2
 
-      # TODO: Factor in RMS weight
-      comb_wgt = {k: gamma(wgt_A[k], wgt_B[k]) for k in hcube_B.keys()}
-      total = sum(comb_wgt.values())
-      bench.mark('GammaFunc')
+        # TODO: Factor in RMS weight
+        comb_wgt = {k: gamma(wgt_A[k], wgt_B[k]) for k in hcube_B.keys()}
+        total = sum(comb_wgt.values())
+        bench.mark('GammaFunc')
 
-      # Umbrella Sampling
-      umbrella = OrderedDict()
-      for k, v in comb_wgt.items():
-        umbrella[k] = (v/total) 
-        logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)  (ubrellaW=%0.3f)', 
-          k, len(hcube_A[k]), wgt_A[k], len(hcube_B[k]), wgt_B[k], comb_wgt[k], umbrella[k])
-      keys = umbrella.keys()
+        # Umbrella Sampling
+        umbrella = OrderedDict()
+        for k, v in comb_wgt.items():
+          umbrella[k] = (v/total) 
+          logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)  (ubrellaW=%0.3f)', 
+            k, len(hcube_A[k]), wgt_A[k], len(hcube_B[k]), wgt_B[k], comb_wgt[k], umbrella[k])
+        keys = umbrella.keys()
+        candidates = np.random.choice(list(umbrella.keys()), 
+             size=100, replace=True, p = list(umbrella.values()))
     
     # EXECUTE SAMPLER
       logging.debug("=======================  <DATA SAMPLER>  =========================")
@@ -567,19 +638,17 @@ class controlJob(macrothread):
       # 1st Selection level: pick a HCube
       # Select N=20 new candidates
       #  TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
-      numresources = self.data['numresources']
-      candidates = np.random.choice(list(umbrella.keys()), 
-           size=100, replace=True, p = list(umbrella.values()))
+      # numresources = self.data['numresources']
 
-      print ('CANDIDATE HCUBES: ', candidates)
-      # 2nd Selection Level: pick an index for each chosen cube (uniform)
-      sampled_set = []
-      for i in candidates:
-        selected_index = np.random.choice(list(hcube_A[i]) + list(hcube_B[i]))
-        logging.debug('BACK-PROJECT HighDim Index # %d', selected_index)
-        traj = self.backProjection([selected_index])
-        sampled_set.append(traj)
-      bench.mark('Sampler')
+      # print ('CANDIDATE HCUBES: ', candidates)
+      # # 2nd Selection Level: pick an index for each chosen cube (uniform)
+      # sampled_set = []
+      # for i in candidates:
+      #   selected_index = np.random.choice(list(hcube_A[i]) + list(hcube_B[i]))
+      #   logging.debug('BACK-PROJECT HighDim Index # %d', selected_index)
+      #   traj = self.backProjection([selected_index])
+      #   sampled_set.append(traj)
+      # bench.mark('Sampler')
 
 
       # REDO CACHE CHECK FROM ABOVE!!!!!

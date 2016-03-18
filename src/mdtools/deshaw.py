@@ -3,14 +3,14 @@
 import os
 from collections import namedtuple
 import logging
+import math
 
 import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
 
 from core.common import *
-#?????
-from mdtools.datareduce import *
+from datatools.datareduce import *
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -20,16 +20,11 @@ __status__ = "Development"
 
 logging.basicConfig(level=logging.DEBUG)
 
-
-
 # Predefined topology and parameters for DEShaw BPTI
 TOPO  = os.getenv('HOME') +  "/bpti/amber/top_all22_prot.inp"
 PARM  = os.getenv('HOME') +  "/bpti/amber/par_all22_prot.inp"
 
-
-
 # TODO:  Make a Raw Archiver class (& link in with data mover)
-
 # Hard Coded for now
 RAW_ARCHIVE = os.getenv('HOME') + '/work/bpti'
 PDB_ALL    = RAW_ARCHIVE + '/bpti-all.pdb'
@@ -43,13 +38,15 @@ label =namedtuple('window', 'time state')
 
 #  GLOBAL Topology and Filter data
 # TODO: Move to class
-topo = md.load(PDB_PROT)
+topo_all = md.load(PDB_ALL)
+topo_prot = md.load(PDB_PROT)
+topo = topo_prot
 
-atom_filter = {
-    'minimal': topo.top.select_atom_indices('minimal'),
-    'heavy'  : topo.top.select_atom_indices('heavy'),
-    'alpha'  : topo.top.select_atom_indices('alpha')
-  }
+FILTER = {
+      'minimal': topo.top.select_atom_indices('minimal'),
+      'heavy'  : topo.top.select_atom_indices('heavy'),
+      'alpha'  : topo.top.select_atom_indices('alpha')
+    }
 
 
 def atomfilter(filt):
@@ -58,15 +55,12 @@ def atomfilter(filt):
   # TODO:  handle more complicated queries (or pass thru)
   if filt in atom_filter.keys():
     return atom_filter[filt]
-  else
+  else:
     return None
 
 def indexToRef(index, scale=40):
   numFramePerFile
   numFiles = scale
-
-
-
 
 def loadLabels(fn=None):
   """Load all pre-labeled states from DEShaw (as named Tuple)
@@ -89,7 +83,11 @@ def loadlabels_aslist(filename=None):
   with open(filename) as src:
     lines = src.read().strip().split('\n')
   label = [int(l.split()[1]) for l in lines]
+  # Account for the last one:
+  label.append(label[-1])
   return label
+
+labels = loadlabels_aslist()
 
 def getLabelList(labels):
   """Get list of states (future: for dynamic state discovery)
@@ -98,7 +96,6 @@ def getLabelList(labels):
   for lab in labels:
     labelset.add(lab.state)
   return sorted(list(labelset))
-
 
 def load_all_traj():
   """Load all pre-labeled states from DEShaw (as list of int)
@@ -109,11 +106,10 @@ def load_all_traj():
   for i in range(11):
     print ('loading ', i)
     start = dt.datetime.now()
-    tr.append(md.load(dcd(i), top=pdb))
+    tr.append(md.load(DCD_ALL(i), top=PDB_ALL))
     end = dt.datetime.now()
     print((end-start).total_seconds())
-  retun tr
-
+  return tr
 
 def loadpts(skip=40, filt=None):
   """Loads all DEShaw Points as one long NDarray. Skip value is used 
@@ -130,6 +126,13 @@ def loadpts(skip=40, filt=None):
   return np.array(pts)
 
 
+
+def refFromIndex(index):
+  """Convert a single frame index to (fileno, frame) tuple
+  """
+  fileno = math.floor(index // 100000)
+  frame  = index % 100000
+  return fileno, frame
 
 def getDEShawfilename(seqnum, fullpath=False):
     filename = 'bpti-all-%03d.dcd' if int(seqnum) < 1000 else 'bpti-all-%04d.dcd'
@@ -148,8 +151,33 @@ def getDEShawfilename_prot(seqnum, fullpath=False):
 def getHistoricalTrajectory(seqnum):
     fname = getDEShawfilename(seqnum)
     dfile = os.path.join(RAW_ARCHIVE, fname % int(seqnum))
-    pfile = PDB_FILE
+    pfile = PDB_ALL
     return pfile, dfile
+
+def getHistoricalTrajectory_prot(seqnum):
+    fname = getDEShawfilename_prot(seqnum)
+    dfile = os.path.join(RAW_ARCHIVE, fname)
+    pfile = PDB_PROT
+    return pfile, dfile
+
+
+def labelDEShaw_rmsd(filename='bpti-rmsd-alpha-dspace.npy'):
+  """label ALL DEShaw BPTI observations by state & secondary state (A, B)
+  Returns frame-by-frame labels  (used to seed jobs)
+  """
+  settings = systemsettings()
+  logging.info('Loading Pre-Calc RMSD Distances from: %s ','bpti-rmsd-alpha-dspace.npy')
+  rms = np.load(filename)
+  prox = np.array([np.argsort(i) for i in rms])
+  theta = settings.RMSD_THETA
+  logging.info('Labeling All DEShaw Points. Usng THETA=%f', theta)
+  rmslabel = []
+  for i in range(len(rms)):
+    A = prox[i][0]
+    proximity = abs(rms[i][prox[i][1]] - rms[i][A])    #abs
+    B = prox[i][1] if proximity < theta else A
+    rmslabel.append((A, B))
+  return rmslabel
 
 
 def loadDEShawTraj(start, end=-1, filt='heavy'):
@@ -207,27 +235,25 @@ def calc_bpti_centroid(traj_list):
   cent = [sums[i] / cnts[i] for i in range(5)]
   return (np.array(cent))
 
-
-def check_bpti_rms(traj_list, centroid, skip=40):
+def check_bpti_rms(observations, centroid, skip=40):
   hit = 0
   miss = 0
-  for n, traj in enumerate(traj_list):
-    print ('checking traj #', n)
-    for i in range(0, len(traj), skip):
-      idx = (n*400)  + (i // 1000)
-      labeled_state = label[idx]
-      dist = [np.sum(LA.norm(traj[i] - C)) for C in centroid]
-      predicted_state = np.argmin(dist)
-      if labeled_state == predicted_state:
-        hit += 1
-      else:
-        miss += 1
+  for n, pt in enumerate(observations):
+    if n % 10000 == 0:
+      print ('checking pt #', n)
+    idx = math.floor(n/1000)
+    dist = [(LA.norm(pt - C)) for C in centroid]
+    prox = np.argsort(dist)
+    predicted_state = np.argmin(dist)
+    if labeled_state == predicted_state:
+      hit += 1
+    else:
+      miss += 1
   print ('Hit rate:  %5.2f  (%d)' % ((hit/(hit+miss)), hit))
   print ('Miss rate: %5.2f  (%d)' % ((miss/(hit+miss)), miss))
 
 
 if __name__ == '__main__':
-
   #  FOR Calculting Centroids and RMSD of ALL conforms in D.E.Shaw Dataset
   settings = systemsettings()
   settings.applyConfig('debug.json')

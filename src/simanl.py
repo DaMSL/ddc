@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import shutil
+import time
 import fcntl
 import logging
 from collections import namedtuple, deque
@@ -20,8 +21,10 @@ from core.slurm import slurm
 from core.kvadt import kv2DArray
 from core.kdtree import KDTree
 from macro.macrothread import macrothread
-from mdsim.deshaw import deshawReference
-import mdsim.datareduce as datareduce
+import mdtools.deshaw as deshaw
+import datatools.datareduce as dr
+from datatools.rmsd import calc_rmsd
+from datatools.pca import project_pca
 from overlay.redisOverlay import RedisClient
 from overlay.alluxioOverlay import AlluxioClient
 
@@ -31,7 +34,7 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
 PARALLELISM = 24
 
@@ -118,6 +121,7 @@ class simulationJob(macrothread):
   def execute(self, job):
 
   # EXECUTE SIMULATION ---------------------------------------------------------
+    settings = systemsettings()
     # Prepare & source to config file
     with open(self.data['sim_conf_template'], 'r') as template:
       source = template.read()
@@ -172,7 +176,9 @@ class simulationJob(macrothread):
     logging.debug("Executing Simulation:\n   %s\n", cmd)
     bench = microbench()
     bench.start()
+
     stdout = executecmd(cmd)
+
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     bench.mark('SimExec:%s' % job['name'])
     shm_contents = os.listdir('/dev/shm/out')
@@ -208,7 +214,10 @@ class simulationJob(macrothread):
     #  ANALYSIS ALGORITHM
   # 1. With combined Sim-analysis: file is loaded locally from shared mem
     logging.debug("2. Load DCD")
-    traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
+
+    # Load full higher dim trajectory
+    # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
+    traj = md.load(dcd_ramfile, top=job['pdb'])
     bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
@@ -229,30 +238,34 @@ class simulationJob(macrothread):
     mylogical_seqnum = str(self.seqNumFromID())
     self.catalog.hset('anl_sequence', job['name'], mylogical_seqnum)
 
-    # INSERT NEW points here into cache/archive
+    # INSERT NEW points here into cache/archive .. OR JUS LET CACHE DEAL WITH IT
     logging.debug(" Loading new conformations into cache....TODO: NEED CACHE LOC")
     # for i in range(traj.n_frames):
     #   cache.insert(global_xid_index_slice[i], traj.xyz[i])
 
   # 4a. Subspace Calcuation: RMS
-    #------ A:  RMSD  ------------------
+    #------ A:  RMSD-ALPHA  ------------------
       #     S_A = rmslist
+    logging.debug("3. RMS Calculation")
       #  RMSD is calculated on the Ca ('alpha') atoms in distance space
       #   whereby all pairwise distances are calculated for each frame.
       #   Pairwise distances are plotted in euclidean space
       #   Distance to each of the 5 pre-calculated centroids is calculated
 
-      # 1. Calc RMS for each conform to all centroids
-    logging.debug("3. RMS Calculation")
+    # 1. Filter to Alpha atoms
+    alpha = traj.atom_slice(deshaw.FILTER['alpha'])
+
+    # 2. Convert to distance space: pairwise dist for all atom combinations
+    alpha_dist = dr.distance_space(alpha)
+
+    # 3. Calc RMS for each conform to all centroids
     numLabels = len(self.data['centroid'])
     numConf = len(traj.xyz)
-    rmsraw = np.zeros(shape=(numConf, numLabels))
-    for i, conform in enumerate(traj.xyz):
-      np.copyto(rmsraw[i], np.array([LA.norm(conform-cent) for cent in self.data['centroid']]))
+    rmsraw = calc_rmsd(alpha_dist, self.data['centroid'])
     logging.debug('  RMS:  %d points projected to %d centroid-distances', numConf, numLabels)
 
-    # 2. Account for noise
-    #    For now: noise is user-jobured; TODO: Factor in to Kalman Filter
+    # 4. Account for noise
+    #    For now: noise is user-defined; TODO: Factor in to Kalman Filter
     noise = DEFAULT.OBS_NOISE
     stepsize = 500 if 'interval' not in job else int(job['interval'])
     nwidth = noise//(2*stepsize)
@@ -260,6 +273,10 @@ class simulationJob(macrothread):
 
     # Notes: Delta_S == rmslist
     rmslist = np.array([noisefilt(rmsraw, i) for i in range(numConf)])
+
+    logging.debug("RMS CHECK......")
+    for i in rmslist:
+      logging.debug("  %s", str(np.argsort(i)))
 
     # 3. Append new points into the data store. 
     #    r_idx is the returned list of indices for each new RMS point
@@ -283,7 +300,7 @@ class simulationJob(macrothread):
     # 4. Apply Heuristics Labeling
     logging.debug('Applying Labeling Heuristic')
     rmslabel = []
-    subspaceHash = {}
+    pipe = self.catalog.pipeline()
     for i, rms in enumerate(rmslist):
       #  Sort RMSD by proximity & set state A as nearest state's centroid
       prox = np.argsort(rms)
@@ -295,7 +312,7 @@ class simulationJob(macrothread):
       #  The theta is divided by four based on the analysis of DEShaw:
       #   est based on ~3% of DEShaw data in transition (hence )
       avg_stddev = 0.34119404492089034
-      theta = avg_stddev / 4.
+      theta = avg_stddev
 
       # NOTE: Original formulate was relative. Retained here for reference:  
       # Rel vs Abs: Calc relative proximity for top 2 nearest centroids   
@@ -308,11 +325,13 @@ class simulationJob(macrothread):
       #  Label secondary sub-state
       B = prox[1] if proximity < theta else A
       rmslabel.append((A, B))
-      if (A, B) not in subspaceHash:
-        subspaceHash[(A, B)] = []
-        logging.debug("Found Label: %s", str((A, B)))
-      subspaceHash[(A, B)].append(i)
 
+      # Add this index to the set of indices for this respective label
+      #  TODO: Should we evict if binsize is too big???
+      logging.debug('Label for observation #%3d: %s', i, str((A, B)))
+      pipe.rpush('varbin:rms:%d_%d' % (A, B), global_xid_index_slice[i])
+
+    pipe.execute()
     # Update Catalog
     idxcheck = self.catalog.append({'label:rms': rmslabel})
     bench.mark('RMS')
@@ -322,12 +341,15 @@ class simulationJob(macrothread):
   #------ B:  PCA  -----------------
     # 1. Project Pt to PC's for each conform (top 3 PC's)
     logging.debug("Using following PCA Vectors: %s", str(self.data['pcaVectors'].shape))
-    pcalist = datareduce.PCA(traj.xyz, self.data['pcaVectors'], numpc=3)
+
+    pc_proj = project_pca(alpha.xyz, self.data['pcaVectors'], settings.PCA_NUMPC)
+
+    # pcalist = datareduce.PCA(traj.xyz, self.data['pcaVectors'], numpc=3)
 
     # 2. Apend subspace in catalog
     p_idx = []
     pipe = self.catalog.pipeline()
-    for si in pcalist:
+    for si in pc_proj:
       pipe.rpush('subspace:pca', bytes(si))
     idxlist = pipe.execute()
     for i in idxlist:
@@ -336,29 +358,56 @@ class simulationJob(macrothread):
 
     # 3. Performing tiling over subspace
     #   For Now: Load entire tree into local memory
-    hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
-    logging.debug('# Loaded keys = %d', len(hcube_mapping.keys()))
 
-    # 4. Pull entire Subspace (for now)  
-    #   Note: this is more efficient than inserting new points
-    #   due to underlying Redis Insertions / Index look up
-    #   If this become a bottleneck, may need to write custom redis client
-    #   connection to persist connection and keep socket open (on both ends)
-    #   Or handle some of this I/O server-side via Lua scipt
-    packed_subspace = self.catalog.lrange('subspace:pca', 0, -1)
-    subspace_pca = np.array([np.fromstring(x) for x in packed_subspace])
+    #  TODO:  DECONFLICT CONSISTENCY IN UPDATE TO KDTREE -- FOR NOW USE LOCK
 
-    # TODO: accessor function is for 1 point (i) and 1 axis (j). 
-    #  Optimize by changing to pipeline  retrieval for all points given 
-    #  a list of indices with an axis (if nec'y)
-    logging.debug("Reconstructing the tree...")
-    hcube_tree = KDTree.reconstruct(hcube_mapping, subspace_pca)
+    # while True:
+    #   lock = self.catalog.get('hcube:pca:LOCK')
+    #   if lock is None or int(lock) == 0:
+    #     logging.info('HCube KDTree is available for updating')
+    #     break
+    #   logging.info('Waiting to acquire the HCube Lock.....')
+    #   time.sleep(3)
+
+    # logging.info('Acquired the HCube Lock!')
+    # self.catalog.set('hcube:pca:LOCK', 1)
+    # self.catalog.expire('hcube:pca:LOCK', 30)
+
+    # hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
+    # logging.debug('# Loaded keys = %d', len(hcube_mapping.keys()))
+
+    # # 4. Pull entire Subspace (for now)  
+    # #   Note: this is more efficient than inserting new points
+    # #   due to underlying Redis Insertions / Index look up
+    # #   If this become a bottleneck, may need to write custom redis client
+    # #   connection to persist connection and keep socket open (on both ends)
+    # #   Or handle some of this I/O server-side via Lua scipt
+    # packed_subspace = self.catalog.lrange('subspace:pca', 0, -1)
+    # subspace_pca = np.zeros(shape=(len(packed_subspace), settings.PCA_NUMPC))
+    # for x in packed_subspace:
+    #   subspace_pca = np.fromstring(x, dtype=np.float32, count=settings.PCA_NUMPC)
+
+    # # TODO: accessor function is for 1 point (i) and 1 axis (j). 
+    # #  Optimize by changing to pipeline  retrieval for all points given 
+    # #  a list of indices with an axis (if nec'y)
+    # logging.debug("Reconstructing the tree...")
+    # hcube_tree = KDTree.reconstruct(hcube_mapping, subspace_pca)
 
     # logging.debug("Inserting Delta_S_pca into KDtree (hcubes)")
-    # for i in range(len(pcalist)):
-    #   hcube_tree.insert(pcalist[i], p_idx[i])
+    # for i in range(len(pc_proj)):
+    #   hcube_tree.insert(pc_proj[i], p_idx[i])
 
-    # TODO: Ensure hcube_tree is written to catalog
+    # # Ensure hcube_tree is written to catalog
+    # #  TODO:  DECONFLICT CONSISTENCY IN UPDATE TO KDTREE -- FOR NOW USE LOCK
+    # encoded = json.dumps(hcube_tree.encode())
+    # logging.info('Storing in catalog')
+    # pipe = self.catalog.pipeline()
+    # pipe.delete('hcube:pca')
+    # pipe.set('hcube:pca', encoded)
+    # pipe.delete('hcube:pca:LOCK')
+    # pipe.execute()
+    # logging.info('PCA HyperCube KD Tree update (lock released)')
+
     # TODO: DECIDE on retaining a Reservoir Sample
     # reservoirSampling(self.catalog, traj.xyz, r_idx, subspaceHash, 
     #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
@@ -375,9 +424,6 @@ class simulationJob(macrothread):
     # For benchmarching:
     print('##', job['name'], dcdfilesize/(1024*1024*1024), traj.n_frames)
     bench.show()
-
-
-
 
     return [job['name']]
 

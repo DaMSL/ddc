@@ -101,12 +101,17 @@ class systemsettings:
     # Redis Service specific settings
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
 
+    # CACHE SERVICE PARAMS  (in GB)
+    self.CACHE_CAPACITY = 40
+
     # Alluxio Service specific settings
     # FOR shared Lustre (not working!)
     # self.ALLUXIO_UNDERFS = os.path.join(self.WORKDIR, 'alluxio', application)
     # FOR local UFS (will need to clean up!)
     self.ALLUXIO_UNDERFS = '/tmp/alluxio'
     self.ALLUXIO_WORKER_MEM = '20GB'
+
+
 
     # <DEPPRICATE>
     self.catalogConfig  = dict(
@@ -122,6 +127,7 @@ class systemsettings:
     # atom_filter = ini.get('atom_filter', 'heavy')
     # self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
 
+
     # Analysis Setting
     self.MAX_RESERVOIR_SIZE = 1000
 
@@ -135,6 +141,11 @@ class systemsettings:
     self.PARTITION = ini.get('partition', 'shared')
 
     #  PARAMS TO BE SET:
+    self.RMSD_THETA = ini.get('rmsd_theta', .25)   # RMS Transition detetion Sensitivity
+    self.RMSD_CENTROID_FILE = ini.get('rmsd_centroid_file', 'data/bpti-alpha-dist-centroid.npy')
+    self.PCA_VECTOR_FILE = ini.get('pca_vector_file', 'data/pca_comp.npy')
+    self.PCA_NUMPC = ini.get('pca_numpc', 3)
+
     self.OBS_NOISE = ini.get('obs_noise', 10000)
     self.RUNTIME_FIXED = ini.get('runtime', 100000)
     self.DCDFREQ = ini.get('dcdfreq', 500)

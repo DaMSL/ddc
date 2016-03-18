@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/overlay-%j.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
+#SBATCH --partition=lrgmem
 
 module load namd
 module load redis

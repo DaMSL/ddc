@@ -13,12 +13,14 @@ import mdtraj as md
 import numpy as np
 
 from core.common import *
-import mdsim.deshaw as deshaw
+import mdtools.deshaw as deshaw
 from overlay.redisOverlay import RedisClient
 from core.kvadt import kv2DArray
 from core.slurm import slurm
 from core.kdtree import KDTree
-from mdsim.simtool import generateNewJC
+from mdtools.simtool import generateNewJC
+import mdtools.deshaw as deshaw
+
 
 
 DO_COV_MAT = False
@@ -46,6 +48,206 @@ def updateschema(catalog):
 
 DESHAW_PTS_FILE =  os.getenv('HOME') + '/work/data/debug/bpti_10p.npy'
 DESHAW_SAMPLE_FACTOR = 10  # As in 1/10th of full data set
+
+def initializecatalog(catalog):
+  """Initialize the Catalog for an experiment
+  """
+  settings = systemsettings()
+
+  # TODO:  Job ID Management  Doesn't
+  # ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
+  # for k,v in ids.items():
+  #   settings.schema[k] = type(v).__name__
+
+  logging.debug("Clearing Catalog.")
+  if not catalog.isconnected:
+    logging.warning('Catalog is not started. Please start it first.')
+    sys.exit(0)
+  catalog.clear()
+
+  logging.debug("Loading schema into catalog.")
+  updateschema(catalog)
+  catalog.loadSchema()
+
+  # Set defaults vals for schema
+  initvals = {i:settings.init[i] for i in settings.init.keys() if settings.schema[i] in ['int', 'float', 'list', 'dict', 'str']}
+  catalog.save(initvals)
+  for k, v in initvals.items():
+    logging.debug("Initializing data elm %s  =  %s", k, str(v))
+
+  # Initialize Candidate Pools
+  numLabels  = int(catalog.get('numLabels'))
+  # pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
+  # candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
+
+  #  Create Candidate Pools from RMSD for all source DEShaw data
+  # logging.info("Loading DEShaw RMS Values")
+  # rms = np.load('data/rmsd.npy')
+  # stddev = 1.1136661550671645
+  # theta = stddev / 4
+  # logging.info("Creating candidate pools")
+  # for i, traj in enumerate(rms):
+  #   for f, conform in enumerate(traj):
+  #     ordc = np.argsort(conform)
+  #     A = ordc[0]
+  #     proximity = abs(conform[ordc[1]] - conform[A])
+  #     B = ordc[1] if proximity < theta else A
+  #     pools[A][B].append('%03d:%03d'%(i,f))
+  # logging.info("All Candidates Found! Randomly selecting.....")
+
+  # for i in range(5):
+  #   for j in range(5):
+  #     size = min(1000, len(pools[i][j]))
+  #     if size == 0:
+  #       logging.info("  No candidates for pool (%d,%d)", i, j)
+  #     else:
+  #       candidates[i][j] = random.sample(pools[i][j], size)
+  #       logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
+
+  logging.info("Updating Catalog")
+
+  pipe = catalog.pipeline()  
+  logging.info("Deleting existing candidates and controids")
+  pipe.delete('centroid')
+  pipe.delete('pcaVectors')
+  # for i in range(numLabels):
+  #   for j in range(numLabels):
+  #     pipe.delete(kv2DArray.key('candidatePool', i, j))
+
+  # for i in range(numLabels):
+  #   for j in range(numLabels):
+  #     for c in candidates[i][j]:
+  #       pipe.rpush(kv2DArray.key('candidatePool', i, j), c)
+  pipe.execute()
+
+  # centfile = 'data/centroid.npy'
+
+  # New distance space based centroids
+  centfile = settings.RMSD_CENTROID_FILE
+
+  logging.info("Loading centroids from %s", centfile)
+  centroid = np.load(centfile)
+  catalog.storeNPArray(centroid, 'centroid')
+
+
+  # Initialize observations matrix
+  logging.info('Initializing observe and runtime matrices')
+  observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
+  launch  = kv2DArray(catalog, 'launch',  mag=numLabels, init=0)
+  runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
+
+def load_PCA_Subspace(catalog):
+
+  # HCube leaf size of 500 points
+  settings = systemsettings()
+  vectfile = settings.PCA_VECTOR_FILE
+
+  logging.info("Loading PCA Vectors from %s", vectfile)
+  pc_vect = np.load(vectfile)
+  max_pc = pc_vect.shape[1]
+  num_pc = min(settings.PCA_NUMPC, max_pc)
+  pc = pc_vect[:num_pc]
+  logging.info("Storing PCA Vectors to key:  %s", 'pcaVectors')
+  catalog.storeNPArray(pc, 'pcaVectors')
+
+  logging.info("Loading Pre-Calculated PCA projections from Historical BPTI Trajectory")
+  pre_calc_deshaw = np.load('data/pca_applied.npy')
+
+  # Extract only nec'y PC's
+  pts = pre_calc_deshaw.T[:num_pc].T
+
+  pipe = catalog.pipeline()
+  for si in pts:
+    pipe.rpush('subspace:pca', bytes(si))
+  pipe.execute()
+  logging.debug("PCA Subspace stored in Catalog")
+
+  logging.info('Creating KD Tree')
+  kd = KDTree(500, maxdepth=8, data=pts)
+  logging.info('Encoding KD Tree')
+  packaged = kd.encode()
+  encoded = json.dumps(packaged)
+  logging.info('Storing in catalog')
+  catalog.delete('hcube:pca')
+  catalog.set('hcube:pca', encoded)
+  logging.info('PCA Complete')
+
+def labelDEShaw_rmsd():
+  """label ALL DEShaw BPTI observations by state & secondary state (A, B)
+  Returns frame-by-frame labels  (used to seed jobs)
+  """
+  settings = systemsettings()
+  logging.info('Loading Pre-Calc RMSD Distances from: %s ','bpti-rmsd-alpha-dspace.npy')
+  rms = np.load('bpti-rmsd-alpha-dspace.npy')
+  prox = np.array([np.argsort(i) for i in rms])
+  theta = settings.RMSD_THETA
+  logging.info('Labeling All DEShaw Points. Usng THETA=%f', theta)
+  rmslabel = []
+  for i in range(len(rms)):
+    A = prox[i][0]
+    proximity = abs(rms[i][prox[i][1]] - rms[i][A])    #abs
+    B = prox[i][1] if proximity < theta else A
+    rmslabel.append((A, B))
+  return rmslabel
+
+def seedJob_Uniform(catalog, num=1):
+  """
+  Seeds jobs into the JCQueue -- pulled from DEShaw
+  Selects equal `num` of randomly start frames from each bin
+  to seed as job candidates
+  """
+  logging.info('Seeding %d jobs per transtion bin', num)
+  settings = systemsettings()
+  numLabels = int(catalog.get('numLabels'))
+  binlist = [(A, B) for A in range(numLabels) for B in range(numLabels)]
+  rmslabel = labelDEShaw_rmsd()
+  logging.info('Grouping all prelabeled Data:')
+  groupby = {b:[] for b in binlist}
+  for i, b in enumerate(rmslabel):
+    groupby[b].append(i)
+
+  for k in sorted(groupby.keys()):
+    v = groupby[k]
+    logging.info('%s %7d %4.1f', str(k), len(v), (100*len(v)/len(rmslabel)))
+
+  for binlabel in sorted(groupby.keys()):
+    clist = groupby[binlabel]:
+
+    # No candidates
+    if len(clist) == 0:
+      continue
+
+    A, B = binlabel
+    for k in range(num):
+      logging.debug('\nSeeding Job #%d for bin (%d,%d) ', k, A, B)
+      index = np.random.choice(clist)
+      src, frame = deshaw.refFromIndex(index)
+      logging.debug("   Selected: BPTI %s, frame: %s", src, frame)
+      pdbfile, dcdfile = deshaw.getHistoricalTrajectory_prot(int(src))
+      traj = md.load(dcdfile, top=pdbfile, frame=int(frame))
+
+      # Generate new set of params/coords
+      jcID, params = generateNewJC(traj)
+
+      # Update Additional JC Params and Decision History, as needed
+      config = dict(params,
+          name    = jcID,
+          runtime = settings.init['runtime'],
+          dcdfreq = settings.init['dcdfreq'],
+          temp    = 310,
+          state   = i,
+          timestep = 0,
+          interval = 500,
+          gc      = 1,
+          application   = settings.APPL_LABEL)
+      logging.info("New Simulation Job Created: %s", jcID)
+      for k, v in config.items():
+        logging.debug("   %s:  %s", k, str(v))
+      catalog.rpush('jcqueue', jcID)
+      catalog.hmset(wrapKey('jc', jcID), config)
+
+
+#############################
 
 def calcDEShaw_PCA(catalog, force=False):
   numPC = 3
@@ -96,87 +298,6 @@ def calcDEShaw_PCA(catalog, force=False):
 
   # cacherawfile = os.path.join(DEFAULT.DATADIR, 'cache_raw')
   # np.save(cacherawfile, src)
-
-def initializecatalog(catalog):
-  settings = systemsettings()
-
-  # TODO:  Job ID Management
-  ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
-  for k,v in ids.items():
-    settings.schema[k] = type(v).__name__
-
-  logging.debug("Clearing Catalog.")
-  if not catalog.isconnected:
-    logging.warning('Catalog is not started. Please start it first.')
-    sys.exit(0)
-  catalog.clear()
-
-  logging.debug("Loading schema into catalog.")
-  updateschema(catalog)
-  catalog.loadSchema()
-
-  # Set defaults vals for schema
-  initvals = {i:settings.init[i] for i in settings.init.keys() if settings.schema[i] in ['int', 'float', 'list', 'dict', 'str']}
-  catalog.save(initvals)
-  for k, v in initvals.items():
-    logging.debug("Initializing data elm %s  =  %s", k, str(v))
-
-  # Initialize Candidate Pools
-  numLabels  = int(catalog.get('numLabels'))
-  pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
-  candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
-
-  #  Create Candidate Pools from RMSD for all source DEShaw data
-  logging.info("Loading DEShaw RMS Values")
-  rms = np.load('data/rmsd.npy')
-  stddev = 1.1136661550671645
-  theta = stddev / 4
-  logging.info("Creating candidate pools")
-  for i, traj in enumerate(rms):
-    for f, conform in enumerate(traj):
-      ordc = np.argsort(conform)
-      A = ordc[0]
-      proximity = abs(conform[ordc[1]] - conform[A])
-      B = ordc[1] if proximity < theta else A
-      pools[A][B].append('%03d:%03d'%(i,f))
-  logging.info("All Candidates Found! Randomly selecting.....")
-
-  for i in range(5):
-    for j in range(5):
-      size = min(1000, len(pools[i][j]))
-      if size == 0:
-        logging.info("  No candidates for pool (%d,%d)", i, j)
-      else:
-        candidates[i][j] = random.sample(pools[i][j], size)
-        logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
-
-  logging.info("Updating Catalog")
-
-  pipe = catalog.pipeline()  
-  logging.info("Deleting existing candidates and controids")
-  pipe.delete('centroid')
-  pipe.delete('pcaVectors')
-  for i in range(numLabels):
-    for j in range(numLabels):
-      pipe.delete(kv2DArray.key('candidatePool', i, j))
-
-  for i in range(numLabels):
-    for j in range(numLabels):
-      for c in candidates[i][j]:
-        pipe.rpush(kv2DArray.key('candidatePool', i, j), c)
-  pipe.execute()
-
-  centfile = 'data/centroid.npy'
-  logging.info("Loading centroids from %s", centfile)
-  centroid = np.load(centfile)
-  catalog.storeNPArray(centroid, 'centroid')
-
-
-  # Initialize observations matrix
-  logging.info('Initializing observe and runtime matrices')
-  observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
-  # launch = kv2DArray(catalog, 'launch', mag=numLabels, init=0)
-  runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
 
 def init_archive(archive, hashsize=8):
 
@@ -391,46 +512,7 @@ def seedData(catalog):
     catalog.hdel(key, 'indexList')
     catalog.hdel(key, 'actualBin')
 
-def seedJob(catalog, num=1):
-  """
-  Seeds jobs into the JCQueue -- pulled from DEShaw
-  """
-  settings = systemsettings()
-  numLabels  = int(catalog.get('numLabels'))
-  idx = 0
-  for i in range(numLabels):
-    for j in range(numLabels):
-      for k in range(num):
-        logging.debug('\nSeeding Job for bin (%d,%d) ', i, j)
-        start = catalog.lpop(kv2DArray.key('candidatePool', i, j))
-        src, frame = start.split(':')
-        catalog.rpush(kv2DArray.key('candidatePool', i, j), start)
-
-        logging.debug("   Selected: BPTI %s, frame: %s", src, frame)
-        pdbfile, dcdfile = deshaw.getHistoricalTrajectory(int(src))
-        traj = md.load(dcdfile, top=pdbfile, frame=int(frame))
-        traj.atom_slice(traj.top.select('protein'), inplace=True)
-
-        # Generate new set of params/coords
-        jcID, params = generateNewJC(traj)
-
-        # Update Additional JC Params and Decision History, as needed
-        config = dict(params,
-            name    = jcID,
-            runtime = settings.init['runtime'],
-            dcdfreq = settings.init['dcdfreq'],
-            temp    = 310,
-            state   = i,
-            timestep = 0,
-            interval = 500,
-            gc      = 1,
-            application   = DEFAULT.APPL_LABEL)
-        logging.info("New Simulation Job Created: %s", jcID)
-        for k, v in config.items():
-          logging.debug("   %s:  %s", k, str(v))
-        catalog.rpush('jcqueue', jcID)
-        catalog.hmset(wrapKey('jc', jcID), config)
-        idx += 1      
+#############################
 
 
 if __name__ == '__main__':
@@ -466,21 +548,19 @@ if __name__ == '__main__':
     initializecatalog(catalog)
 
   if args.initpca or args.all:
-    pcaVectorfile = 'data/cpca_pc3.npy'
-    logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
-    pcaVectors = np.load(pcaVectorfile)
-    catalog.storeNPArray(pcaVectors, 'pcaVectors')
-    calcDEShaw_PCA(catalog)
+    load_PCA_Subspace(catalog)
+    # pcaVectorfile = 'data/cpca_pc3.npy'
+    # logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
+    # pcaVectors = np.load(pcaVectorfile)
+    # catalog.storeNPArray(pcaVectors, 'pcaVectors')
+    # calcDEShaw_PCA(catalog)
 
+  if args.seedjob or args.all:
+    seedJob_Uniform(catalog)
 
   if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     updateschema(catalog)
-
-  if args.seedjob or args.all:
-    executecmd('module load namd')
-    seedJob(catalog)
-
 
 
 

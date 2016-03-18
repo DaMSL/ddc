@@ -7,6 +7,7 @@ import logging
 import sys
 
 from overlay.redisOverlay import RedisService
+from overlay.cacheOverlay import CacheService
 from overlay.alluxioOverlay import AlluxioService
 
 # import core.slurm as slurm
@@ -41,6 +42,11 @@ if __name__ == "__main__":
       logging.error('ERROR. Service requires a application name with corresponding input (json) confile file')
       sys.exit()
     service = RedisService(args.name)
+  elif args.service == 'cache':
+    if args.name is None:
+      logging.error('ERROR. Service requires a application name with corresponding input (json) confile file')
+      sys.exit()
+    service = CacheService(args.name)
   elif args.service == 'alluxio':
     if args.name is None:
       logging.error('ERROR. Service requires a application name with corresponding input (json) confile file')

@@ -25,7 +25,8 @@
     	"xid:reference": "list",
     	"label:rms": "list",
         "numresoures": "int",
-        "backproj:approxlimit": "int"
+        "backproj:approxlimit": "int",
+	"ctlIndexHead": "int"
     },
     "init": {
         "converge": 0.0,
@@ -41,7 +42,8 @@
         "runtime": 100000,
 	"dcdfreq": 500,
     "numresoures": 50,
-    "backproj:approxlimit": 50
+    "backproj:approxlimit": 50,
+	"ctlIndexHead": -1
 
     },
     "settings": {
@@ -62,6 +64,7 @@
         "monitor_wait_delay": 30,
         "nodes": 1,
         "partition": "debug",
+	"rmsd_theta": 0.25,
         "raw_archive": "/home-1/bring4@jhu.edu/work/bpti",
         "workdir": "/home-1/bring4@jhu.edu/work"
     }

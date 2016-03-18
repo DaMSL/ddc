@@ -7,7 +7,7 @@ import os
 import mdtraj as md
 
 from core.common import *
-import mdsim.deshaw as deshaw
+import mdtools.deshaw as deshaw
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
