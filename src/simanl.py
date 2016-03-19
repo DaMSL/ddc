@@ -37,6 +37,7 @@ __status__ = "Development"
 logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
 PARALLELISM = 24
+SIM_STEP_SIZE = 2
 
 class simulationJob(macrothread):
   """Macrothread to run MD simuation. Each worker runs one simulation
@@ -181,6 +182,13 @@ class simulationJob(macrothread):
 
     logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
     bench.mark('SimExec:%s' % job['name'])
+
+    # Internal stats
+    sim_length = settings.SIM_STEP_SIZE * job['runtime']
+    sim_realtime = bench.delta_last()
+    sim_run_ratio =  (sim_realtime/60) / (sim_length/1000000)
+    logging.info('##SIM_RATIO %6.3f  min-per-ns-sim')
+
     shm_contents = os.listdir('/dev/shm/out')
     logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
 
@@ -425,7 +433,9 @@ class simulationJob(macrothread):
     print('##', job['name'], dcdfilesize/(1024*1024*1024), traj.n_frames)
     bench.show()
 
-    return [job['name']]
+    # return [job['name']]
+    # Return # of observations (frames) processed
+    return [traj.n_frames]
 
 if __name__ == '__main__':
   mt = simulationJob(__file__)

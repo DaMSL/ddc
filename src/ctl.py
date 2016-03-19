@@ -163,7 +163,9 @@ class controlJob(macrothread):
       self.addImmut('terminate')
       self.addImmut('backproj:approxlimit')
       self.addImmut('numresources')
-
+      self.addImmut('ctlBatchSize_min')
+      self.addImmut('ctlBatchSize_max')
+      
       self.addImmut('launch')
       self.addAppend('timestep')
       # self.addAppend('observe')
@@ -187,25 +189,38 @@ class controlJob(macrothread):
 
     def split(self):
 
-      immed = [] if len(self.data['completesim']) == 0 else ['completesim']
-      return [1000], None
+      settings = systemsettings()
+
+      # Batch sizes should be measures in abosolute # of observations
+      workloadList = deque(self.data['completesim'])
+      minbatchSize = self.data['ctlBatchSize_min']
+      maxbatchSize = self.data['ctlBatchSize_max']
+      batchAmt = 0
+      logging.debug('Controller will launch with batch size between: %d and %d observations', minbatchSize, maxbatchSize)
+      while batchAmt < maxbatchSize and len(workloadList) > 0:
+        if workloadList[0] + batchAmt > maxbatchSize:
+          if batchAmt == 0:
+            logging.warning('CAUTION. May need to set the max batch size higher (cannot run controller)')
+          break
+        batchAmt += int(workloadList.popleft())
+        logging.debug('  Batch amount currently: %d', batchAmt)
+
+      # Don't do anything if the batch size is less than the min:
+      if batchAmt < minbatchSize:
+        return [], self.data['completesim']
+      else:
+        return [batchAmt], list(workloadList)
 
     # DEFAULT VAL for i for for debugging
-    def fetch(self, i=1000):
-      return 1000 #num_to_process   #FOR now, do all pts
-     #  lastxid = int(self.catalog.llen('xid:reference'))
-     #  head = self.data['ctlIndexHead']
-     #  if head is None:
-     #    head = 0
-     #  else:
-     #    head = int(head)
-     #  mylimit = int(i)
-     #  num_to_process = head+mylimit if (lastxid-head) > mylimit else -1
-     #  logging.debug (' Current index head: %d    Total Pts :  %d  \
-     # Unprocessed:  %d.   My limit:  %d', head, lastxid, (lastxid-head), mylimit)
+    def fetch(self, batchSize):
+      """Fetch determines the next thru index for this control loop
+      Note that batchSize is measured in ps. Thru Index should return
+      the next index to process
+      """
+      start_index = max(0, self.data['ctlIndexHead'])
+      thru_index = min(start_index + int(batchSize), self.catalog.llen('label:rms')) - 1
 
-     #  # return min(head + mylimit, lastxid)
-      return 1000 #num_to_process   #FOR now, do all pts
+      return thru_index
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
@@ -230,6 +245,8 @@ class controlJob(macrothread):
       of high dimensional points (one per index). Check cache for each point and
       condolidate file I/O for all cache misses.
       """
+
+      logging.debug('--------  BACK PROJECTION:  %d POINTS ---', len(index_list))
       bench = microbench()
       source_points = []
       cache_miss = []
@@ -239,49 +256,101 @@ class controlJob(macrothread):
       # DEShaw topology is assumed here
       bench.start()
 
-      # TODO::: GET PreLoadedFile!!!!
-      ref = deshaw.deshawReference(atomfilter='all')
-      ref.atom_slice(ref.top.select('protein'), inplace=True)
-      bench.mark('LD:ref')
-
+      # Derefernce indices to file, frame tuple:
+      historical_framelist = []
       pipe = self.catalog.pipeline()
-      for pt in index_list:
-        pipe.lindex('xid:reference', pt)
-      framelist = pipe.execute()
+      for idx in index_list:
+        logging.debug('[BP] Dereferencing Index: %s', str(idx))
+        # Negation indicates  historical index:
+        index = int(idx)
+        if index < 0:
+          file_index, frame = deshaw.refFromIndex(-idx)
+          historical_framelist.append((file_index, frame))
+          logging.debug('[BP] DEShaw:  file #%d,   frame#%d', file_index, frame)
+        else:
+          pipe.lindex('xid:reference', index)
+
+      # Load higher dim point indices from catalog
+      generated_framelist = pipe.execute()
+      for i in generated_framelist:
+        logging.debug('[BP] De-Referenced Gen Frame: %s', str(i))
+
       bench.mark('LD:Redis:xidlist')
 
-      atomfilter = {}
-      for i, idx in enumerate(framelist):
-        print (i, idx)
-        # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
-        if idx is None:
-          is_deshaw = True
+
+      ref = deshaw.topo_prot  # Hard coded for now
+
+      # Group all Historical indidces by file number and add to frame Mask 
+      historical_frameMask = {}
+      for i, idx in enumerate(historical_framelist):
+        file_index, frame = idx
+        if file_index not in historical_frameMask:
+          historical_frameMask[file_index] = []
+        historical_frameMask[file_index].append(frame)
+
+      for k, v in historical_frameMask.items():
+        logging.debug('[BP] Deshaw lookups: %d, %s', k, str(v))
+
+
+      # Group all Generated indidces by file index 
+      groupbyFileIdx = {}
+      for i, idx in enumerate(generated_framelist):
+        file_index, frame = eval(idx)
+        if file_index not in groupbyFileIdx:
+          groupbyFileIdx[file_index] = []
+        groupbyFileIdx[file_index].append(frame)
+
+      # Dereference File index to filenames
+      generated_frameMask = {}
+      generated_filemap = {}
+      for file_index in groupbyFileIdx.keys():
+        filename = self.catalog.lindex('xid:filelist', file_index)
+        if filename is None:
+          logging.error('Error file not found in catalog: %s', filename)
         else:
-          file_index, frame = eval(idx)
-          is_deshaw = (file_index < 0)
-        if is_deshaw:
-            dcdfile_num = -index_list[i] // 100000
-            frame = -index_list[i] - (100000)*dcdfile_num
-            # Use negation to indicate DEShaw file (not in fileindex in catalog)
-            file_index = (-1 * dcdfile_num)
-        if file_index not in atomfilter:
-          atomfilter[file_index] = []
-        atomfilter[file_index].append(frame)
-      logging.debug('Back projecting %s points from %d different files.', 
-        len(framelist), len(atomfilter))
+          key = os.path.splitext(os.path.basename(filename))[0]
+          generated_frameMask[key] = groupbyFileIdx[file_index]
+          generated_filemap[key] = filename
       bench.mark('GroupBy:Files')
 
+      for k, v in generated_frameMask.items():
+        logging.debug('[BP] GenData lookups: %s, %s', str(k), str(v))
 
+      #  Ensure the cache is alive an connected
+      self.cacheclient.connect()
 
-      #  TODO: MOVE TO CACHE ???
-      logging.debug('Checking cache for %d points to back-project', len(index_list))
-      for i in index_list:
-        pt = None   #  pt = cache.request(i)  NO CACHE !!!!!!
-        if pt is None:
-          # TODO: File retrieval
-          cache_miss.append(i)
+      # Check cache for historical data points
+      logging.debug('Checking cache for %d DEShaw points to back-project', len(historical_frameMask.keys()))
+      for fileno, frames in historical_frameMask.items():
+        # handle 1 frame case (to allow follow on multi-frame, mix cache hit/miss)
+        if len(frames) == 1:
+          datapt = self.cacheclient.get(fileno, frames[0], 'deshaw')
+          dataptlist = [datapt] if datapt is not None else None
         else:
-          source_points.append(pt)
+          dataptlist = self.cacheclient.get_many(fileno, frames, 'deshaw')
+        if dataptlist is None:
+          logging.debug('[BP] Cache MISS on: %d', fileno)
+          cache_miss.append(('deshaw', fileno, frames))
+        else:
+          logging.debug('[BP] Cache HIT on: %d', fileno)
+          source_points.extend(dataptlist)
+
+      # Check cache for generated data points
+      logging.debug('Checking cache for %d Generated points to back-project', len(generated_frameMask.keys()))
+      for filename, frames in generated_frameMask.items():
+        # handle 1 frame case (to allow follow on multi-frame, mix cache hit/miss)
+        if len(frames) == 1:
+          datapt = self.cacheclient.get(filename, frames[0], 'sim')
+          dataptlist = [datapt] if datapt is not None else None
+        else:
+          dataptlist = self.cacheclient.get_many(filename, frames, 'sim')
+        if dataptlist is None:
+          logging.debug('[BP] Cache MISS on: %s', filename)
+          cache_miss.append(('sim', generated_filemap[filename], frames))
+        else:
+          logging.debug('[BP] Cache HIT on: %s', filename)
+          source_points.extend(dataptlist)
+
 
       # Package all cached points into one trajectory
       logging.debug('Cache hits: %d points.', len(source_points))
@@ -293,91 +362,26 @@ class controlJob(macrothread):
       # All files were cached. Return back-projected points
       if len(cache_miss) == 0:
         return source_traj_cached
-
-      # Archive File retrieval for all cache-miss points
-      # TODO:  May need to deference to local RMS Subspace first, then Back to high-dim
-      # bench.mark('Cache:Hit')
-      # pipe = self.catalog.pipeline()
-      # for pt in cache_miss:
-      #   pipe.lindex('xid:reference', pt)
-      # framelist = pipe.execute()
-      # bench.mark('LD:Redis:xidlist')
-      # for i in range(len(framelist)):
-      #   if framelist[i] is None:
-      #     dcdfile_num = cache_miss[i] // 100
-      #     frame_num = (cache_miss[i] - 100*dcdfile_num) * 10
-      #     framelist[i] = str((dcdfile_num, frame_num))
-          
-      # ID unique files and Build index filter for each unique file
-      #  Account for DEShaw Files (derived from index if index not in catalog)
-      # atomfilter = {}
-      # for i, idx in enumerate(framelist):
-      #   # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
-      #   if idx is None:
-      #     is_deshaw = True
-      #   else:
-      #     file_index, frame = eval(idx)
-      #     is_deshaw = (file_index < 0)
-      #   if is_deshaw:
-      #       dcdfile_num = frame // 1000
-      #       frame = frame - 1000*dcdfile_num
-      #       # Use negation to indicate DEShaw file (not in fileindex in catalog)
-      #       file_index = (-1 * dcdfile_num)
-      #   if file_index not in atomfilter:
-      #     atomfilter[file_index] = []
-      #   atomfilter[file_index].append(frame)
-      # logging.debug('Back projecting %s points from %d different files.', 
-      #   len(framelist), len(atomfilter))
-      # bench.mark('GroupBy:Files')
-
-      # # Get List of files
-      # filelist = {}
-      # for file_index in atomfilter.keys():
-      #   if file_index >= 0:
-      #     filelist[file_index] = self.catalog.lindex('xid:filelist', file_index)
-      #   else:
-      #     filelist[file_index] = deshaw.getDEShawfilename(-1 * file_index)
-      # print ('filelist --> ', filelist)
         
       # Add high-dim points to list of source points in a trajectory
       # Optimized for parallel file loading
       source_points_uncached = []
-      loader_threads = []
       logging.debug('Sequentially Loading all trajectories')
-      # Parallel this to factor of 23
-      thread_indexlist = {i: [] for i in range(23)}
-      for i, idx in enumerate(atomfilter.keys()):
-      #   thread_indexlist[i%23].append((idx, atomfilter[idx]))
-      # for i, idx in thread_indexlist.items():
-      #   t = Thread(target=self.trajLoader, args=([idx]))
-      #   t.start()
-      #   loader_threads.append(t)
-        if idx >= 0:
-          filename = self.catalog.lindex('xid:filelist', idx)
-          traj = datareduce.load_trajectory(filename)
-        else:
-          filename = deshaw.getDEShawfilename_prot(-idx, fullpath=True)
-          traj = md.load(filename, top=deshaw.PDB_PROT)
-          # traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
-        traj.atom_slice(traj.top.select('protein'), inplace=True)
-        filtered = traj.slice(atomfilter[idx])
+      for miss in cache_miss:
+        ftype, fileno, framelist = miss
+        if ftype == 'deshaw':
+          pdb, dcd = deshaw.getHistoricalTrajectory_prot(fileno)
+          traj = md.load(dcd, top=pdb)
+        elif ftype == 'sim':
+          traj = datareduce.load_trajectory(fileno)
+        selected_frames = traj.slice(framelist)
+        source_points_uncached.extend(selected_frames.xyz)
+        bench.mark('LD:File:%s'%fileno)
 
-        source_points_uncached.extend(filtered.xyz)
-        bench.mark('LD:File:%s'%filename)
-      # bench.mark('LD:ASYNC:Threaded')
-      # logging.debug('All Thread launched. # Threads = %d', len(loader_threads))
-      # for t in loader_threads:
-      #   t.join()
-      # logging.debug('All Thread complete')
-      # bench.mark('LD:ASYNC:Loaded')
-      # while len(self.trajlist_async) > 0:
-      #   tr = self.trajlist_async.popleft()
-      #   source_points_uncached.extend(tr.xyz)
-      logging.debug('All Data collected Total # points = %d', len(source_points_uncached))
-      # bench.mark('LD:ASYNC:Collected')
+      logging.debug('All Uncached Data collected Total # points = %d', len(source_points_uncached))
       source_traj_uncached = md.Trajectory(np.array(source_points_uncached), ref.top)
       bench.mark('Build:Traj')
-      # bench.show()
+      bench.show()
 
       if source_traj_cached is None:
         return source_traj_uncached
@@ -412,15 +416,13 @@ class controlJob(macrothread):
       # Load new RMS Labels -- load all for now
       bench.start()
       logging.debug('Loading RMS Labels')
+      start_index = self.data['ctlIndexHead']
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
-      start_index = max(0, self.data['ctlIndexHead'])
-      if thru_index == -1 or thru_index >= self.catalog.llen('label:rms'):
-        self.data['ctlIndexHead'] = int(self.catalog.llen('label:rms'))
-      else:
-        self.data['ctlIndexHead'] = int(thru_index)
-
-      labeled_pts_rms = self.catalog.lrange('label:rms', start_index, self.data['ctlIndexHead'])
+      logging.debug(" Start_index=%d,  thru_index=%d,   ctlIndexHead=%d", start_index, thru_index, self.data['ctlIndexHead'])
+      labeled_pts_rms = self.catalog.lrange('label:rms', start_index, thru_index)
       
+      self.data['ctlIndexHead'] = thru_index
+
       logging.debug('##NUM_RMS_THIS_ROUND: %d', len(labeled_pts_rms))
       # varest_counts_rms = {}
       # total = 0
@@ -459,14 +461,14 @@ class controlJob(macrothread):
 
       pdf_rms = datacalc.posterior_prob(labeled_pts_rms)
 
-      logging.info("Posterer PDF for each variable:")
+      logging.info("Posterer PDF for each variable (for this Set of Data):")
       pipe = self.catalog.pipeline()
       for v_i in binlist:
         key = str(v_i)
         A, B = eval(key)
         val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
         pipe.rpush('boot:%d_%d', val)
-        print('##VAL %03d %s:  %0.4f' % (self.data['timestep'], key, val))
+        logging.info('##VAL %03d %s:  %0.4f' % (self.data['timestep'], key, val))
       pipe.execute()
       bench.mark('PosteriorPDF:RMS')
 
@@ -474,98 +476,103 @@ class controlJob(macrothread):
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
       #   Using RMS and PCA, umbrella sample transitions out of state 3
 
+      EXPERIMENT_NUMBER = 4
+
       # 1. get all points in some state
       #####  Experment #1: Round-Robin each of 25 bins (do loop to prevent select from empty bin)
-      # target_bin = self.data['timestep']
-      # while True:
-      #   A = (target_bin % 25) // 5
-      #   B = target_bin % 5
-      #   label = str((A, B))
-      #   logging.debug('SELECT points in label, %s', str(label))
-      #   rms_indexlist = q_select(labeled_pts_rms, label, limit=500)
-      #   if len(rms_indexlist) > 0:
-      #     break
+      if EXPERIMENT_NUMBER == 1:
+        target_bin = self.data['timestep']
+        while True:
+          A = (target_bin % 25) // 5
+          B = target_bin % 5
+          label = str((A, B))
+          logging.debug('SELECT points in label, %s', str(label))
+          rms_indexlist = q_select(labeled_pts_rms, label, limit=500)
+          if len(rms_indexlist) > 0:
+            break
 
       #####  EXPERIMENT #2,3:  Select the least converged start state from RMS
-      # conv_startstate = [0 for i in range(5)]
-      # conv_num = [0 for i in range(5)]
-      # for k, p in sorted(pdf_rms.items()):
-      #   A, B = eval(k)
-      #   conv_startstate[A] += float(p[3])
-      #   conv_num[A] += 1
-      # for i in range(5):
-      #   if conv_num[i] == 0:
-      #     conv_startstate[i] = 0
-      #   else:    
-      #     conv_startstate[i] /= conv_num[i]
-      #   logging.debug("##STATE_CONV %d %4.2f", i, conv_startstate[i])
-      # target_state = np.argmax(conv_startstate)
-      # rms_indexlist = []
-      # # Using Appoximation (otherwise this would be VERY long)
-      # selectsizelimit = self.data['backproj:approxlimit'] // 4
-      # while True:
-      #   logging.debug('SELECT points which started in state: %d', target_state)
-      #   for B in range(5):
-      #     if target_state == B:
-      #       continue
-      #     label = str((target_state, B))
-      #     rms_indexlist.extend(q_select(labeled_pts_rms, label, limit=selectsizelimit))
-      #   if len(rms_indexlist) > 0:
-      #     break
-      #   # If no points, then select a random start state until we get one:
-      #   logging.debug("NO POINTS to Sample!! Selecting a random start state")
-      #   target_state = np.random.randint(5)
+      if EXPERIMENT_NUMBER in [2, 3]:
+        conv_startstate = [0 for i in range(5)]
+        conv_num = [0 for i in range(5)]
+        for k, p in sorted(pdf_rms.items()):
+          A, B = eval(k)
+          conv_startstate[A] += float(p[3])
+          conv_num[A] += 1
+        for i in range(5):
+          if conv_num[i] == 0:
+            conv_startstate[i] = 0
+          else:    
+            conv_startstate[i] /= conv_num[i]
+          logging.debug("##STATE_CONV %d %4.2f", i, conv_startstate[i])
+        target_state = np.argmax(conv_startstate)
+        rms_indexlist = []
+        # Using Appoximation (otherwise this would be VERY long)
+        selectsizelimit = self.data['backproj:approxlimit'] // 4
+        while True:
+          logging.debug('SELECT points which started in state: %d', target_state)
+          for B in range(5):
+            if target_state == B:
+              continue
+            label = str((target_state, B))
+            rms_indexlist.extend(q_select(labeled_pts_rms, label, limit=selectsizelimit))
+          if len(rms_indexlist) > 0:
+            break
+          # If no points, then select a random start state until we get one:
+          logging.debug("NO POINTS to Sample!! Selecting a random start state")
+          target_state = np.random.randint(5)
 
       ###### EXPERIMENT #4:  UNIFORM (w/updated Convergence)
-      pipe = self.catalog.pipeline()
-      for b in binlist:
-        pipe.llen('varbin:rms:%d_%d' % (A, B))
-      length = pipe.execute()
+      if EXPERIMENT_NUMBER == 4:
+        pipe = self.catalog.pipeline()
+        for b in binlist:
+          pipe.llen('varbin:rms:%d_%d' % b)
+        length = pipe.execute()
 
 
-      logging.info('Variable bins sizes follows')
-      idxlist = {}
-      for i, b in enumerate(binlist):
-        idxlist[b] = length[i]
-        logging.info('  %s:  %d', b, length[i])
+        logging.info('Variable bins sizes follows')
+        idxlist = {}
+        for i, b in enumerate(binlist):
+          idxlist[b] = length[i]
+          logging.info('  %s:  %d', b, length[i])
 
-      ## UNIFORM SAMPLER
-      numresources = self.data['numresources']
+        ## UNIFORM SAMPLER
+        numresources = self.data['numresources']
 
-      quota = numresources // len(binlist)
-      sel = 0
-      pipe = self.catalog.pipeline()
-      logging.debug("Uniform Sampling on %d resources", numresources)
+        quota = numresources // len(binlist)
+        sel = 0
+        pipe = self.catalog.pipeline()
+        logging.debug("Uniform Sampling on %d resources", numresources)
 
-      rmslabel = deshaw.labelDEShaw_rmsd()
-      deshaw_samples = {b:[] for b in binlist}
-      for i, b in enumerate(rmslabel):
-        deshaw_samples[b].append(i)
+        rmslabel = deshaw.labelDEShaw_rmsd()
+        deshaw_samples = {b:[] for b in binlist}
+        for i, b in enumerate(rmslabel):
+          deshaw_samples[b].append(i)
 
-      selected_indices = []
-      while numresources > 0:
-        i = sel%25
-        if length[i] is not None and length[i] > 0:
-          index = np.random.randint(length[i])
-          logging.debug('SAMPLER: selecting index #%d from bin %s', index, str(binlist[i]))
-          selected_indices.append(self.catalog.lindex('varbin:rms:%d_%d' % binlist[i], index))
-          numresources -= 1
-        elif len(deshaw_samples[binlist[i]]) > 0:
-          index = np.random.choice(deshaw_samples[binlist[i]])
-          logging.debug('SAMPLER: selecting DEShaw index #%d from bin %s', index, str(binlist[i]))
-          # Negation indicates an historical index number
-          selected_indices.append(-index)
-          numresources -= 1
-        else:
-          logging.info("NO Candidates for bin: %s", binlist[i])
-        sel += 1
+        selected_indices = []
+        while numresources > 0:
+          i = sel%25
+          if length[i] is not None and length[i] > 0:
+            index = np.random.randint(length[i])
+            logging.debug('SAMPLER: selecting index #%d from bin %s', index, str(binlist[i]))
+            selected_indices.append(self.catalog.lindex('varbin:rms:%d_%d' % binlist[i], index))
+            numresources -= 1
+          elif len(deshaw_samples[binlist[i]]) > 0:
+            index = np.random.choice(deshaw_samples[binlist[i]])
+            logging.debug('SAMPLER: selecting DEShaw index #%d from bin %s', index, str(binlist[i]))
+            # Negation indicates an historical index number
+            selected_indices.append(-index)
+            numresources -= 1
+          else:
+            logging.info("NO Candidates for bin: %s", binlist[i])
+          sel += 1
 
-      
-      sampled_set = []
-      for i in selected_indices:
-        traj = self.backProjection([i])
-        sampled_set.append(traj)
-      bench.mark('Sampler')
+        
+        sampled_set = []
+        for i in selected_indices:
+          traj = self.backProjection([i])
+          sampled_set.append(traj)
+        bench.mark('Sampler')
 
       #  REWEIGHT OPERATION
       reweight = False
@@ -660,9 +667,9 @@ class controlJob(macrothread):
         # TODO:  Update/check adaptive runtime, starting state
         jcConfig = dict(params,
               name    = jcID,
-              runtime = settings.RUNTIME_FIXED,
-              dcdfreq = settings.DCDFREQ,
-              interval = 500,
+              runtime = settings.RUNTIME_FIXED,     # In timesteps
+              dcdfreq = settings.DCDFREQ,           # Frame save rate
+              interval = settings.DCDFREQ * settings.SIM_STEP_SIZE,                       
               temp    = 310,
               timestep = self.data['timestep'],
               gc      = 1,
@@ -1391,3 +1398,51 @@ if __name__ == '__main__':
 
       # Increment the timestep
 
+
+
+
+# CACHE CODE
+      # Archive File retrieval for all cache-miss points
+      # TODO:  May need to deference to local RMS Subspace first, then Back to high-dim
+      # bench.mark('Cache:Hit')
+      # pipe = self.catalog.pipeline()
+      # for pt in cache_miss:
+      #   pipe.lindex('xid:reference', pt)
+      # framelist = pipe.execute()
+      # bench.mark('LD:Redis:xidlist')
+      # for i in range(len(framelist)):
+      #   if framelist[i] is None:
+      #     dcdfile_num = cache_miss[i] // 100
+      #     frame_num = (cache_miss[i] - 100*dcdfile_num) * 10
+      #     framelist[i] = str((dcdfile_num, frame_num))
+          
+      # ID unique files and Build index filter for each unique file
+      #  Account for DEShaw Files (derived from index if index not in catalog)
+      # frameMask = {}
+      # for i, idx in enumerate(framelist):
+      #   # An index < 0 indicates this was a pre-loaded/pre-labeled dataset
+      #   if idx is None:
+      #     is_deshaw = True
+      #   else:
+      #     file_index, frame = eval(idx)
+      #     is_deshaw = (file_index < 0)
+      #   if is_deshaw:
+      #       dcdfile_num = frame // 1000
+      #       frame = frame - 1000*dcdfile_num
+      #       # Use negation to indicate DEShaw file (not in fileindex in catalog)
+      #       file_index = (-1 * dcdfile_num)
+      #   if file_index not in frameMask:
+      #     frameMask[file_index] = []
+      #   frameMask[file_index].append(frame)
+      # logging.debug('Back projecting %s points from %d different files.', 
+      #   len(framelist), len(frameMask))
+      # bench.mark('GroupBy:Files')
+
+      # # Get List of files
+      # filelist = {}
+      # for file_index in frameMask.keys():
+      #   if file_index >= 0:
+      #     filelist[file_index] = self.catalog.lindex('xid:filelist', file_index)
+      #   else:
+      #     filelist[file_index] = deshaw.getDEShawfilename(-1 * file_index)
+      # print ('filelist --> ', filelist)

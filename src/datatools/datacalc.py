@@ -11,15 +11,19 @@ def posterior_prob (source):
   Calculate posterior probability for set of observations
   """
   # Iterate for each item in the source
+  logging.debug('PP:  len source = %d', len(source))
   groupby = {}
   for x_i in source:
-    if x_i in groupby:
+    if x_i in groupby.keys():
       groupby[x_i] += 1
     else:
       groupby[x_i] = 1
+
   probility_est = {}
-  for v_i in groupby.keys():
-    probility_est[v_i] = groupby[x_i] / len(source)
+  for v_i in sorted(groupby.keys()):
+    mu = groupby[v_i] / len(source)
+    logging.debug('    %s:  %d    %.3f', v_i, groupby[v_i], mu)
+    probility_est[v_i] = mu
   return probility_est
 
 

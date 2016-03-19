@@ -16,11 +16,13 @@ import json
 import pickle 
 
 import redis
+import mdtraj as md
 
 from core.common import systemsettings, executecmd, getUID
 from core.kvadt import kv2DArray, decodevalue
 from overlay.overlayService import OverlayService
 from overlay.redisOverlay import RedisService
+import mdtools.deshaw as deshaw
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -35,14 +37,17 @@ class CacheService(RedisService):
   """
 
   #  TODO:  Ensure catalog and cache run on separate servers
-  def __init__(self, name, port=6379):
+  def __init__(self, name, port=6380):
     """
     """
     RedisService.__init__(self, name, port)
 
+    self._name_app = name + '_cache'
+
     self.fetchthread = Thread(target=self.fetcher)
     self.fetchthread.start()
     self.lru_queue = 'cache:lru'
+    logging.info('[Cache] Service is initialized.')
 
   def tear_down(self):
     logging.info("[Cache] Ensuring the fetcher is complete.")
@@ -61,14 +66,25 @@ class CacheService(RedisService):
 
     # Capacity should be set in GB (in settings)
     capacity  = config.CACHE_CAPACITY * (2**30)
+    logging.info('[Cache-Fet] Fetcher is starting. Preparing capacity of %d GB', config.CACHE_CAPACITY)
 
     # Wait until service is up (and not terminating on launch)
-    while self.connection is None and not self.terminationFlag.is_set():
+    timeout = 120
+    while not self.ping():
+      logging.info('[Cache-Fet] Fetcher is waiting for the service to start... MissingConn=%s', (self.connection is None))
       time.sleep(1)
+      timeout -= 1
+      if timeout == 0:
+        logging.error('[Cache-Fet] Fetch never connected to the cache. Shutting down...')
+        self.terminationFlag.set()
+        break
 
-    # then exit if this happens
-    if self.connection is None or self.terminationFlag.is_set():
+    # then exit if it cannot connect
+    if not self.ping() or self.terminationFlag.is_set():
+      logging.error('[Cache-Fet] Cannot connect to the servier')
       return
+
+    logging.error('[Cache-Fet] Fetch found the service. Connecting as a client.')
 
     # Create client
     conn = redis.StrictRedis(
@@ -76,19 +92,25 @@ class CacheService(RedisService):
     conn.client_setname("fetcher")
 
     block_timeout = 10   #needed to check for service termination (MV-> setting)
-    while true:
+    while True:
       if self.terminationFlag.is_set():
         break
 
       # TODO: make this more dynamic
-      request = conn.blpop('request:bpti', 'request:sim', block_timeout)
+      try:
+        request = conn.blpop(['request:deshaw', 'request:sim'], block_timeout)
+      except redis.ConnectionError:
+        logging.warning('[Cache-Fet] LOST local connection. Returning')
+        return
       if request is None:
+        logging.info('[Cache-Fet] Fetcher heartbeat.... timeout waiting on requests')
         continue
 
-      if request[0] == 'request:bpti':
+      logging.info('[Cache-Fet] Fetcher Got a request...')
+      if request[0] == 'request:deshaw':
         fileno = int(request[1])
         dcd = deshaw.getDEShawfilename_prot(fileno, fullpath=True)
-        pdb = deshaw.PDB_PROT_FILE   
+        pdb = deshaw.PDB_PROT   
         key = 'deshaw:%02d' % fileno 
 
       else:        
@@ -96,6 +118,10 @@ class CacheService(RedisService):
         pdb  = dcd.replace('dcd', 'pdb')
         key = 'sim:%s' % request[1]
 
+      logging.info('File Request!\n%-20s\n%-20s\n%-20s\n%-20s\n%-20s', 
+        request[0], request[1], dcd, pdb, key)
+
+      logging.info('Loading Trajectory')
       traj = md.load(dcd, top=pdb)
 
       # TODO: Check Memory reporting:
@@ -104,8 +130,11 @@ class CacheService(RedisService):
 
       used_mem = int(conn.info('memory')['used_memory'])
       available = capacity - used_mem
-      logging.debug('Cache Capacity check:  Used= %6dMB    Capacity= %6dMB   Avail=%d bytes  Data=', \
+      logging.debug('Cache Capacity check:  Used= %6dMB    Capacity= %6dMB   Avail=%d bytes  Data=%d', \
         (used_mem*(2**20)), (capacity*(2**20)), available, traj.xyz.nbytes)
+
+      if available >= traj.xyz.nbytes:
+        logging.info('Cache has available capacity')
 
       while available < traj.xyz.nbytes:
         logging.info('Cache is full. Evicting')
@@ -138,11 +167,13 @@ class CacheService(RedisService):
           (used_mem*(2**20)), (capacity*(2**20)), available, traj.xyz.nbytes)
 
       # Insert all xyz coords into cache
+      logging.info('[Cache] Insering %d points to %s', len(traj.xyz), key)
       pipe = conn.pipeline()
       for i in traj.xyz:
         z = pipe.rpush(key, pickle.dumps(i))
       pipe.execute()
-
+      check = conn.llen(key)
+      logging.info('[Cache] CHECK: LLEN= %d   for KEY=%s', check, key)
 
 
   # TODO: Eventually make ea file load a separate thrad (if performance is needed)
@@ -206,6 +237,8 @@ class CacheClient(object):
       logging.warning('[CacheClient] Only accepting "deshaw" and "sim"')
       return None
 
+    logging.info('[CacheClient] Request for %s   [%d]', str(filename), frame)
+
     if file_type == 'deshaw':
       fileno = int(filename)
       key = 'deshaw:%02d' % fileno
@@ -216,8 +249,51 @@ class CacheClient(object):
 
     # Cache HIT: unpickle & return
     if data is not None:
+      logging.info('[CacheClient] CACHE HIT. Updating LRU')
       self.conn.rpush('cache:lru', key)
       return pickle.loads(data)
+
+    # Cache MISS:  Request to have the file cached
+    logging.info('[CacheClient] CACHE MISS.  ftype=%s  [%s]', file_type, str(filename))
+    if file_type == 'deshaw':
+      self.conn.rpush('request:deshaw', str(filename))
+    else:
+      self.conn.rpush('request:sim', filename)
+    return None
+
+
+  def get_many(self, filename, framelist, file_type):
+    if not self.connect():
+      logging.warning("Cache Service is unavailable")
+      return None
+
+    # For now, accepting 2 types ('deshaw' and 'sim')
+    if file_type not in ['deshaw', 'sim']:
+      logging.warning('[CacheClient] Only accepting "deshaw" and "sim"')
+      return None
+
+    if file_type == 'deshaw':
+      fileno = int(filename)
+      key = 'deshaw:%02d' % fileno
+    else:
+      key = 'sim:%s' % filename
+
+    iscached = (self.conn.exists(key) == 1)
+    logging.debug('[CacheClient] Request for key %s. Presence: %s', key, str(iscached))
+    if iscached:
+      pipe = self.conn.pipeline()
+      for frame in framelist:
+        pipe.lindex(key, frame)
+      data = pipe.execute()
+    else:
+      data = None
+
+    # Cache HIT: unpickle & return
+    if data is not None:
+      self.conn.rpush('cache:lru', key)
+      # TODO: Handle file pages
+      points = [pickle.loads(pt) for pt in data]
+      return points
 
     # Cache MISS:  Request to have the file cached
     if file_type == 'deshaw':
@@ -225,6 +301,9 @@ class CacheClient(object):
     else:
       self.conn.rpush('request:sim', filename)
     return None
+
+
+
 
   def put(self, name, traj):
     if not self.connect():

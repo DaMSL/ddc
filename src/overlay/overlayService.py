@@ -70,6 +70,7 @@ class OverlayService(object):
     self.terminationFlag = Event()
     self.handoverFlag = Event()
     self.shuttingdown = Event()
+    self.state_running = Event()
 
     # TODO: Should we require basic setting via systemsetting object???
     #   and thus, enforce this object on the abstract class?
@@ -224,6 +225,7 @@ class OverlayService(object):
       return None
 
     self._state = 'RUNNING'
+    self.state_running.set()
     logging.info("[%s] My Service started local on %s. Starting the local monitor.", self._name_svc, self._host)    
 
     self.service = service

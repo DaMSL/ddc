@@ -41,6 +41,12 @@ class microbench:
     if label is None:
       label = 'mark-%02d' % len(self.tick.keys())
     self.tick[label] = dt.datetime.now()
+  def delta_last(self):
+    if len(self.tick) < 2:
+      return 0.
+    last = self.tick[-1]
+    prev = self.tick[-2]
+    return (last-prev).total_seconds()
   def show(self):
     timelist = []
     for label, ts in self.tick.items():
@@ -149,6 +155,7 @@ class systemsettings:
     self.OBS_NOISE = ini.get('obs_noise', 10000)
     self.RUNTIME_FIXED = ini.get('runtime', 100000)
     self.DCDFREQ = ini.get('dcdfreq', 500)
+    self.SIM_STEP_SIZE = 2   #FIXED at 2 fs per timestep
 
 
     # Config Schema -- placed here for now (TODO: Split????)    
