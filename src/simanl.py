@@ -64,11 +64,12 @@ class simulationJob(macrothread):
 
     #  Update Runtime Parameters
     self.modules.add('namd/2.10')
+    # self.modules.add('namd/2.10-mpi')
     self.modules.add('redis')
     # self.slurmParams['share'] = None
 
     self.slurmParams['cpus-per-task'] = PARALLELISM
-    self.slurmParams['time'] = '4:00:0'
+    self.slurmParams['time'] = '1:00:0'
 
   def term(self):
     return False
@@ -133,12 +134,17 @@ class simulationJob(macrothread):
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
 
     # >>>>Storing DCD into shared memory on this node
-    ramdisk = '/dev/shm/out/'
-    if not os.path.exists(ramdisk):
-      os.mkdir(ramdisk)
-    job['outputloc'] = ramdisk
-    dcd_ramfile = os.path.join(ramdisk, job['name'] + '.dcd')
 
+    USE_SHM = True
+    if USE_SHM:
+      # ramdisk = '/dev/shm/out/'
+      ramdisk = '/tmp/ddc/'
+      if not os.path.exists(ramdisk):
+        os.mkdir(ramdisk)
+      job['outputloc'] = ramdisk
+      dcd_ramfile = os.path.join(ramdisk, job['name'] + '.dcd')
+    else:
+      job['outputloc'] = ''
 
     with open(conFile, 'w') as sysconfig:
       sysconfig.write(source % job)
@@ -153,6 +159,10 @@ class simulationJob(macrothread):
     # # Run simulation single threaded
     # else:
     #   cmd = 'namd2 %s > %s' % (conFile, logFile)
+
+    # cmd = 'mpirun -n %d namd2 %s > %s' % (PARALLELISM, conFile, logFile)
+    check = executecmd('module list')
+    logging.debug('%s', check)
 
     cmd = 'namd2 +p%d %s > %s' % (PARALLELISM, conFile, logFile)
 
@@ -184,13 +194,23 @@ class simulationJob(macrothread):
     bench.mark('SimExec:%s' % job['name'])
 
     # Internal stats
-    sim_length = settings.SIM_STEP_SIZE * job['runtime']
+    sim_length = settings.SIM_STEP_SIZE * int(job['runtime'])
     sim_realtime = bench.delta_last()
     sim_run_ratio =  (sim_realtime/60) / (sim_length/1000000)
-    logging.info('##SIM_RATIO %6.3f  min-per-ns-sim')
+    logging.info('##SIM_RATIO %6.3f  min-per-ns-sim', sim_run_ratio)
 
-    shm_contents = os.listdir('/dev/shm/out')
-    logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
+    if USE_SHM:
+      shm_contents = os.listdir(ramdisk)
+      logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
+
+      if not os.path.exists(dcd_ramfile):
+        logging.warning("DCD FILE NOT FOUND!!!! Wait 10 seconds for sim to close it (???)")
+        time.sleep(10)
+
+      if not os.path.exists(dcd_ramfile):
+        logging.warning("DCD STIILL FILE NOT FOUND!!!!")
+      else:
+        logging.info("DCD File was found")
 
     # #  MICROBENCH #2 (file to Alluxio)
     # allux = AlluxioClient()
@@ -202,17 +222,18 @@ class simulationJob(macrothread):
     # And copy to Lustre
     # shutil.copy(ramdisk + job['name'] + '.dcd', job['workdir'])
     # And copy to Lustre (usng zero-copy):
-    src  = open(dcd_ramfile, 'r')
-    dest = open(dcdFile, 'w+b')
-    offset = 0
-    dcdfilesize = os.path.getsize(dcd_ramfile)
-    while True:
-      sent = sendfile(dest.fileno(), src.fileno(), offset, dcdfilesize)
-      if sent == 0:
-        break
-      offset += sent
-    logging.info("Copy Complete to Lustre.")
-    bench.mark('CopyLustre:%s' % job['name'])
+    if USE_SHM:
+      src  = open(dcd_ramfile, 'rb')
+      dest = open(dcdFile, 'w+b')
+      offset = 0
+      dcdfilesize = os.path.getsize(dcd_ramfile)
+      while True:
+        sent = sendfile(dest.fileno(), src.fileno(), offset, dcdfilesize)
+        if sent == 0:
+          break
+        offset += sent
+      logging.info("Copy Complete to Lustre.")
+      bench.mark('CopyLustre:%s' % job['name'])
     
     # TODO: Update job's metadata
     key = wrapKey('jc', job['name'])
@@ -225,7 +246,10 @@ class simulationJob(macrothread):
 
     # Load full higher dim trajectory
     # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
-    traj = md.load(dcd_ramfile, top=job['pdb'])
+    if USE_SHM:
+      traj = md.load(dcd_ramfile, top=job['pdb'])
+    else:
+      traj = md.load(dcdFile, top=job['pdb'])
     bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
@@ -233,7 +257,6 @@ class simulationJob(macrothread):
       #  TODO: Pipeline all
       # off-by-1: append list returns size (not inserted index)
       #  ADD index to catalog
-      # Off by 1 error for index values
     file_idx = self.catalog.append({'xid:filelist': [job['dcd']]})[0]
     delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
     global_idx = self.catalog.append({'xid:reference': delta_xid_index})
@@ -295,13 +318,13 @@ class simulationJob(macrothread):
     # reservoirSampling(self.catalog, traj.xyz, rIdx, subspaceHash, 
     #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
     #     'rms', lambda key: '%d_%d' % key)
-    r_idx = []
+    # r_idx = []
     pipe = self.catalog.pipeline()
     for si in rmslist:
       pipe.rpush('subspace:rms', bytes(si))
     idxlist = pipe.execute()
-    for i in idxlist:
-      r_idx.append(int(i) - 1)
+    # for i in idxlist:
+    #   r_idx.append(int(i) - 1)
 
     logging.debug("R_Index Created (rms).")
 
@@ -319,8 +342,8 @@ class simulationJob(macrothread):
       #   of BPTI without solvent. It could be dynamically calculated, but is hard coded here
       #  The theta is divided by four based on the analysis of DEShaw:
       #   est based on ~3% of DEShaw data in transition (hence )
-      avg_stddev = 0.34119404492089034
-      theta = avg_stddev
+      # avg_stddev = 0.34119404492089034
+      theta = settings.RMSD_THETA
 
       # NOTE: Original formulate was relative. Retained here for reference:  
       # Rel vs Abs: Calc relative proximity for top 2 nearest centroids   
@@ -425,12 +448,14 @@ class simulationJob(macrothread):
 
 
   # ---- POST PROCESSING
-    shutil.rmtree(ramdisk)
-    shm_contents = os.listdir('/dev/shm')
-    logging.debug('Ramdisk contents (should be empty) : %s', str(shm_contents))
+    if USE_SHM:
+      shutil.rmtree(ramdisk)
+      # shm_contents = os.listdir('/dev/shm')
+      shm_contents = os.listdir('/tmp')
+      logging.debug('Ramdisk contents (should be empty of DDC) : %s', str(shm_contents))
     
     # For benchmarching:
-    print('##', job['name'], dcdfilesize/(1024*1024*1024), traj.n_frames)
+    # print('##', job['name'], dcdfilesize/(1024*1024*1024), traj.n_frames)
     bench.show()
 
     # return [job['name']]

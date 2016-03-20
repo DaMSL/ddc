@@ -443,9 +443,13 @@ class RedisClient(redis.StrictRedis):
 
   # Slice off data in-place. Asssume key stores a list
   def slice(self, key, num):
-    data = self.lrange(key, 0, num-1)
-    self.ltrim(key, num, -1)
-    return data
+    try:
+      data = self.lrange(key, 0, num-1)
+      self.ltrim(key, num, -1)
+      return data
+    except TypeError as e:
+      logging.warning('Cannot slice %s  with num=%s  (type=%s)', key, str(num), str(type(num)))
+      return None
 
   # Remove specific items from a list
   #  Given: a list and a set of indices into that list

@@ -177,7 +177,7 @@ def labelDEShaw_rmsd():
   Returns frame-by-frame labels  (used to seed jobs)
   """
   settings = systemsettings()
-  logging.info('Loading Pre-Calc RMSD Distances from: %s ','bpti-rmsd-alpha-dspace.npy')
+  logging.info('Loading Pre-Calc RMSD Distances from: %s   (where do you want to cache me?)','bpti-rmsd-alpha-dspace.npy')
   rms = np.load('bpti-rmsd-alpha-dspace.npy')
   prox = np.array([np.argsort(i) for i in rms])
   theta = settings.RMSD_THETA
@@ -211,7 +211,7 @@ def seedJob_Uniform(catalog, num=1):
     logging.info('%s %7d %4.1f', str(k), len(v), (100*len(v)/len(rmslabel)))
 
   for binlabel in sorted(groupby.keys()):
-    clist = groupby[binlabel]:
+    clist = groupby[binlabel]
 
     # No candidates
     if len(clist) == 0:
@@ -234,11 +234,13 @@ def seedJob_Uniform(catalog, num=1):
           name    = jcID,
           runtime = settings.init['runtime'],
           dcdfreq = settings.init['dcdfreq'],
+          interval = settings.DCDFREQ * settings.SIM_STEP_SIZE,                       
           temp    = 310,
-          state   = i,
           timestep = 0,
-          interval = 500,
           gc      = 1,
+          origin  = 'deshaw',
+          src_index = index,
+          src_bin  = (A, B),
           application   = settings.APPL_LABEL)
       logging.info("New Simulation Job Created: %s", jcID)
       for k, v in config.items():
@@ -556,7 +558,9 @@ if __name__ == '__main__':
     # calcDEShaw_PCA(catalog)
 
   if args.seedjob or args.all:
-    seedJob_Uniform(catalog)
+    numresources = int(catalog.get('numresources'))
+    initialJobPerBin = max(1, numresources//25)
+    seedJob_Uniform(catalog, num=initialJobPerBin)
 
   if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)

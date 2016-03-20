@@ -34,19 +34,22 @@ class microbench:
   def __init__(self):
     self._begin = None
     self.tick = OrderedDict()
+    self.last = None
+    self.recent = None
   def start(self):
     self._begin = dt.datetime.now()
     self.tick['START'] = self._begin
+    self.recent = self._begin
   def mark(self, label=None):
     if label is None:
       label = 'mark-%02d' % len(self.tick.keys())
     self.tick[label] = dt.datetime.now()
+    self.last = self.recent
+    self.recent = self.tick[label]
   def delta_last(self):
-    if len(self.tick) < 2:
+    if self.last is None:
       return 0.
-    last = self.tick[-1]
-    prev = self.tick[-2]
-    return (last-prev).total_seconds()
+    return (self.recent-self.last).total_seconds()
   def show(self):
     timelist = []
     for label, ts in self.tick.items():
@@ -152,7 +155,7 @@ class systemsettings:
     self.PCA_VECTOR_FILE = ini.get('pca_vector_file', 'data/pca_comp.npy')
     self.PCA_NUMPC = ini.get('pca_numpc', 3)
 
-    self.OBS_NOISE = ini.get('obs_noise', 10000)
+    self.OBS_NOISE = ini.get('obs_noise', 4000)
     self.RUNTIME_FIXED = ini.get('runtime', 100000)
     self.DCDFREQ = ini.get('dcdfreq', 500)
     self.SIM_STEP_SIZE = 2   #FIXED at 2 fs per timestep

@@ -79,7 +79,7 @@ outputPressure      10000000
 #############################################################
 
 # Minimization
-minimize            100
+minimize            1000
 reinitvels          $temperature
 
 run                 %(runtime)s

@@ -24,7 +24,7 @@
     	"xid:filelist": "list",
     	"xid:reference": "list",
     	"label:rms": "list",
-        "numresoures": "int",
+        "numresources": "int",
         "backproj:approxlimit": "int",
         "ctlBatchSize_min": "int",
         "ctlBatchSize_max": "int"
@@ -42,7 +42,7 @@
         "numLabels": 5,
         "runtime": 100000,
 	"dcdfreq": 500,
-    "numresoures": 50,
+    "numresources": 50,
     "backproj:approxlimit": 50,
 	"ctlIndexHead": -1
 

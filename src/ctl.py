@@ -177,11 +177,15 @@ class controlJob(macrothread):
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
 
-      self.modules.add('namd')
+      self.modules.add('namd/2.10')
 
       self.trajlist_async = deque()
 
       self.cacheclient = None
+
+      # For stat tracking
+      self.cache_hit = 0
+      self.cache_miss = 0
 
     def term(self):
       # For now
@@ -197,19 +201,21 @@ class controlJob(macrothread):
       maxbatchSize = self.data['ctlBatchSize_max']
       batchAmt = 0
       logging.debug('Controller will launch with batch size between: %d and %d observations', minbatchSize, maxbatchSize)
+      num_simbatchs = 0
       while batchAmt < maxbatchSize and len(workloadList) > 0:
         if workloadList[0] + batchAmt > maxbatchSize:
           if batchAmt == 0:
             logging.warning('CAUTION. May need to set the max batch size higher (cannot run controller)')
           break
         batchAmt += int(workloadList.popleft())
-        logging.debug('  Batch amount currently: %d', batchAmt)
+        num_simbatchs += 1
+        logging.debug('  Batch amount up to: %d', batchAmt)
 
       # Don't do anything if the batch size is less than the min:
       if batchAmt < minbatchSize:
         return [], self.data['completesim']
       else:
-        return [batchAmt], list(workloadList)
+        return [batchAmt], num_simbatchs
 
     # DEFAULT VAL for i for for debugging
     def fetch(self, batchSize):
@@ -329,9 +335,11 @@ class controlJob(macrothread):
         else:
           dataptlist = self.cacheclient.get_many(fileno, frames, 'deshaw')
         if dataptlist is None:
+          self.cache_miss += 1
           logging.debug('[BP] Cache MISS on: %d', fileno)
           cache_miss.append(('deshaw', fileno, frames))
         else:
+          self.cache_hit += 1
           logging.debug('[BP] Cache HIT on: %d', fileno)
           source_points.extend(dataptlist)
 
@@ -345,9 +353,11 @@ class controlJob(macrothread):
         else:
           dataptlist = self.cacheclient.get_many(filename, frames, 'sim')
         if dataptlist is None:
+          self.cache_miss += 1
           logging.debug('[BP] Cache MISS on: %s', filename)
           cache_miss.append(('sim', generated_filemap[filename], frames))
         else:
+          self.cache_hit += 1
           logging.debug('[BP] Cache HIT on: %s', filename)
           source_points.extend(dataptlist)
 
@@ -416,7 +426,7 @@ class controlJob(macrothread):
       # Load new RMS Labels -- load all for now
       bench.start()
       logging.debug('Loading RMS Labels')
-      start_index = self.data['ctlIndexHead']
+      start_index = max(0, self.data['ctlIndexHead'])
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
       logging.debug(" Start_index=%d,  thru_index=%d,   ctlIndexHead=%d", start_index, thru_index, self.data['ctlIndexHead'])
       labeled_pts_rms = self.catalog.lrange('label:rms', start_index, thru_index)
@@ -424,6 +434,7 @@ class controlJob(macrothread):
       self.data['ctlIndexHead'] = thru_index
 
       logging.debug('##NUM_RMS_THIS_ROUND: %d', len(labeled_pts_rms))
+      self.catalog.rpush('datacount', len(labeled_pts_rms))
       # varest_counts_rms = {}
       # total = 0
       # for i in labeled_pts_rms:
@@ -467,7 +478,7 @@ class controlJob(macrothread):
         key = str(v_i)
         A, B = eval(key)
         val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
-        pipe.rpush('boot:%d_%d', val)
+        pipe.rpush('boot:%d_%d' % (A, B), val)
         logging.info('##VAL %03d %s:  %0.4f' % (self.data['timestep'], key, val))
       pipe.execute()
       bench.mark('PosteriorPDF:RMS')
@@ -539,6 +550,7 @@ class controlJob(macrothread):
         ## UNIFORM SAMPLER
         numresources = self.data['numresources']
 
+
         quota = numresources // len(binlist)
         sel = 0
         pipe = self.catalog.pipeline()
@@ -550,18 +562,22 @@ class controlJob(macrothread):
           deshaw_samples[b].append(i)
 
         selected_indices = []
+        coord_origin = []
         while numresources > 0:
           i = sel%25
           if length[i] is not None and length[i] > 0:
-            index = np.random.randint(length[i])
-            logging.debug('SAMPLER: selecting index #%d from bin %s', index, str(binlist[i]))
-            selected_indices.append(self.catalog.lindex('varbin:rms:%d_%d' % binlist[i], index))
+            sample_num = np.random.randint(length[i])
+            logging.debug('SAMPLER: selecting sample #%d from bin %s', sample_num, str(binlist[i]))
+            index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[i], sample_num)
+            selected_indices.append(index)
+            coord_origin.append(('sim', index, binlist[i]))
             numresources -= 1
           elif len(deshaw_samples[binlist[i]]) > 0:
             index = np.random.choice(deshaw_samples[binlist[i]])
-            logging.debug('SAMPLER: selecting DEShaw index #%d from bin %s', index, str(binlist[i]))
+            logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', index, str(binlist[i]))
             # Negation indicates an historical index number
             selected_indices.append(-index)
+            coord_origin.append(('deshaw', index, binlist[i]))
             numresources -= 1
           else:
             logging.info("NO Candidates for bin: %s", binlist[i])
@@ -658,21 +674,27 @@ class controlJob(macrothread):
       # bench.mark('Sampler')
 
 
-      # REDO CACHE CHECK FROM ABOVE!!!!!
     # Generate new starting positions
+      runtime = self.catalog.get('runtime')
+      if runtime is None or runtime == 0:
+        logging.warning("RUNTIME is not set!")
+        runtime = 250000
       jcqueue = OrderedDict()
-      for start_traj in sampled_set:
+      for i, start_traj in enumerate(sampled_set):
         jcID, params = generateNewJC(start_traj)
 
         # TODO:  Update/check adaptive runtime, starting state
         jcConfig = dict(params,
               name    = jcID,
-              runtime = settings.RUNTIME_FIXED,     # In timesteps
+              runtime = runtime,     # In timesteps
               dcdfreq = settings.DCDFREQ,           # Frame save rate
               interval = settings.DCDFREQ * settings.SIM_STEP_SIZE,                       
               temp    = 310,
               timestep = self.data['timestep'],
               gc      = 1,
+              origin  = coord_origin[i][0],
+              src_index = coord_origin[i][1],
+              src_bin  = coord_origin[i][2],
               application   = settings.APPL_LABEL)
 
         logging.info("New Simulation Job Created: %s", jcID)
@@ -701,6 +723,13 @@ class controlJob(macrothread):
           # Add gc jobs it to the state to write back to catalog (flags it for gc)
           self.addMut(key, config)
         self.catalog.delete('jcqueue')
+
+      # Update cache hit/miss
+      hit = self.cache_hit
+      miss = self.cache_miss
+      logging.info('##CACHE_HIT_MISS %d %d  %.3f', hit, miss, (hit)/(hit+miss))
+      self.catalog.rpush('cache:hit', self.cache_hit)
+      self.catalog.rpush('cache:miss', self.cache_miss)
 
       self.data['jcqueue'] = list(jcqueue.keys())
 
