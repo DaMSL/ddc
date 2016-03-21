@@ -69,7 +69,7 @@ class simulationJob(macrothread):
     # self.slurmParams['share'] = None
 
     self.slurmParams['cpus-per-task'] = PARALLELISM
-    self.slurmParams['time'] = '1:00:0'
+    self.slurmParams['time'] = '2:00:0'
 
   def term(self):
     return False
@@ -261,7 +261,10 @@ class simulationJob(macrothread):
     delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
     global_idx = self.catalog.append({'xid:reference': delta_xid_index})
     global_xid_index_slice = [x-1 for x in global_idx]
+    self.data[key]['xid:start'] = global_xid_index_slice[0]
+    self.data[key]['xid:end'] = global_xid_index_slice[-1]
     bench.mark('Indx_Update')
+
 
   # 3. Update higher dimensional index
     # Logical Sequence # should be unique seq # derived from manager (provides this

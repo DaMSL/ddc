@@ -678,7 +678,7 @@ class controlJob(macrothread):
       runtime = self.catalog.get('runtime')
       if runtime is None or runtime == 0:
         logging.warning("RUNTIME is not set!")
-        runtime = 250000
+        runtime = 500000
       jcqueue = OrderedDict()
       for i, start_traj in enumerate(sampled_set):
         jcID, params = generateNewJC(start_traj)

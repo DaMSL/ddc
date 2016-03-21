@@ -111,7 +111,7 @@ class systemsettings:
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
 
     # CACHE SERVICE PARAMS  (in GB)
-    self.CACHE_CAPACITY = 40
+    self.CACHE_CAPACITY = 80
 
     # Alluxio Service specific settings
     # FOR shared Lustre (not working!)
@@ -155,7 +155,7 @@ class systemsettings:
     self.PCA_VECTOR_FILE = ini.get('pca_vector_file', 'data/pca_comp.npy')
     self.PCA_NUMPC = ini.get('pca_numpc', 3)
 
-    self.OBS_NOISE = ini.get('obs_noise', 4000)
+    self.OBS_NOISE = ini.get('obs_noise', 10000)
     self.RUNTIME_FIXED = ini.get('runtime', 100000)
     self.DCDFREQ = ini.get('dcdfreq', 500)
     self.SIM_STEP_SIZE = 2   #FIXED at 2 fs per timestep

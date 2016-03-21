@@ -1,7 +1,7 @@
 import mdtraj as md
 import numpy as np
 import logging
-
+import math
 from numpy import linalg as LA
 
 import datatools.datareduce as dr
@@ -31,6 +31,26 @@ def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None):
     # TODO:  Check Axis here
     rmsd[n] = np.array([np.sum(LA.norm(pt - C)) for C in centroid])
   return rmsd
+
+
+def calc_deshaw_centroid_alpha_cartesian():
+  """ Calc RMSD from list of trajectories
+  """
+  pts = deshaw.loadpts(skip=100, filt=deshaw.FILTER['alpha'])
+  sums = np.zeros(shape=(5, 58, 3))
+  cnts = [0 for i in range(5)]
+  label = deshaw.loadlabels_aslist()
+  for i, pt in enumerate(pts):
+      idx = math.floor(i/10)
+      try:
+        state = label[idx]
+        sums[state] += pt
+        cnts[state] += 1
+      except IndexError as err:
+        pass # ignore idx errors due to tail end of DEShaw data
+  cent = [sums[i] / cnts[i] for i in range(5)]
+  return np.array(cent)
+
 
 
 def calc_bpti_centroid(traj_list):

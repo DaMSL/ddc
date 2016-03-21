@@ -2,7 +2,7 @@
 
 #SBATCH
 #SBATCH --job-name=osvc-cah
-#SBATCH --time=12:00:0
+#SBATCH --time=20:00:0
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=6
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/ovs-cache.log

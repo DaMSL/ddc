@@ -27,8 +27,7 @@ def posterior_prob (source):
   return probility_est
 
 
-
-def bootstrap_sampler (source, samplesize=.1, N=50, interval=.95):
+def bootstrap_sampler (source, samplesize=.1, N=50, interval=.90):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
   """

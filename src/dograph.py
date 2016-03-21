@@ -73,9 +73,24 @@ def dotgraph3D(X, Y, Z, title, L=None):
   plt.ylabel(title)
   # plt.legend()
   plt.savefig(loc + '/' + title + '_3d.png')
-  plt.close()
+  plt.close() 
 
 
+
+def linegraph(X, title):
+  plt.clf()
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  if isinstance(X, dict):
+    for k, v in X.items():
+      print('Plotting: ', k)
+      plt.plot(np.arange(len(v)), v, label=k)
+  else:
+    logging.warning("Implement for %s", str(type(X)))
+    return
+  plt.xlabel('title')
+  plt.legend()
+  plt.savefig(loc + '/' + title + '.png')
+  plt.close()  
 
 
 encode = [0, 4, 2, 3, 1]
