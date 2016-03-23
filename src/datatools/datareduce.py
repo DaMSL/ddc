@@ -77,14 +77,16 @@ def calc_covar(xyz, size_ns, framestep, slide=None):
   winsize = int((size_ns * 1000) // framestep)  # conv to ps and divide by frame step
   shift = winsize if slide is None else int(slide * 1000)
   n_windows = ((len(xyz) * framestep) / shift) + 1
-  variance = np.zeros(shape=(n_windows, nDIM))
-  st = now()
+  variance = np.zeros(shape=(n_windows, nDIM), dtype=np.float32)
+  # st = dt.datetime.now()
   for i in range(0, len(xyz), winsize):
-    if i % 100000 == 0:
+    if i+winsize > len(xyz):
+      break
+    if i % 10000 == 0:
       print ("Calc: ", i)
     cm = np.cov(xyz[i:i+winsize].reshape(winsize, nDIM).T)
     variance[math.floor(i//winsize)] = cm.diagonal()
-  print((now()-st).total_seconds())
+  # print((dt.datetime.now()-st).total_seconds())
   # lab = '%dns'%size_ns if size_ns > 1 else '%dps' % int(size_ns*1000)
   # np.save(HOME+'/ddc/data/covar_%s'%lab, variance)
   return variance

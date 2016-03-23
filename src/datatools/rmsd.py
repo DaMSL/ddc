@@ -19,17 +19,18 @@ np.set_printoptions(precision=3, suppress=True)
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 
-def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None):
+def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None, weights=None):
   """Calculate the RMSD from each point in traj to each of the centroids
   Input passed can be either a trajectory or an array-list object
   Title, if defined, will be used in the output filename
   """
+  cw = [1 for i in range(len(centroid))] if weights is None else weights
   # TODO: Check dimenstionality of source points and centroid for given space
   observations = traj.xyz if isinstance(traj, md.Trajectory) else traj
   rmsd = np.zeros(shape=(len(observations), len(centroid)))
   for n, pt in enumerate(observations):
     # TODO:  Check Axis here
-    rmsd[n] = np.array([np.sum(LA.norm(pt - C)) for C in centroid])
+    rmsd[n] = np.array([cw[i]*LA.norm(pt - centroid[i]) for i in range(5)])
   return rmsd
 
 

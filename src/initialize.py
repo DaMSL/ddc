@@ -177,11 +177,11 @@ def labelDEShaw_rmsd():
   Returns frame-by-frame labels  (used to seed jobs)
   """
   settings = systemsettings()
-  logging.info('Loading Pre-Calc RMSD Distances from: %s   (where do you want to cache me?)','bpti-rmsd-alpha-dspace.npy')
+  logging.info('Loading Pre-Calc RMSD Distances from: %s   (Going to Cache it at label:deshaw)','bpti-rmsd-alpha-dspace.npy')
   rms = np.load('bpti-rmsd-alpha-dspace.npy')
   prox = np.array([np.argsort(i) for i in rms])
-  theta = settings.RMSD_THETA
-  logging.info('Labeling All DEShaw Points. Usng THETA=%f', theta)
+  theta = 0.25
+  logging.info('Labeling All DEShaw Points.')
   rmslabel = []
   for i in range(len(rms)):
     A = prox[i][0]
@@ -200,7 +200,15 @@ def seedJob_Uniform(catalog, num=1):
   settings = systemsettings()
   numLabels = int(catalog.get('numLabels'))
   binlist = [(A, B) for A in range(numLabels) for B in range(numLabels)]
-  rmslabel = labelDEShaw_rmsd()
+  if catalog.exists('label:deshaw'):
+    rmslabel = [eval(x) for x in catalog.lrange('label:deshaw', 0, -1)]
+  else:
+    rmslabel = labelDEShaw_rmsd()
+    pipe = catalog.pipeline()
+    for rms in rmslabel:
+      pipe.rpush('label:deshaw', rms)
+    pipe.execute()
+    logging.info('DEShaw Labels stored in the catalog.')
   logging.info('Grouping all prelabeled Data:')
   groupby = {b:[] for b in binlist}
   for i, b in enumerate(rmslabel):

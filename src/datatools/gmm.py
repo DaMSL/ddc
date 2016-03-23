@@ -18,13 +18,14 @@ def calc_gmm(xyz, N, ctype='full', title=None):
     np.save('gmm_%d_%s_wgt' % (N, ctype), gmm.weights_)
     np.save('gmm_%d_%s_cov' % (N, ctype), gmm.covars_)
     np.save('gmm_fit_%d_%s' % (N, ctype), gmm.predict(xyz.reshape(len(xyz), n_dim)))
+  return gmm
 
   # with open('ipca_pickled.dat', 'wb') as pout:
 #    pout.write(ipca_p)
 
-xyz = DE.loadpts(skip=4, filt=DE.atom_filter['alpha'])
-gmm = calc_gmm(xyz, 5, 'alpha')
-with open('gmm_alpha.dat', 'wb') as pout:
-   pout.write(pickle.dumps(gmm))
+# xyz = DE.loadpts(skip=4, filt=DE.atom_filter['alpha'])
+# gmm = calc_gmm(xyz, 5, 'alpha')
+# with open('gmm_alpha.dat', 'wb') as pout:
+#    pout.write(pickle.dumps(gmm))
 
 

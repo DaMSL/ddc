@@ -176,6 +176,7 @@ class controlJob(macrothread):
 
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
+      self.slurmParams['partition'] = 'debug'
 
       self.modules.add('namd/2.10')
 
@@ -468,26 +469,86 @@ class controlJob(macrothread):
       logging.debug("=======================  <SUBSPACE CONVERENCE>  =========================")
 
       # Bootstrap current sample for RMS
-      logging.info("RMS Labels for %d points loaded. Bootstrapping.....", len(labeled_pts_rms))
+      logging.info("RMS Labels for %d points loaded. Calculating PDF.....", len(labeled_pts_rms))
 
-      pdf_rms = datacalc.posterior_prob(labeled_pts_rms)
+      pdf_rms_iter = datacalc.posterior_prob(labeled_pts_rms)
 
-      logging.info("Posterer PDF for each variable (for this Set of Data):")
+      logging.info("Posterer PDF:")
+
+      vals_iter = {}
       pipe = self.catalog.pipeline()
       for v_i in binlist:
         key = str(v_i)
         A, B = eval(key)
         val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
-        pipe.rpush('boot:%d_%d' % (A, B), val)
-        logging.info('##VAL %03d %s:  %0.4f' % (self.data['timestep'], key, val))
+        vals_iter[v_i] = val
+        pipe.rpush('pdf:iter:%d_%d' % (A, B), val)
       pipe.execute()
+
+      #  LOAD ALL POINTS TO COMPARE CUMULTIVE vs ITERATIVE:
+      #  NOTE: if data is too big, cumulative would need to updated separately
+      all_pts_rms = self.catalog.lrange('label:rms', 0, thru_index)
+      pdf_rms_cuml = datacalc.posterior_prob(all_pts_rms)
+      logging.info("Posterer PDF for each variable (CUMULATIVE):")
+      pipe = self.catalog.pipeline()
+      vals_cuml = {}
+      for v_i in binlist:
+        key = str(v_i)
+        A, B = eval(key)
+        val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
+        vals_cuml[v_i] = val
+        pipe.rpush('pdf:cuml:%d_%d' % (A, B), val)
+      pipe.execute()
+
+      logging.info('##VAL TS   BIN:  Iterative Cumulative') 
+      for key in sorted(binlist):
+        logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
+          (self.data['timestep'], str(key), val_iter[key], val_cuml[key]))
       bench.mark('PosteriorPDF:RMS')
+
+      #  Bootstrap
+      logging.info("Running both iterative and cumualtive Bootstrap on %d points.", len(all_pts_rms))
+      boot_length = len(labeled_pts_rms) // (settings.RUNTIME_FIXED/settings.DCDFREQ)
+      boot_iter = datacalc.gen_bootstrap(all_pts_rms, boot_length)
+      boot_cuml = datacalc.gen_bootstrap(all_pts_rms, boot_length, cumulative=True)
+
+      stats_iter = {b: bootstrap_std(boot_iter[b]) for b in binlist}
+      stats_cuml = {b: bootstrap_std(boot_cuml[b]) for b in binlist}
+
+      #  Convergence is a list corresponding to 25 bins (for discrete PDF selection below)
+      convergence_iter = [0 for i in range(len(binlist))]
+      convergence_cuml = [0 for i in range(len(binlist))]
+
+      #  Exctract bootstrap stats, calculate convergence and save to catalog
+      pipe = self.catalog.pipeline()
+      for b, v_i in enumerate(binlist):
+        A, B = v_i
+        mean, CI, stddev, err = stats_iter[v_i]
+        if mean > 0:
+          convergence_iter[b] = CI/mean
+        pipe.rpush('boot:iter:mn', mean)
+        pipe.rpush('boot:iter:ci', CI)
+        pipe.rpush('boot:iter:er', err)
+        pipe.rpush('boot:iter:cv', convergence_iter[b])
+
+        mean, CI, stddev, err = stats_cuml[v_i]
+        if mean > 0:
+          convergence_cuml[b] = CI/mean
+        pipe.rpush('boot:cuml:mn', mean)
+        pipe.rpush('boot:cuml:ci', CI)
+        pipe.rpush('boot:cuml:er', err)
+        pipe.rpush('boot:cuml:cv', convergence_cuml[b])
+
+      pipe.execute()
+      bench.mark('Boostrap')
+
+
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
       #   Using RMS and PCA, umbrella sample transitions out of state 3
 
-      EXPERIMENT_NUMBER = 4
+      EXPERIMENT_NUMBER = 5
 
       # 1. get all points in some state
       #####  Experment #1: Round-Robin each of 25 bins (do loop to prevent select from empty bin)
@@ -584,6 +645,67 @@ class controlJob(macrothread):
           sel += 1
 
         
+        sampled_set = []
+        for i in selected_indices:
+          traj = self.backProjection([i])
+          sampled_set.append(traj)
+        bench.mark('Sampler')
+
+      
+      ###### EXPERIMENT #5:  BIASED (Umbrella) SAMPLER
+      if EXPERIMENT_NUMBER == 5:
+        pipe = self.catalog.pipeline()
+        for b in binlist:
+          pipe.llen('varbin:rms:%d_%d' % b)
+        num_gen_samples = pipe.execute()
+
+        logging.info('Variable bins sizes follows')
+        idxlist = {}
+        for i, b in enumerate(binlist):
+          idxlist[b] = num_gen_samples[i]
+          logging.info('  %s:  %d', b, num_gen_samples[i])
+
+        numresources = self.data['numresources']
+
+        ## UMBRELLA SAMPLER
+
+        # Since convergence is measured to zero, we want to sample with BIAS to
+        #  the least converged. Thus, the currently calculated convergence gives us
+        #  umbrella function over our convergence already applied
+
+        # Load DEShaw labeled indices
+        rmslabel = deshaw.labelDEShaw_rmsd()
+        deshaw_samples = {b:[] for b in binlist}
+        for i, b in enumerate(rmslabel):
+          deshaw_samples[b].append(i)
+
+        sample_distro_iter = []
+
+        norm_pdf_iter = convergence_iter / sum(convergence_iter)
+        norm_pdf_cuml = convergence_cuml / sum(convergence_cuml)
+
+        logging.info("Umbrella Samping PDF (Using Iterative Bootstrapping):")
+        while numresources > 0:
+          # First sampling is BIASED
+          selected_bin = np.random.choice(len(binlist), p=norm_pdf_iter)
+          if num_gen_samples[selected_bin] is not None and num_gen_samples[selected_bin] > 0:
+            # Secondary Sampling is Uniform
+            sample_num = np.random.randint(num_gen_samples[selected_bin])
+            logging.debug('SAMPLER: selecting sample #%d from bin %s', sample_num, str(binlist[selected_bin]))
+            index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[selected_bin], sample_num)
+            selected_indices.append(index)
+            coord_origin.append(('sim', index, binlist[selected_bin]))
+            numresources -= 1
+          elif len(deshaw_samples[binlist[selected_bin]]) > 0:
+            index = np.random.choice(deshaw_samples[binlist[selected_bin]])
+            logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', index, str(binlist[selected_bin]))
+            # Negation indicates an historical index number
+            selected_indices.append(-index)
+            coord_origin.append(('deshaw', index, binlist[selected_bin]))
+            numresources -= 1
+          else:
+            logging.info("NO Candidates for bin: %s", binlist[selected_bin])
+
         sampled_set = []
         for i in selected_indices:
           traj = self.backProjection([i])

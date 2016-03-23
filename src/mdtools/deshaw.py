@@ -125,6 +125,32 @@ def loadpts(skip=40, filt=None):
       pts.append(i)
   return np.array(pts)
 
+def loadpts_traj(tnum, skip=40, filt=None):
+  """Loads all DEShaw Points as one long NDarray. Skip value is used 
+  to load fewer frames
+  """
+  pts = []
+  print('loading file: ', tnum)
+  traj = md.load(DCD_PROT(tnum), top=PDB_PROT, stride=skip)
+  if filt is not None:
+    traj.atom_slice(filt, inplace=True)
+  return traj.xyz
+
+
+def loadpts_trajlist(trajlist, skip=40, filt=None):
+  """Loads all DEShaw Points as one long NDarray. Skip value is used 
+  to load fewer frames
+  """
+  pts = []
+  for i in trajlist:
+    print('loading file: ', i)
+    traj = md.load(DCD_PROT(i), top=PDB_PROT, stride=skip)
+    if filt is not None:
+      traj.atom_slice(filt, inplace=True)
+    for i in traj.xyz:
+      pts.append(i)
+  return np.array(pts)
+
 
 
 def refFromIndex(index):

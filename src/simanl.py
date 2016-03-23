@@ -289,10 +289,13 @@ class simulationJob(macrothread):
     # 1. Filter to Alpha atoms
     alpha = traj.atom_slice(deshaw.FILTER['alpha'])
 
-    # 2. Convert to distance space: pairwise dist for all atom combinations
-    alpha_dist = dr.distance_space(alpha)
+    # 2. (IF USED) Convert to distance space: pairwise dist for all atom combinations
+    # alpha_dist = dr.distance_space(alpha)
 
     # 3. Calc RMS for each conform to all centroids
+    # Heuristic centroid weight (TODO: make this trained)
+    cw = [.92, .94, .96, .99, .99]
+
     numLabels = len(self.data['centroid'])
     numConf = len(traj.xyz)
     rmsraw = calc_rmsd(alpha_dist, self.data['centroid'])
@@ -334,6 +337,7 @@ class simulationJob(macrothread):
     # 4. Apply Heuristics Labeling
     logging.debug('Applying Labeling Heuristic')
     rmslabel = []
+
     pipe = self.catalog.pipeline()
     for i, rms in enumerate(rmslist):
       #  Sort RMSD by proximity & set state A as nearest state's centroid

@@ -7,70 +7,88 @@ import datetime as dt
 from numpy import linalg as LA
 
 from datatools.datareduce import *
+from  mdtools.deshaw import *
 from datatools.rmsd import *
-import  mdtools.deshaw as deshaw
 
-HOST = 'bigmem0026'
+HOST = 'bigmem0016'
 RAW_ARCHIVE = os.getenv('HOME') + '/work/bpti'
 PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
 topo = md.load(PDB_PROT)
 filt = topo.top.select_atom_indices('alpha')
 home = os.environ['HOME']
+lab = loadlabels_aslist()
+
 
 r = redis.StrictRedis(host=HOST, decode_responses=True)
 filelist = r.lrange('xid:filelist', 0, -1)
-cent = np.load(home+'/ddc/bpti-alpha-cart-centroid-well.npy')
+dcent = np.load(home+'/ddc/data/gen-alpha-cartesian-centroid.npy')
 r.delete('label:raw')
 for size in ['sm', 'md', 'lg']:
   r.delete('label:raw:%s'%size)
-raw_obs = []
+
 st = dt.datetime.now()
 pipe = r.pipeline()
 
-SM = 0.25
-MD = .5
-LG = 1
+theta = {'sm':.05, 'md':.25, 'lg':.33}
+ab = [(A, B) for A in range(5) for B in range(5)]
+szlist = ['sm', 'md', 'lg']
+topoa = topo.atom_slice(FILTER['alpha'])
 
-theta = {'sm':.25, 'md':.5, 'lg':1.}
-raw_obs = {'sm':[], 'md':[], 'lg':[]}
+nwidth = 10
+noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+cw = [.92, .94, .96, .99, .99]
+
 
 missing = 0
-for num, tr in enumerate(filelist[100:105]):
-  if not os.path.exists(tr):
+raw_obs = {'sm':[], 'md':[], 'lg':[]}
+srcbin = []
+trajlist = []
+for num, tr in enumerate(filelist):
+  pdb = tr.replace('dcd', 'pdb')
+  if (not os.path.exists(tr)) or (not os.path.exists(pdb)):
     missing += 1
     continue
-  traj = md.load(tr, top=tr.replace('dcd', 'pdb'))
-  traj = traj.atom_slice(deshaw.FILTER['alpha'])  
-  rmsd = []
-  for pt in traj.xyz:
-    rmsd.append(np.array([np.sum([LA.norm(pt[a] - C[a]) for a in range(58)]) for C in cent]))
-  prox = [np.argsort(i) for i in rmsd]
-  for i, rm in enumerate(rmsd):
+  jc = r.hgetall('jc_' + os.path.splitext(os.path.basename(tr))[0])
+  srcbin.append(jc['src_bin'])
+  traj = md.load(tr, top=pdb)
+  if traj.n_frames < 1000:
+    continue
+  traj.unitcell_vectors = np.array([np.identity(3) * 5.126 for i in range(traj.n_frames)])
+  traj.unitcell_angles = np.array([[90,90,90] for i in range(traj.n_frames)])
+  traj.unitcell_lengths = np.array([[5.126,5.126,5.126] for i in range(traj.n_frames)])
+  traj.center_coordinates()
+  traj = traj.atom_slice(FILTER['alpha'])  
+  trajlist.append(traj)
+  # ds = distance_space(traj)
+  filteredxyz = np.array([noisefilt(traj.xyz, i) for i in range(len(traj.xyz))])
+  # ds = [pdist(i) for i in filteredxyz]
+  rms = np.array([np.array([cw[i]*LA.norm(dcent[i]-p) for i in range(5)]) for p in filteredxyz])
+  prox = [np.argsort(i) for i in rms]
+  for i, rm in enumerate(rms):
     A = prox[i][0]
     B = prox[i][1]
     for size in ['sm', 'md', 'lg']:
       if (rm[B] - rm[A]) > theta[size]:
         raw_obs[size].append((A, A))
+        pipe.rpush('label:raw:%s'%size, (A, A))
       else:
         raw_obs[size].append((A, B))
-    pipe.rpush('label:raw:%s'%size, (A, B))
-  if num > 0 and num % 50 == 0:
+        pipe.rpush('label:raw:%s'%size, (A, B))
+  if num > 0 and num % 500 == 0:
     print('Saving thru file #', num)
     pipe.execute()
     pipe = r.pipeline()
 
 pipe.execute()
 
-print('MIssing %d files' % missing)
-
-ab = [(A, B) for A in range(5) for B in range(5)]
-
-for size in ['sm', 'md', 'lg']:
-  raw_label   = {b: 0 for b in ab}
+raw_label = {sz: {b: 0 for b in ab} for sz in szlist}
+for size in szlist:
   for ro in raw_obs[size]:
-    raw_label[ro] += 1
-  print("DISTRO for SIZE:  ", size)
-  for i in sorted(ab):
-    print(i, '%7d' % raw_label[i])
+    raw_label[size][ro] += 1
+
+for i in sorted(ab):
+  print(i, '%7d' % raw_label['sm'][i], '%7d' % raw_label['sm'][i], '%7d' % raw_label['lg'][i])
+
+
 
 

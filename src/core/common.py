@@ -150,8 +150,8 @@ class systemsettings:
     self.PARTITION = ini.get('partition', 'shared')
 
     #  PARAMS TO BE SET:
-    self.RMSD_THETA = ini.get('rmsd_theta', .25)   # RMS Transition detetion Sensitivity
-    self.RMSD_CENTROID_FILE = ini.get('rmsd_centroid_file', 'data/bpti-alpha-dist-centroid.npy')
+    self.RMSD_THETA = ini.get('rmsd_theta', .33)   # RMS Transition detetion Sensitivity
+    self.RMSD_CENTROID_FILE = ini.get('rmsd_centroid_file', 'data/gen-alpha-cartesian-centroid.npy')
     self.PCA_VECTOR_FILE = ini.get('pca_vector_file', 'data/pca_comp.npy')
     self.PCA_NUMPC = ini.get('pca_numpc', 3)
 

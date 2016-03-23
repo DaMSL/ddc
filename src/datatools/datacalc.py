@@ -6,6 +6,22 @@ np.set_printoptions(precision=3, suppress=True)
 
 
 
+def bootstrap_std (series, interval=.9):
+  """
+  Bootstrap algorithm for sampling and confidence interval estimation
+  """
+  N = len(series)
+  mean = np.mean(series)
+  stddev = np.std(series)
+  # Z-Table look up
+  Z = 1.645  # .9 CI
+  err = stddev / math.sqrt(N)
+  CI = Z * err
+  return (mean, CI, stddev, err)
+
+
+
+
 def posterior_prob (source):
   """
   Calculate posterior probability for set of observations
@@ -71,3 +87,39 @@ def bootstrap_sampler (source, samplesize=.1, N=50, interval=.90):
     probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
   return probility_est
 
+
+
+def gen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
+  """Generate Bootstrap samples from observed Data. This function uses count
+  as the function to splice out the data
+  """
+  obs_per_step = strap_size_ns * OBS_PER_NS
+  bootstrap = {b: [] for b in ab}
+  cnts = {b: 0 for b in ab}
+  total = [0 for i in range(5)]
+  i = 0
+  print('Collecting data...')
+  while i < len(all_obs):
+    if i > 0 and i % obs_per_step == 0:
+      for b in ab:
+        A, B = b
+        if total[A] == 0:
+          logging.info('Bootstrap gen: No DATA for state %d  at ns interval:  %d' % (A, i/OBS_PER_NS))
+        else:
+          bootstrap[b].append(cnts[b]/total[A])
+      if not cumulative:
+        cnts = {b: 0 for b in ab}
+        total = [0 for i in range(5)]
+    A, B = eval(all_obs[i])
+    i += 1
+    if transonly and A == B:
+      continue
+    cnts[(A, B)] += 1
+    total[A] += 1
+  for b in ab:
+    A, B = b
+    if total[A] == 0:
+      logging.info('Bootstrap gen: No DATA for state %d  at ns interval:  %d' % (A, i/OBS_PER_NS))
+    else:
+      bootstrap[b].append(cnts[b]/total[A])
+  return bootstrap

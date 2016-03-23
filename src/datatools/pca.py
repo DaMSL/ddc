@@ -6,6 +6,7 @@ import logging
 import pickle
 from sklearn.decomposition import PCA
 from sklearn.decomposition import KernelPCA
+from sklearn.decomposition import IncrementalPCA
 
 
 
@@ -49,6 +50,13 @@ def calc_kpca(xyz, kerneltype=None, title=None, n_comp=None):
     return result[0]
 
 
+def calc_ipca(xyz, N, title=None):
+  n_dim = np.prod(xyz.shape[1:])
+  ipca = IncrementalPCA()
+  ipca.fit(xyz.reshape(len(xyz), n_dim))
+  return ipca
+
+
 
 def project_pca(src, pc, numpc):
   """ Project source pts onto pc's
@@ -57,3 +65,5 @@ def project_pca(src, pc, numpc):
   for i, s in enumerate(src):
     np.copyto(projection[i], np.array([np.dot(s.flatten(),v) for v in pc[:numpc]]))
   return projection
+
+
