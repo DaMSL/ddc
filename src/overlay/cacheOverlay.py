@@ -224,8 +224,8 @@ class CacheClient(object):
         self.isconnected = True
       return True
     except FileNotFoundError as ex:
-      logging.error('[CacheClient] ERROR. Service is not running. No lockfile found: %s', self.lockfile)
-      return True
+      logging.error('[CacheClient] ERROR. Service is not running. No lockfile found: %s  (Returning False)', self.lockfile)
+      return False
 
   def get(self, filename, frame, file_type):
     if not self.connect():
@@ -244,6 +244,7 @@ class CacheClient(object):
       key = 'deshaw:%02d' % fileno
     else:
       key = 'sim:%s' % filename
+
 
     data = self.conn.lindex(key, frame)
 

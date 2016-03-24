@@ -6,6 +6,7 @@ import numpy as np
 import redis
 import math
 
+from datatools.datacalc import *
 
 def bootstrap_std (series, interval=.9):
   """
@@ -35,11 +36,11 @@ def bootstrap_actual (series, interval=.95):
   return (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i, std)
 
 
-HOST = 'bigmem0043'
+HOST = 'bigmem0003'
 SAVELOC = os.environ['HOME'] + '/ddc/graph/'
 
 r = redis.StrictRedis(host=HOST, decode_responses=True)
-obs = r.lrange('label:raw:lg', 0, -1)
+u = redis.StrictRedis(host='localhost', decode_responses=True)
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
 
 OBS_PER_NS = 1000
@@ -99,7 +100,7 @@ def recheckStats_cumulative(ts, cumulative=False):
   print('All Done!')
   return cuml
 
-def gen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
+def postgen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
   obs_per_step = strap_size_ns * OBS_PER_NS
   bootstrap = {b: [] for b in ab}
   cnts = {b: 0 for b in ab}
@@ -131,7 +132,116 @@ def gen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
       bootstrap[b].append(cnts[b]/total[A])
   return bootstrap
 
-def plot_bootstraps(data, ts, prefix):
+
+def postcalc_bootstraps(data, burnin=0):
+  print('Calculating Convergence...')
+  stats = {b: [bootstrap_std(data[b][burnin:i], interval=.9) for i in range(burnin, len(data[b]))]  for b in ab}
+  bs = {}
+  for i, stat in enumerate(['mn', 'ci', 'cv', 'er']):
+    bs[stat] = {b: np.array([x[i] for x in stats[b]]) for b in ab}
+  return bs
+
+def get_bootstrap_data(r, burnin=0):
+  """ Pull bootstrap data (in real time) from given redis catalog
+  """
+  print('Calculating Convergence...')
+  TIMESTEP = ts * OBS_PER_NS
+  bs = {}
+  # Load all bootstrap data from redis
+  for stat in ['mn', 'ci', 'cv', 'er']:
+    data = [float(val) for val in r.lrange('boot:%s:%s'%(prefix,stat), 0, -1)]
+    bs[stat] = {b: [] for b in ab}
+    if len(data) % 25 != 0:
+      print("ERROR. Wrong # of results", stat, len(data))
+      # return
+    else:
+      print('Total number of samples to plot: ', len(data)//25)
+      # NOTE: Fix output to specific label-keys
+      skip = burnin * 25
+      for i, val in enumerate(data[skip:]):
+        bs[stat][ab[i%25]].append(val)
+    for b in ab:
+      bs[stat][b] = np.array(bs[stat][b])
+  return bs
+    # Plot
+
+def plot_bootstrap_graphs(bs, ts, prefix, subdir='.', samp_type=''):
+  bootmethod = 'Iterative' if prefix=='iter' else 'Cumulative'
+  for i in range(5):
+    print('Generating graphs for state ', i)
+    for b in ab[i*5:i*5+5]:
+      plt.plot(np.arange(len(bs['ci'][b]))*(ts), (bs['ci'][b]/bs['mn'][b]), label=str(b))
+    plt.title('%s Sampling with %s Bootstrap' % (samp_type, bootmethod))
+    plt.xlabel('Total time in ns')
+    plt.ylabel('Convergence of Confidence Interval')
+    plt.legend()
+    plt.savefig(SAVELOC + subdir+'/%s_%dns_tc_%d.png'%(prefix, ts, i))
+    plt.close()
+    for b in ab[i*5:i*5+5]:
+      if len(bs['mn'][b]) == 0:
+        continue
+      plt.errorbar(np.arange(len(bs['mn'][b]))*(ts), bs['mn'][b], yerr=bs['er'][b], label=str(b))
+    plt.title('%s Sampling with %s Bootstrap' % (samp_type, bootmethod))
+    plt.xlabel('Total time in ns')
+    plt.ylabel('Posterior Probabilty (w/error)')
+    plt.legend()
+    plt.savefig(SAVELOC + subdir+'/%s_%dns_mnerr_%d.png'%(prefix, ts, i))
+    plt.close()
+  print('All Done!')
+
+# For post calc
+BURNIN = 10
+STEPSIZE=50
+obs_unif = u.lrange('label:raw:lg', 0, -1)[150000:]
+obs_bias = r.lrange('label:rms', 0, -1)[150000:]
+
+boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=False)
+bs_u = postcalc_bootstraps(boots)
+plot_bootstrap_graphs(bs_u, STEPSIZE, 'iter', 'uniform2', samp_type='UNIFORM')
+
+boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=True)
+bs_u = postcalc_bootstraps(boots)
+plot_bootstrap_graphs(bs_u, STEPSIZE, 'cuml', 'uniform2', samp_type='UNIFORM')
+
+boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=False)
+bs_b = postcalc_bootstraps(boots)
+plot_bootstrap_graphs(bs_b, STEPSIZE, 'iter', 'biased1', samp_type='BIASED')
+
+boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=True)
+bs_b = postcalc_bootstraps(boots)
+plot_bootstrap_graphs(bs_b, STEPSIZE, 'cuml', 'biased1', samp_type='BIASED')
+
+
+# Live Data:
+bs_r = get_bootstrap_data(r, burnin=BURNIN)
+plot_bootstrap_graphs(bs_r, STEPSIZE, 'iter', 'biased1')
+plot_bootstrap_graphs(bs_r, STEPSIZE, 'cuml', 'biased1')
+
+
+
+
+# Group data by originating state:
+statecv_u = [[] for i in range(5)]
+statecv_b = [[] for i in range(5)]
+for A in range(5):
+  aggu = [0 for i in range(len(bs_u['ci'][(A, 0)]))
+  aggu = [0 for i in range(len(bs_u['ci'][(A, 0)]))
+  for B in range(5):
+    for k in range(len(bs_u['ci'][(A, B)]))
+    agg[k] += bs_u['ci'][(A, B)][k] / bs_u['mn'][(A, B)][k]
+  for k in agg:
+    statecv.append(k/5)
+
+for b in ab[i*5:i*5+5]:
+  plt.plot(np.arange(len(bs_cv[b]))*(ts), len(bs_cv[b]), label=str(b))
+plt.xlabel('Total Convergence (total time in ns)')
+plt.legend()
+plt.savefig(SAVELOC + subdir+'/%s_%dns_tc_%d.png'%(prefix, ts, i))
+plt.close()
+
+
+
+def plot_bootstraps(data, ts, prefix, subdir='.'):
   print('Calculating Convergence...')
   TIMESTEP = ts * OBS_PER_NS
   bs = {b: [bootstrap_std(data[b][:i], interval=.9) for i in range(len(data[b]))]  for b in ab}
@@ -142,21 +252,24 @@ def plot_bootstraps(data, ts, prefix):
   for i in range(5):
     print('Generating graphs for state ', i)
     for b in ab[i*5:i*5+5]:
-      plt.plot(np.arange(len(bs_sd[b]))*(ts), (bs_ci[b]/bs_mn[b]), label=str(b))
+      plt.plot(np.arange(len(bs_cv[b]))*(ts), len(bs_cv[b]), label=str(b))
     plt.xlabel('Total Convergence (total time in ns)')
     plt.legend()
-    plt.savefig(SAVELOC + '/%s_%dns_tc_%d.png'%(prefix, ts, i))
+    plt.savefig(SAVELOC + subdir+'/%s_%dns_tc_%d.png'%(prefix, ts, i))
     plt.close()
     for b in ab[i*5:i*5+5]:
       plt.errorbar(np.arange(len(bs_mn[b]))*(ts), bs_mn[b], yerr=bs_er[b], label=str(b))
     plt.xlabel('Mean with error bars (total time in ns)')
     plt.legend()
-    plt.savefig(SAVELOC + '/%s_%dns_mnerr_%d.png'%(prefix, ts, i))
+    plt.savefig(SAVELOC + subdir*'/%s_%dns_mnerr_%d.png'%(prefix, ts, i))
     plt.close()
   print('All Done!')
-  return stat
 
-stats=recheckStats_separate(50)
+
+
+
+
+# stats=recheckStats_separate(50)
 
 
 

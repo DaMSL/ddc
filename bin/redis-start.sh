@@ -2,12 +2,12 @@
 
 #SBATCH
 #SBATCH --job-name=osvc-red
-#SBATCH --time=20:00:0
+#SBATCH --time=5-0:00:0
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/ovs-redis.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
-#SBATCH --partition=lrgmem
+#SBATCH --partition=unlimited
 
 module load namd
 module load redis

@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+import math
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
@@ -93,7 +94,9 @@ def gen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
   """Generate Bootstrap samples from observed Data. This function uses count
   as the function to splice out the data
   """
-  obs_per_step = strap_size_ns * OBS_PER_NS
+  #  TODO Pass in label names
+  obs_per_step = strap_size_ns * 1000
+  ab = [(A, B) for A in range(5) for B in range(5)]
   bootstrap = {b: [] for b in ab}
   cnts = {b: 0 for b in ab}
   total = [0 for i in range(5)]

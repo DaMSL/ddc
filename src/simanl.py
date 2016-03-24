@@ -71,6 +71,15 @@ class simulationJob(macrothread):
     self.slurmParams['cpus-per-task'] = PARALLELISM
     self.slurmParams['time'] = '2:00:0'
 
+    self.skip_simulation = False
+
+    self.parser.add_argument('-a', '--analysis', action='store_true')
+    args = self.parser.parse_args()
+    if args.analysis:
+      logging.info('SKIPPING SIMULATION')
+      self.skip_simulation = True
+
+
   def term(self):
     return False
 
@@ -122,122 +131,136 @@ class simulationJob(macrothread):
 
   def execute(self, job):
 
-  # EXECUTE SIMULATION ---------------------------------------------------------
+  # PRE-PREOCESS ---------------------------------------------------------
     settings = systemsettings()
-    # Prepare & source to config file
-    with open(self.data['sim_conf_template'], 'r') as template:
-      source = template.read()
+    bench = microbench()
+    bench.start()
 
     # Prepare working directory, input/output files
     conFile = os.path.join(job['workdir'], job['name'] + '.conf')
     logFile = conFile.replace('conf', 'log')      # log in same place as config file
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
-
-    # >>>>Storing DCD into shared memory on this node
-
     USE_SHM = True
-    if USE_SHM:
-      # ramdisk = '/dev/shm/out/'
-      ramdisk = '/tmp/ddc/'
-      if not os.path.exists(ramdisk):
-        os.mkdir(ramdisk)
-      job['outputloc'] = ramdisk
-      dcd_ramfile = os.path.join(ramdisk, job['name'] + '.dcd')
+
+
+  # EXECUTE SIMULATION ---------------------------------------------------------
+    if self.skip_simulation:
+
+      logging.info('1. SKIPPING SIMULATION.....')
+      USE_SHM = False
+
+      job['dcd'] = dcdFile
+      key = wrapKey('jc', job['name'])
+      self.data[key]['dcd'] = dcdFile
+
     else:
-      job['outputloc'] = ''
+      logging.info('1. Run Simulation')
+      # Prepare & source to config file
+      with open(self.data['sim_conf_template'], 'r') as template:
+        source = template.read()
 
-    with open(conFile, 'w') as sysconfig:
-      sysconfig.write(source % job)
-      logging.info("Config written to: " + conFile)
+      # >>>>Storing DCD into shared memory on this node
 
-    # # Run simulation in parallel
-    # if 'parallel' in job:
-    #   numnodes = job['parallel']
-    #   total_tasks = numnodes * 24
-    #   cmd = 'mpiexec -n %d namd2 %s > %s'  % (total_tasks, conFile, logFile)
-
-    # # Run simulation single threaded
-    # else:
-    #   cmd = 'namd2 %s > %s' % (conFile, logFile)
-
-    # cmd = 'mpirun -n %d namd2 %s > %s' % (PARALLELISM, conFile, logFile)
-    check = executecmd('module list')
-    logging.debug('%s', check)
-
-    cmd = 'namd2 +p%d %s > %s' % (PARALLELISM, conFile, logFile)
-
-    #  MICROBENCH #1 (file to Lustre)
-    # logging.debug("Executing Simulation:\n   %s\n", cmd)
-    # bench = microbench()
-    # bench.start()
-    # stdout = executecmd(cmd)
-    # logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
-    # bench.mark('SimExec:%s' % job['name'])
-    # shm_contents = os.listdir('/dev/shm/out')
-    # logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
-    # shutil.copy(ramdisk + job['name'] + '.dcd', job['workdir'])
-    # logging.info("Copy Complete to Lustre.")
-    # bench.mark('CopyLustre:%s' % job['name'])
-    # shutil.rmtree(ramdisk)
-    # shm_contents = os.listdir('/dev/shm')
-    # logging.debug('Ramdisk contents (should be empty) : %s', str(shm_contents))
-    # bench.show()
-
-
-    logging.debug("Executing Simulation:\n   %s\n", cmd)
-    bench = microbench()
-    bench.start()
-
-    stdout = executecmd(cmd)
-
-    logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
-    bench.mark('SimExec:%s' % job['name'])
-
-    # Internal stats
-    sim_length = settings.SIM_STEP_SIZE * int(job['runtime'])
-    sim_realtime = bench.delta_last()
-    sim_run_ratio =  (sim_realtime/60) / (sim_length/1000000)
-    logging.info('##SIM_RATIO %6.3f  min-per-ns-sim', sim_run_ratio)
-
-    if USE_SHM:
-      shm_contents = os.listdir(ramdisk)
-      logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
-
-      if not os.path.exists(dcd_ramfile):
-        logging.warning("DCD FILE NOT FOUND!!!! Wait 10 seconds for sim to close it (???)")
-        time.sleep(10)
-
-      if not os.path.exists(dcd_ramfile):
-        logging.warning("DCD STIILL FILE NOT FOUND!!!!")
+      if USE_SHM:
+        # ramdisk = '/dev/shm/out/'
+        ramdisk = '/tmp/ddc/'
+        if not os.path.exists(ramdisk):
+          os.mkdir(ramdisk)
+        job['outputloc'] = ramdisk
+        dcd_ramfile = os.path.join(ramdisk, job['name'] + '.dcd')
       else:
-        logging.info("DCD File was found")
+        job['outputloc'] = ''
 
-    # #  MICROBENCH #2 (file to Alluxio)
-    # allux = AlluxioClient()
-    # # copy to Aluxio FS
-    # allux.put(ramdisk + job['name'] + '.dcd', '/')
-    # logging.info("Copy Complete to Alluxio.")
-    # bench.mark('CopyAllux:%s' % job['name'])
+      with open(conFile, 'w') as sysconfig:
+        sysconfig.write(source % job)
+        logging.info("Config written to: " + conFile)
 
-    # And copy to Lustre
-    # shutil.copy(ramdisk + job['name'] + '.dcd', job['workdir'])
-    # And copy to Lustre (usng zero-copy):
-    if USE_SHM:
-      src  = open(dcd_ramfile, 'rb')
-      dest = open(dcdFile, 'w+b')
-      offset = 0
-      dcdfilesize = os.path.getsize(dcd_ramfile)
-      while True:
-        sent = sendfile(dest.fileno(), src.fileno(), offset, dcdfilesize)
-        if sent == 0:
-          break
-        offset += sent
-      logging.info("Copy Complete to Lustre.")
-      bench.mark('CopyLustre:%s' % job['name'])
-    
-    # TODO: Update job's metadata
-    key = wrapKey('jc', job['name'])
-    self.data[key]['dcd'] = dcdFile
+      # # Run simulation in parallel
+      # if 'parallel' in job:
+      #   numnodes = job['parallel']
+      #   total_tasks = numnodes * 24
+      #   cmd = 'mpiexec -n %d namd2 %s > %s'  % (total_tasks, conFile, logFile)
+
+      # # Run simulation single threaded
+      # else:
+      #   cmd = 'namd2 %s > %s' % (conFile, logFile)
+
+      # cmd = 'mpirun -n %d namd2 %s > %s' % (PARALLELISM, conFile, logFile)
+      check = executecmd('module list')
+      logging.debug('%s', check)
+
+      cmd = 'namd2 +p%d %s > %s' % (PARALLELISM, conFile, logFile)
+
+      #  MICROBENCH #1 (file to Lustre)
+      # logging.debug("Executing Simulation:\n   %s\n", cmd)
+      # bench = microbench()
+      # bench.start()
+      # stdout = executecmd(cmd)
+      # logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
+      # bench.mark('SimExec:%s' % job['name'])
+      # shm_contents = os.listdir('/dev/shm/out')
+      # logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
+      # shutil.copy(ramdisk + job['name'] + '.dcd', job['workdir'])
+      # logging.info("Copy Complete to Lustre.")
+      # bench.mark('CopyLustre:%s' % job['name'])
+      # shutil.rmtree(ramdisk)
+      # shm_contents = os.listdir('/dev/shm')
+      # logging.debug('Ramdisk contents (should be empty) : %s', str(shm_contents))
+      # bench.show()
+
+
+      logging.debug("Executing Simulation:\n   %s\n", cmd)
+
+      stdout = executecmd(cmd)
+
+      logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
+      bench.mark('SimExec:%s' % job['name'])
+
+      # Internal stats
+      sim_length = settings.SIM_STEP_SIZE * int(job['runtime'])
+      sim_realtime = bench.delta_last()
+      sim_run_ratio =  (sim_realtime/60) / (sim_length/1000000)
+      logging.info('##SIM_RATIO %6.3f  min-per-ns-sim', sim_run_ratio)
+
+      if USE_SHM:
+        shm_contents = os.listdir(ramdisk)
+        logging.debug('Ramdisk contents (should have files) : %s', str(shm_contents))
+
+        if not os.path.exists(dcd_ramfile):
+          logging.warning("DCD FILE NOT FOUND!!!! Wait 10 seconds for sim to close it (???)")
+          time.sleep(10)
+
+        if not os.path.exists(dcd_ramfile):
+          logging.warning("DCD STIILL FILE NOT FOUND!!!!")
+        else:
+          logging.info("DCD File was found")
+
+      # #  MICROBENCH #2 (file to Alluxio)
+      # allux = AlluxioClient()
+      # # copy to Aluxio FS
+      # allux.put(ramdisk + job['name'] + '.dcd', '/')
+      # logging.info("Copy Complete to Alluxio.")
+      # bench.mark('CopyAllux:%s' % job['name'])
+
+      # And copy to Lustre
+      # shutil.copy(ramdisk + job['name'] + '.dcd', job['workdir'])
+      # And copy to Lustre (usng zero-copy):
+      if USE_SHM:
+        src  = open(dcd_ramfile, 'rb')
+        dest = open(dcdFile, 'w+b')
+        offset = 0
+        dcdfilesize = os.path.getsize(dcd_ramfile)
+        while True:
+          sent = sendfile(dest.fileno(), src.fileno(), offset, dcdfilesize)
+          if sent == 0:
+            break
+          offset += sent
+        logging.info("Copy Complete to Lustre.")
+        bench.mark('CopyLustre:%s' % job['name'])
+      
+      # TODO: Update job's metadata
+      key = wrapKey('jc', job['name'])
+      self.data[key]['dcd'] = dcdFile
 
   # ANALYSIS   ------- ---------------------------------------------------------
     #  ANALYSIS ALGORITHM
@@ -298,7 +321,7 @@ class simulationJob(macrothread):
 
     numLabels = len(self.data['centroid'])
     numConf = len(traj.xyz)
-    rmsraw = calc_rmsd(alpha_dist, self.data['centroid'])
+    rmsraw = calc_rmsd(alpha, self.data['centroid'])
     logging.debug('  RMS:  %d points projected to %d centroid-distances', numConf, numLabels)
 
     # 4. Account for noise

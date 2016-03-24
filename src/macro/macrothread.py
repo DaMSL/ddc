@@ -41,7 +41,7 @@ class macrothread(object):
     #  TODO: Better handling of command line args
     self.parser = None
     self.parser = self.addArgs()
-    args = self.parser.parse_args()
+    args, child_args = self.parser.parse_known_args()
     self.config = args.config
 
     #  apply global settings (TODO: Move to system pro-proc)

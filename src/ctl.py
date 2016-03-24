@@ -198,13 +198,13 @@ class controlJob(macrothread):
 
       # Batch sizes should be measures in abosolute # of observations
       workloadList = deque(self.data['completesim'])
-      minbatchSize = self.data['ctlBatchSize_min']
-      maxbatchSize = self.data['ctlBatchSize_max']
+      minbatchSize = int(self.data['ctlBatchSize_min'])
+      maxbatchSize = int(self.data['ctlBatchSize_max'])
       batchAmt = 0
       logging.debug('Controller will launch with batch size between: %d and %d observations', minbatchSize, maxbatchSize)
       num_simbatchs = 0
       while batchAmt < maxbatchSize and len(workloadList) > 0:
-        if workloadList[0] + batchAmt > maxbatchSize:
+        if int(workloadList[0]) + batchAmt > maxbatchSize:
           if batchAmt == 0:
             logging.warning('CAUTION. May need to set the max batch size higher (cannot run controller)')
           break
@@ -214,7 +214,7 @@ class controlJob(macrothread):
 
       # Don't do anything if the batch size is less than the min:
       if batchAmt < minbatchSize:
-        return [], self.data['completesim']
+        return [], None
       else:
         return [batchAmt], num_simbatchs
 
@@ -480,7 +480,7 @@ class controlJob(macrothread):
       for v_i in binlist:
         key = str(v_i)
         A, B = eval(key)
-        val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
+        val = 0 if key not in pdf_rms_iter.keys() else pdf_rms_iter[key]
         vals_iter[v_i] = val
         pipe.rpush('pdf:iter:%d_%d' % (A, B), val)
       pipe.execute()
@@ -495,7 +495,7 @@ class controlJob(macrothread):
       for v_i in binlist:
         key = str(v_i)
         A, B = eval(key)
-        val = 0 if key not in pdf_rms.keys() else pdf_rms[key]
+        val = 0 if key not in pdf_rms_cuml.keys() else pdf_rms_cuml[key]
         vals_cuml[v_i] = val
         pipe.rpush('pdf:cuml:%d_%d' % (A, B), val)
       pipe.execute()
@@ -503,17 +503,17 @@ class controlJob(macrothread):
       logging.info('##VAL TS   BIN:  Iterative Cumulative') 
       for key in sorted(binlist):
         logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
-          (self.data['timestep'], str(key), val_iter[key], val_cuml[key]))
+          (self.data['timestep'], str(key), vals_iter[key], vals_cuml[key]))
       bench.mark('PosteriorPDF:RMS')
 
       #  Bootstrap
       logging.info("Running both iterative and cumualtive Bootstrap on %d points.", len(all_pts_rms))
       boot_length = len(labeled_pts_rms) // (settings.RUNTIME_FIXED/settings.DCDFREQ)
-      boot_iter = datacalc.gen_bootstrap(all_pts_rms, boot_length)
-      boot_cuml = datacalc.gen_bootstrap(all_pts_rms, boot_length, cumulative=True)
+      boot_iter = datacalc.gen_bootstraps(all_pts_rms, boot_length)
+      boot_cuml = datacalc.gen_bootstraps(all_pts_rms, boot_length, cumulative=True)
 
-      stats_iter = {b: bootstrap_std(boot_iter[b]) for b in binlist}
-      stats_cuml = {b: bootstrap_std(boot_cuml[b]) for b in binlist}
+      stats_iter = {b: datacalc.bootstrap_std(boot_iter[b]) for b in binlist}
+      stats_cuml = {b: datacalc.bootstrap_std(boot_cuml[b]) for b in binlist}
 
       #  Convergence is a list corresponding to 25 bins (for discrete PDF selection below)
       convergence_iter = [0 for i in range(len(binlist))]
@@ -674,43 +674,58 @@ class controlJob(macrothread):
         #  umbrella function over our convergence already applied
 
         # Load DEShaw labeled indices
-        rmslabel = deshaw.labelDEShaw_rmsd()
+        if self.catalog.exists('label:deshaw'):
+          logging.info("Loading DEShaw historical points.... From Cache")
+          rmslabel = [eval(x) for x in self.catalog.lrange('label:deshaw', 0, -1)]
+        else:
+          logging.info("Loading DEShaw historical points.... From File (and recalculating)")
+          rmslabel = deshaw.labelDEShaw_rmsd()
+
         deshaw_samples = {b:[] for b in binlist}
         for i, b in enumerate(rmslabel):
           deshaw_samples[b].append(i)
 
         sample_distro_iter = []
+        coord_origin = []
 
         norm_pdf_iter = convergence_iter / sum(convergence_iter)
         norm_pdf_cuml = convergence_cuml / sum(convergence_cuml)
 
         logging.info("Umbrella Samping PDF (Using Iterative Bootstrapping):")
+
+        sampled_distro_perbin = {b: 0 for b in binlist}
+
         while numresources > 0:
           # First sampling is BIASED
           selected_bin = np.random.choice(len(binlist), p=norm_pdf_iter)
+          sampled_distro_perbin[binlist[selected_bin]] += 1
           if num_gen_samples[selected_bin] is not None and num_gen_samples[selected_bin] > 0:
             # Secondary Sampling is Uniform
             sample_num = np.random.randint(num_gen_samples[selected_bin])
             logging.debug('SAMPLER: selecting sample #%d from bin %s', sample_num, str(binlist[selected_bin]))
             index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[selected_bin], sample_num)
-            selected_indices.append(index)
+            sample_distro_iter.append(index)
             coord_origin.append(('sim', index, binlist[selected_bin]))
             numresources -= 1
           elif len(deshaw_samples[binlist[selected_bin]]) > 0:
             index = np.random.choice(deshaw_samples[binlist[selected_bin]])
             logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', index, str(binlist[selected_bin]))
             # Negation indicates an historical index number
-            selected_indices.append(-index)
+            sample_distro_iter.append(-index)
             coord_origin.append(('deshaw', index, binlist[selected_bin]))
             numresources -= 1
           else:
             logging.info("NO Candidates for bin: %s", binlist[selected_bin])
 
         sampled_set = []
-        for i in selected_indices:
+        for i in sample_distro_iter:
           traj = self.backProjection([i])
           sampled_set.append(traj)
         bench.mark('Sampler')
+
+      logging.info("Samples to run (per bin):")
+      for b in binlist:
+        logging.info("  %s:  %d", str(b), sampled_distro_perbin[b])
 
       #  REWEIGHT OPERATION
       reweight = False
