@@ -145,5 +145,9 @@ if __name__ == '__main__':
   catalog = redis.StrictRedis(port=6381, decode_responses=True)
 
   task = offlineAnalysis(catalog)
-  task.analyze_dcd(args.job)
+
+  if args.job:
+    task.analyze_dcd(args.job)
+  else:
+    with open('dcd_order.txt')
 

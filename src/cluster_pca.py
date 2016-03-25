@@ -20,6 +20,7 @@ home = os.environ['HOME']
 r = redis.StrictRedis(host=HOST, decode_responses=True)
 filelist = r.lrange('xid:filelist', 0, -1)
 
+takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
 
 def projgraph(data, stride, title, L=None):
   samp = np.array([data[i] for i in range(0, len(data), stride)])
@@ -58,7 +59,7 @@ for num, tr in enumerate(filelist[:100]):
   covar[(A, B)].extend(calc_covar(traj.xyz, .2, 1, .1))
 
 COV = np.array(covar)
-DEcov = np.load('data/covar_1ns/npy')
+DEcov = np.load('data/covar_1ns.npy')
 
 # DEShaw PCA for each global state
 
@@ -132,3 +133,49 @@ covar = np.array(covar)
 
 
 
+
+
+#### =============   PCA/KMeans for discovery Learning
+
+# For testing with DEShaw
+DEcov = np.load('../data/covar_1ns.npy')
+takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
+
+samp250 = takesample(DEcov, 250)
+samp100 = takesample(DEcov, 250)
+
+samp = {k: takesample(DEcov, k) for k in [250, 100, 25, 10]}
+sample = samp[250]
+
+pca = calc_pca(sample)
+ptrain = pca.transform(sample)
+ptest = pca.transform(DEcov)
+
+kpca = calc_kpca(sample, kerneltype='sigmoid', n_comp=30)
+ktrain = pca.transform(sample)
+ktest = pca.transform(DEcov)
+
+km1 = KMeans(5)
+km1.fit(train)
+Lk = km1.predict(test)
+
+gmm = calc_gmm(train, 5, 'full')
+Lg = gmm.predict(test)
+
+mu, clust = find_centers(ktrain, 5)
+Lk = classify(ktest, mu)
+
+show_compare(Lk)
+
+def show_compare(L):
+  AB = [[0 for a in range(5)] for B in range(5)]
+  D = len(L) // 4125
+  try:
+    for i, l in enumerate(L):
+      AB[l][min(int(lab[i//D]), len(lab))] += 1
+  except IndexError as e:
+    pass  #Ignore end of list values
+  np.bincount(L)
+  for a in range(5):
+    for b in range(5):
+      print(a, b, AB[a][b])

@@ -190,54 +190,72 @@ def plot_bootstrap_graphs(bs, ts, prefix, subdir='.', samp_type=''):
   print('All Done!')
 
 # For post calc
-BURNIN = 10
-STEPSIZE=50
-obs_unif = u.lrange('label:raw:lg', 0, -1)[150000:]
-obs_bias = r.lrange('label:rms', 0, -1)[150000:]
+def all_plots():
+  BURNIN = 10
+  STEPSIZE=50
+  obs_unif = u.lrange('label:raw:sm', 0, -1)[150000:]
+  obs_bias = r.lrange('label:rms', 0, -1)[300000:]
 
-boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=False)
-bs_u = postcalc_bootstraps(boots)
-plot_bootstrap_graphs(bs_u, STEPSIZE, 'iter', 'uniform2', samp_type='UNIFORM')
+  boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=False)
+  bs_u = postcalc_bootstraps(boots)
+  plot_bootstrap_graphs(bs_u, STEPSIZE, 'iter', 'uniform2', samp_type='UNIFORM')
 
-boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=True)
-bs_u = postcalc_bootstraps(boots)
-plot_bootstrap_graphs(bs_u, STEPSIZE, 'cuml', 'uniform2', samp_type='UNIFORM')
+  boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=True)
+  bs_u = postcalc_bootstraps(boots)
+  plot_bootstrap_graphs(bs_u, STEPSIZE, 'cuml', 'uniform2', samp_type='UNIFORM')
 
-boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=False)
-bs_b = postcalc_bootstraps(boots)
-plot_bootstrap_graphs(bs_b, STEPSIZE, 'iter', 'biased1', samp_type='BIASED')
+  boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=False)
+  bs_b = postcalc_bootstraps(boots)
+  plot_bootstrap_graphs(bs_b, STEPSIZE, 'iter', 'biased1', samp_type='BIASED')
 
-boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=True)
-bs_b = postcalc_bootstraps(boots)
-plot_bootstrap_graphs(bs_b, STEPSIZE, 'cuml', 'biased1', samp_type='BIASED')
-
-
-# Live Data:
-bs_r = get_bootstrap_data(r, burnin=BURNIN)
-plot_bootstrap_graphs(bs_r, STEPSIZE, 'iter', 'biased1')
-plot_bootstrap_graphs(bs_r, STEPSIZE, 'cuml', 'biased1')
+  boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=True)
+  bs_b = postcalc_bootstraps(boots)
+  plot_bootstrap_graphs(bs_b, STEPSIZE, 'cuml', 'biased1', samp_type='BIASED')
 
 
+  # Live Data:
+  bs_r = get_bootstrap_data(r, burnin=BURNIN)
+  plot_bootstrap_graphs(bs_r, STEPSIZE, 'iter', 'biased1')
+  plot_bootstrap_graphs(bs_r, STEPSIZE, 'cuml', 'biased1')
 
 
-# Group data by originating state:
-statecv_u = [[] for i in range(5)]
-statecv_b = [[] for i in range(5)]
-for A in range(5):
-  aggu = [0 for i in range(len(bs_u['ci'][(A, 0)]))
-  aggu = [0 for i in range(len(bs_u['ci'][(A, 0)]))
-  for B in range(5):
-    for k in range(len(bs_u['ci'][(A, B)]))
-    agg[k] += bs_u['ci'][(A, B)][k] / bs_u['mn'][(A, B)][k]
-  for k in agg:
-    statecv.append(k/5)
-
-for b in ab[i*5:i*5+5]:
-  plt.plot(np.arange(len(bs_cv[b]))*(ts), len(bs_cv[b]), label=str(b))
-plt.xlabel('Total Convergence (total time in ns)')
-plt.legend()
-plt.savefig(SAVELOC + subdir+'/%s_%dns_tc_%d.png'%(prefix, ts, i))
-plt.close()
+def current_plots(slist=None, cumulative=False, STEPSIZE=10):
+  clr = ['r', 'g', 'b', 'y', 'k']
+  obs_unif = u.lrange('label:raw:sm', 0, -1)
+  obs_bias = r.lrange('label:rms', 0, -1)
+  boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=cumulative)
+  bs_u = postcalc_bootstraps(boots)
+  boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=cumulative)
+  bs_b = postcalc_bootstraps(boots)
+  # Group data by originating state:
+  statecv_u = [[] for i in range(5)]
+  statecv_b = [[] for i in range(5)]
+  for A in range(5):
+    aggu = [[] for i in range(len(bs_u['ci'][(A, 0)]))]
+    aggb = [[] for i in range(len(bs_b['ci'][(A, 0)]))]
+    for B in range(5):
+      for k in range(len(bs_u['ci'][(A, B)])):
+       aggu[k].append(bs_u['ci'][(A, B)][k] / bs_u['mn'][(A, B)][k])
+      for k in range(len(bs_b['ci'][(A, B)])):
+       aggb[k].append(bs_b['ci'][(A, B)][k] / bs_b['mn'][(A, B)][k])
+    statecv_u[A] = [sum(k)/len(k) for k in aggu]
+    statecv_b[A] = [sum(k)/len(k) for k in aggb]
+  statelist = [0, 1, 2, 3, 4] if slist is None else slist
+  for st in statelist:
+    X = statecv_u[st]
+    plt.plot(np.arange(len(X))*(STEPSIZE), X, color=clr[st], 
+      label='State '+str(st)+ ' Uniform', linestyle='-')
+  for st in statelist:
+    X = statecv_b[st]
+    plt.plot(np.arange(len(X))*(STEPSIZE), X, color=clr[st], 
+      label='State '+str(st)+ ' Biased', linestyle='--')
+  plt.title('BIASED vs UNIFORM Convergence')
+  plt.xlabel('Total Convergence (total time in ns)')
+  plt.xlim=(0, 2000)
+  plt.legend()
+  prefix = 'cuml' if cumulative else 'iter'
+  plt.savefig(SAVELOC + '%s_tc_%dns_%s.png' % (prefix, STEPSIZE, ''.join(str(i) for i in statelist)))
+  plt.close()
 
 
 
@@ -298,213 +316,3 @@ def plot_bootstraps(data, ts, prefix, subdir='.'):
     # plt.legend()
     # plt.savefig(SAVELOC + '/cuml_conv_%dns_tc_%d.png'%(ts, i))
     # plt.close()
-
-
-
-
-
-
-
-
-pipe = r.pipeline()
-for j in jobs:
-  pipe.hgetall('jc_' + j)
-
-jobdata=pipe.execute()
-
-groupbystart = {b:[] for b in ab}
-for j in jobdata:
-  if 'xid:start' not in j:
-    continue
-  try:
-    for i in range(int(j['xid:start']), int(j['xid:end'])+1):
-      groupbystart[eval(j['src_bin'])].append(obs[i])
-  except IndexError as e:
-    print('NoIdx', i)
-
-
-def byorigin(srcbin, ts, fromstate=True):
-  if fromstate:
-    sA = sB = srcbin
-  else:
-    sA, sB = srcbin
-  SAVELOC = os.environ['HOME'] + '/ddc/graph/trans/'
-  TIMESTEP = ts * OBS_PER_NS
-  stat = {b: [] for b in ab}
-  total_obs = {b: 0 for b in ab}
-  cnts = {b: 0 for b in ab}
-  total = 0
-  i = 0
-  if fromstate:
-    all_obs = []
-    for b in range(5):
-      all_obs.extend(groupbystart[srcbin, b])
-  else:
-    all_obs = groupbystart[srcbin]
-  print('Collecting data for %d Observations for %s...' % (len(all_obs), str(srcbin)))
-  exclude = set()
-  while i < len(all_obs):
-    if i > 0 and i % TIMESTEP == 0:
-      for b in ab:
-        stat[b].append(cnts[b]/total)
-      # RESET COUNT FOR SNAPSHOT
-      cnts={b: 0 for b in ab}
-      total = 0
-    A, B = eval(all_obs[i])
-    i += 1
-    if A == B:
-      continue    
-    cnts[(A, B)] += 1
-    total_obs[(A, B)] += 1
-    total += 1
-  if total > 0:
-    for b in ab:
-      stat[b].append(cnts[b]/total)
-  for b in ab:
-    if total_obs[b] == 0:
-      print('Transition from %s to %s NOT Observered' % (srcbin, b))
-      exclude.add(b)
-    if total_obs[b] < 50:
-      print('Transition from %s to %s RARELY Observered #times= %d' % (srcbin, b, total_obs[b]))
-      exclude.add(b)
-  print('Calculating Convergence...')
-  # bs = {b: bootstrap_std(stat[b]) for b in ab}
-  bs = {b: [bootstrap_std(stat[b][:i], interval=.9) for i in range(len(stat[b]))]  for b in ab}
-  bs_mn = {b: np.array([x[0] for x in bs[b]]) for b in ab}
-  bs_ci = {b: np.array([x[1] for x in bs[b]]) for b in ab}
-  bs_sd = {b: np.array([x[2] for x in bs[b]]) for b in ab}
-  bs_er = {b: np.array([x[3] for x in bs[b]]) for b in ab}
-  print('Generating graphs for source bin ', str(srcbin))
-  for b in ab:
-    if b not in exclude:
-      plt.plot(np.arange(len(bs_ci[b]))*(TIMESTEP/1000), bs_ci[b], label=str(b))
-  plt.xlabel('Conf Interval for State %s (total time in ns)' % str(srcbin))
-  plt.legend()
-  plt.savefig(SAVELOC + '/trans_%dns_ci_%d_%d.png'%(ts, sA, sB))
-  plt.close()
-  for b in ab:
-    if b not in exclude:
-      plt.plot(np.arange(len(bs_sd[b]))*(ts), (bs_ci[b]/bs_mn[b]), label=str(b))
-  plt.xlabel('Total Convergence of PDF for state %s (total time in ns)' % (str(srcbin)))
-  plt.legend()
-  plt.savefig(SAVELOC + '/trans_%dns_tc_%d_%d.png'%(ts, sA, sB))
-  plt.close()
-  for b in ab:
-    if b not in exclude:
-      plt.errorbar(np.arange(len(bs_mn[b]))*(ts), bs_mn[b], yerr=bs_er[b], label=str(b))
-  plt.xlabel('Mean PDF of Transitions out of state %s with error (total time in ns)' % str(srcbin))
-  plt.legend()
-  plt.savefig(SAVELOC + '/trans_%dns_mnerr_%d_%d.png'%(ts, sA, sB))
-  plt.close()
-  print('All Done!')
-  return bs
-
-for a in range(5):
-  z=byorigin(a, 5, True)
-
-
-for a in range(5):
-  for b in range(5):
-    z=byorigin((a, b), 5, False)
-
-
-  while i < len(groupbystart[srcbin]):
-    if i > 0 and i % TIMESTEP == 0:
-      for b in ab:
-        stat[b].append(cnts[b]/total)
-      # RESET COUNT FOR SNAPSHOT
-      if not cumulative:
-        cnts={b: 0 for b in ab}
-        total = 0
-    A, B = eval(groupbystart[srcbin][i])
-    cnts[(A, B)] += 1
-    i += 1
-    total += 1
-  if total > 0:
-    for b in ab:
-      stat[b].append(cnts[b]/total)
-  print('Calculating Convergence...')
-  bs = {b: [] for b in ab}
-  bs_all = {b: [] for b in ab}
-  for b in ab:
-    bs_all[b] = [bootstrap_std(stat[b][:i], interval=.9) for i in range(10, len(cuml[b]))]
-  bs_ci = {b: [] for b in ab}
-  bs_sd = {b: [] for b in ab}
-  bs_mn = {b: [] for b in ab}
-  bs_er = {b: [] for b in ab}
-  for b in ab:
-    bs_mn[b] = np.array([x[0] for x in bs_all[b]])
-    bs_ci[b] = np.array([x[1] for x in bs_all[b]])
-    bs_sd[b] = np.array([x[2] for x in bs_all[b]])
-    bs_er[b] = np.array([x[3] for x in bs_all[b]])
-    # bs_cv[b] = np.array([x[3] for x in bs_all[b]])
-  title_pre = 'Cumulative ' if cumulative else 'Bootstrap '
-  for i in range(5):
-    print('Generating graphs for state ', i)
-    for b in ab[i*5:i*5+5]:
-      plt.plot(np.arange(len(bs_ci[b]))*(TIMESTEP/1000), bs_ci[b], label=str(b))
-    plt.xlabel(title_pre + 'Conf Interval (total time in ns)')
-    plt.legend()
-    plt.savefig(SAVELOC + '/conv_%s_%dns_ci_%d.png'%(title_pre[:5], ts, i))
-    plt.close()
-    # for b in ab[i*5:i*5+5]:
-    #   plt.plot(np.arange(len(bs_mn[b]))*(ts), bs_mn[b], label=str(b))
-    # plt.xlabel(title_pre + 'Mean (total time in ns)')
-    # plt.legend()
-    # plt.savefig(SAVELOC + '/conv_%s_%dns_mn_%d.png'%(title_pre[:5], ts, i))
-    # plt.close()
-    # for b in ab[i*5:i*5+5]:
-    #   plt.plot(np.arange(len(bs_sd[b]))*(ts), bs_sd[b], label=str(b))
-    # plt.xlabel(title_pre +'StdDev (total time in ns)')
-    # plt.legend()
-    # plt.savefig(SAVELOC + '/conv_%s_%dns_std_%d.png'%(title_pre[:5], ts, i))
-    # plt.close()
-    for b in ab[i*5:i*5+5]:
-      plt.plot(np.arange(len(bs_sd[b]))*(ts), (bs_ci[b]/bs_mn[b]), label=str(b))
-    plt.xlabel(title_pre +'Total Convergence (total time in ns)')
-    plt.legend()
-    plt.savefig(SAVELOC + '/conv_%s_%dns_tc_%d.png'%(title_pre[:5], ts, i))
-    plt.close()
-    for b in ab[i*5:i*5+5]:
-      plt.errorbar(np.arange(len(bs_mn[b]))*(ts), bs_mn[b], yerr=bs_er[b], label=str(b))
-    plt.xlabel(title_pre +'Mean with error bars (total time in ns)')
-    plt.legend()
-    plt.savefig(SAVELOC + '/conv_%s_%dns_mnerr_%d.png'%(title_pre[:5], ts, i))
-    plt.close()
-  print('All Done!')
-  return cuml
-
-
-
-
-
-
-
-
-
-
-
-
-bk = r.keys('boot*')
-boot = OrderedDict()
-for b in sorted(bk):
-  boot[b] = np.array(float(x) for x in r.lrange(b, 0, -1))
-
-final_pdf = {b: bootstrap_simple(boot[b]) for b in bk}
-cum_pdf = OrderedDict()
-for b in sorted(bk):
-  cum_pdf[b] = []
-  for i in range(1, len(boot[b])):
-    cum_pdf[b].append(bootstrap_simple(boot[b][:i]))
-
-cp = {i: {} for i in range(5)}
-for k, v in cum_pdf.items():
-  cp[int(k[5])][k[5:]] = v
-
-cpa = {state: {k: np.array([x[3] for x in v]) for k, v in cp[state].items()} for state in cp.keys()}
-cpb = {state: {k: np.array([x[2]-x[1] for x in v]) for k, v in cp[state].items()} for state in cp.keys()}
-
-for b in sorted(bk):
-  for 
-
-
