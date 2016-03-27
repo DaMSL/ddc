@@ -51,6 +51,8 @@ def printconvergence(data):
   for k, v in sorted(data.items()):
     print(k, np.mean([float(p[1]) for p in v]))
 
+selectNPC = lambda pc, N: 
+
 def dotgraph(X, Y, title, L=None):
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   if L is None:

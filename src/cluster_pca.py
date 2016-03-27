@@ -134,30 +134,98 @@ covar = np.array(covar)
 
 
 
-
 #### =============   PCA/KMeans for discovery Learning
+takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
 
 # For testing with DEShaw
 DEcov = np.load('../data/covar_1ns.npy')
-takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
+
+# Using Gen data
+NUMFILES = 150
+dcdlist = r.lrange('xid:filelist', 0, 1400)
+covmat = []
+fmap = []
+for i, d in enumerate(dcdlist):
+  if i % 100 == 0:
+    print('Loading file #', i)
+  traj = md.load(d, top=d.replace('dcd', 'pdb'))
+  traj.atom_slice(filt, inplace=True)
+  cov = calc_covar(traj.xyz, .2, 1, slide=.1)
+  for k in range(len(cov)):
+    fmap.append(d)
+  covmat.extend(cov)
+
+
+allpts = []
+for i, d in enumerate(files1):
+  if i % 100 == 0:
+    print('Loading file #', i)
+  traj = md.load(d, top=d.replace('dcd', 'pdb'))
+  traj.atom_slice(filt, inplace=True)
+  allpts.extend(traj.xyz)
+
+  cov = calc_covar(traj.xyz, .2, 1, slide=.1)
+  for k in range(len(cov)):
+    fmap.append(d)
+  covmat.extend(cov)
+
+
+
+
+
+np.save('biasedcov200ns', np.array(covmat))
 
 samp250 = takesample(DEcov, 250)
 samp100 = takesample(DEcov, 250)
 
 samp = {k: takesample(DEcov, k) for k in [250, 100, 25, 10]}
-sample = samp[250]
+samp = {k: takesample(np.array(allpts), k) for k in [100, 10]}
+sample = samp[100]
+test = samp[10]
 
-pca = calc_pca(sample)
-ptrain = pca.transform(sample)
-ptest = pca.transform(DEcov)
+pca1 = calc_pca(sample)
+pca1.fit(sample)
+ptrain = pca1.transform(sample)
+
+ptest = pca1.transform(test)
 
 kpca = calc_kpca(sample, kerneltype='sigmoid', n_comp=30)
 ktrain = pca.transform(sample)
-ktest = pca.transform(DEcov)
+ktest = pca.transform(test)
 
 km1 = KMeans(5)
 km1.fit(train)
 Lk = km1.predict(test)
+
+km = [KMeans(i) for i in range(5, 20)]
+
+for k in km:
+  k.fit(samp)
+  k.predict(samp)
+
+var = OrderedDict()
+for k in km:
+  N_k = np.bincount(k.labels_)
+  V_k = np.zeros(k.n_clusters)
+  for i, pt in enumerate(samp):
+    clust = k.labels_[i]
+    V_k[clust] += LA.norm(pt-k.cluster_centers_[clust])
+  var[k.n_clusters] = np.sum(V_k)
+
+X = []
+Y = []
+# for k, v in var.items():
+for k in km:
+  X.append(k.n_clusters)
+  Y.append(k.inertia_)
+
+plt.plot(X, Y)
+plt.savefig('elbow.png')
+plt.close()
+
+
+
+V_k = [np.sum([ for center in ]) / 
 
 gmm = calc_gmm(train, 5, 'full')
 Lg = gmm.predict(test)

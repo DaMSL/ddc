@@ -76,20 +76,19 @@ def calc_covar(xyz, size_ns, framestep, slide=None):
   nDIM = np.prod(xyz.shape[1:])
   winsize = int((size_ns * 1000) // framestep)  # conv to ps and divide by frame step
   shift = winsize if slide is None else int(slide * 1000)
-  n_windows = ((len(xyz) * framestep) / shift) + 1
+  n_windows = math.floor((len(xyz) * framestep) / shift)
   variance = np.zeros(shape=(n_windows, nDIM), dtype=np.float32)
+  variance = []
   # st = dt.datetime.now()
-  for i in range(0, len(xyz), winsize):
+  for i in range(0, len(xyz), shift):
     if i+winsize > len(xyz):
       break
-    if i % 10000 == 0:
-      print ("Calc: ", i)
     cm = np.cov(xyz[i:i+winsize].reshape(winsize, nDIM).T)
-    variance[math.floor(i//winsize)] = cm.diagonal()
+    variance.append(cm.diagonal())
   # print((dt.datetime.now()-st).total_seconds())
   # lab = '%dns'%size_ns if size_ns > 1 else '%dps' % int(size_ns*1000)
   # np.save(HOME+'/ddc/data/covar_%s'%lab, variance)
-  return variance
+  return np.array(variance)
 
 
 
@@ -125,4 +124,20 @@ def filter_heavy(source, pdbfile=None):
   # traj.superpose(ref, frame=0)
   return traj
 
+
+def filter_alpha(source, pdbfile=None):
+  """
+  Apply heavy atom filter. If no PDB file is provided, assume it is
+  saved along side the dcd file, but with .pdb extension
+  """
+  if isinstance(source, md.Trajectory):
+    traj = source
+  else:
+    dcdfile = source
+    traj = load_trajectory(dcdfile, pdbfile)
+
+  filt = traj.top.select_atom_indices(selection='alpha')
+  traj.atom_slice(filt, inplace=True)
+  
+  return traj
 
