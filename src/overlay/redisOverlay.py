@@ -256,6 +256,10 @@ class RedisClient(redis.StrictRedis):
         logging.warning('[Redis Client] Current Master is busy. It may be trying to shutdown. Wait and try again')
         time.sleep(3)
         continue
+      except (redis.redis.exceptions.BusyLoadingError) as e:
+        logging.warning('[Redis Client] Current Master is starting up. Standing by.....')
+        time.sleep(10)
+        continue
       except (redis.ConnectionError, redis.TimeoutError) as e:
         logging.warning('[Redis Client] Error connecting to %s', str(self.host))
       logging.info('[Redis Client] Rechecking lock')
@@ -478,6 +482,38 @@ class RedisClient(redis.StrictRedis):
     arr = np.fromstring(elm['data'], dtype=header['dtype'])
     return arr.reshape(header['shape'])
 
+  def lock_acquire(self, key, time=30):
+    """ Acquires a lock for the given key (concurrency control)
+    """
+    timeout = int(time * 1.5)
+
+    while True:
+      lock = self.get(key + ':LOCK')
+      if lock is None or int(lock) == 0:
+        logging.info('Acquiring Lock for %s', key)
+        unique_key = getUID()
+        self.set(key + ':LOCK', unique_key)
+        self.expire(key + ':LOCK', 30)
+        return unique_key   # Return unique key for this process
+      timeout -= 1
+      if timeout == 0:
+        logging.warning('Timedout waiting to aqcuire lock on %s', key)
+        break
+      logging.info('Waiting to acquire Lock for %s.....', key)
+      time.sleep(3)
+    return None
+
+  def lock_release(self, key, passcode):
+    """ Releases a lock for the given key (concurrency control)
+    """
+    lock = self.get(key + ':LOCK')
+    if lock == passcode:
+      self.delete(key + ':LOCK')
+      logging.info('Lock relased for %s', key)
+      return True
+    else:
+      logging.info('Wrong process tried to release lock on %s', key)
+      return False
 
 
 def test_redismaster():

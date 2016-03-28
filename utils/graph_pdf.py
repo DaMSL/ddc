@@ -219,10 +219,12 @@ def all_plots():
   plot_bootstrap_graphs(bs_r, STEPSIZE, 'cuml', 'biased1')
 
 
-def current_plots(slist=None, cumulative=False, STEPSIZE=10):
+def current_plots(slist=None, cumulative=False, STEPSIZE=10, obs_unif=None, obs_bias=None):
   clr = ['r', 'g', 'b', 'y', 'k']
-  obs_unif = u.lrange('label:raw:sm', 0, -1)
-  obs_bias = r.lrange('label:rms', 0, -1)
+  if obs_unif is None:
+    obs_unif = u.lrange('label:raw:lg', 0, -1)
+  if obs_bias is None:
+    obs_bias = r.lrange('label:rms', 0, -1)
   boots = postgen_bootstraps(obs_unif, STEPSIZE, cumulative=cumulative)
   bs_u = postcalc_bootstraps(boots)
   boots = postgen_bootstraps(obs_bias, STEPSIZE, cumulative=cumulative)
@@ -251,11 +253,12 @@ def current_plots(slist=None, cumulative=False, STEPSIZE=10):
       label='State '+str(st)+ ' Biased', linestyle='--')
   plt.title('BIASED vs UNIFORM Convergence')
   plt.xlabel('Total Convergence (total time in ns)')
-  plt.xlim=(0, 2000)
+  plt.xlim=(0, 3000)
   plt.legend()
   prefix = 'cuml' if cumulative else 'iter'
-  plt.savefig(SAVELOC + '%s_tc_%dns_%s.png' % (prefix, STEPSIZE, ''.join(str(i) for i in statelist)))
+  plt.savefig(SAVELOC + '%s_tc_%dns_%s_C.png' % (prefix, STEPSIZE, ''.join(str(i) for i in statelist)))
   plt.close()
+  return statecv_u, statecv_b
 
 
 

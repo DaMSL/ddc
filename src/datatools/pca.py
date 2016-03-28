@@ -15,6 +15,7 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
 def calc_pca(xyz, title=None):
+  print(xyz.shape)
   n_dim = np.prod(xyz.shape[1:])
   pca = PCA(n_components = .99)
   pca.fit(xyz.reshape(len(xyz), n_dim))
@@ -50,7 +51,7 @@ def calc_kpca(xyz, kerneltype=None, title=None, n_comp=None):
     return result[0]
 
 
-def calc_ipca(xyz, N, title=None):
+def calc_ipca(r, key, xyz, N, title=None):
   n_dim = np.prod(xyz.shape[1:])
   ipca = IncrementalPCA()
   ipca.fit(xyz.reshape(len(xyz), n_dim))

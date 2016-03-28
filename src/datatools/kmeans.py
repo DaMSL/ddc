@@ -36,6 +36,7 @@ def find_centers(X, K):
     # Initialize to K random centers
     oldmu = random.sample(X.tolist(), K)
     mu = random.sample(X.tolist(), K)
+    clusters = None
     print('Finding Centers... k=', K)
     while not has_converged(mu, oldmu):
         oldmu = mu
@@ -54,6 +55,26 @@ def classify(data, centroids):
         proximity = np.argsort(distances)
         labels.append(proximity[0])
     return labels
+
+def classify_score (data, centroids):
+    labels = []
+    scores = []
+    # A Score is a ratio of the avg distance from all other clusters
+    #  to a point's assigned cluster
+    #  A higher score indicates a closer affinity to the cluster
+    for pt in data:
+        distances = np.array([LA.norm(pt-c) for c in centroids])
+        proximity = np.argsort(distances)
+        labels.append(proximity[0])
+        N = len(centroids)
+        if distances[proximity[0]] > 0:
+            # Value Capped at # of centroids
+            pt_score = min(N, np.mean(distances[proximity[1:]]) / distances[proximity[0]])
+        else:
+            pt_score = N
+        scores.append(pt_score)
+    return labels, scores
+
 
 # https://datasciencelab.wordpress.com/2013/12/27/finding-the-k-in-k-means-clustering/
 def Wk(mu, clusters):

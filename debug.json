@@ -35,16 +35,18 @@
         "ctlSplitParam": 1,
         "gcDelay": 300,
         "simDelay": 60,
-        "simSplitParam": 5,
+        "simSplitParam": 1,
         "sim_conf_template": "templates/sim.conf.temp",
         "timestep": 0,
         "terminate": "no",
         "numLabels": 5,
-        "runtime": 100000,
+        "runtime": 200000,
 	"dcdfreq": 500,
-    "numresources": 50,
+    "numresources": 20,
     "backproj:approxlimit": 50,
-	"ctlIndexHead": -1
+    "ctlBatchSize_min": 800,
+    "ctlBatchSize_max": 1000,
+	"ctlIndexHead": 0
 
     },
     "settings": {
@@ -64,8 +66,8 @@
         "max_num_new_jc": 10,
         "monitor_wait_delay": 30,
         "nodes": 1,
-        "partition": "debug",
-	"rmsd_theta": 0.25,
+        "partition": "shared",
+	"rmsd_theta": 0.33,
         "raw_archive": "/home-1/bring4@jhu.edu/work/bpti",
         "workdir": "/home-1/bring4@jhu.edu/work"
     }

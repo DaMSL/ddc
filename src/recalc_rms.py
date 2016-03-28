@@ -10,7 +10,7 @@ from datatools.datareduce import *
 from  mdtools.deshaw import *
 from datatools.rmsd import *
 
-HOST = 'bigmem0016'
+HOST = 'bigmem0003'
 RAW_ARCHIVE = os.getenv('HOME') + '/work/bpti'
 PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
 topo = md.load(PDB_PROT)
@@ -22,12 +22,7 @@ lab = loadlabels_aslist()
 r = redis.StrictRedis(host=HOST, decode_responses=True)
 filelist = r.lrange('xid:filelist', 0, -1)
 dcent = np.load(home+'/ddc/data/gen-alpha-cartesian-centroid.npy')
-r.delete('label:raw')
-for size in ['sm', 'md', 'lg']:
-  r.delete('label:raw:%s'%size)
-
-st = dt.datetime.now()
-pipe = r.pipeline()
+# r.delete('label:raw')
 
 theta = {'sm':.05, 'md':.25, 'lg':.33}
 ab = [(A, B) for A in range(5) for B in range(5)]
@@ -37,6 +32,11 @@ topoa = topo.atom_slice(FILTER['alpha'])
 nwidth = 10
 noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
 cw = [.92, .94, .96, .99, .99]
+
+for size in ['sm', 'md', 'lg']:
+  r.delete('label:raw:%s'%size)
+st = dt.datetime.now()
+pipe = r.pipeline()
 
 
 missing = 0
@@ -90,5 +90,24 @@ for i in sorted(ab):
   print(i, '%7d' % raw_label['sm'][i], '%7d' % raw_label['sm'][i], '%7d' % raw_label['lg'][i])
 
 
+pipe = r.pipeline()
+for i in rms_w:
+  prox = np.argsort(i)
+  A = prox[0]
+  B = prox[1]
+  if (i[B] - i[A]) > .33:
+    obs_w.append((A, A))
+    pipe.rpush('label:raw:lg', (A, A))
+  else:
+    obs_w.append((A, B))
+    pipe.rpush('label:raw:lg', (A, B))
+
+pipe.execute()
+
+cnt_w = {b:0 for b in ab}
+for i in obs_w:
+  cnt_w[i] += 1
 
 
+for b in sorted(ab):
+  print(b, '%8d'%cnt_raw[b], '%8d'%cnt_w[b])

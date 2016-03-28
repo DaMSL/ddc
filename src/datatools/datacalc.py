@@ -107,7 +107,7 @@ def gen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
       for b in ab:
         A, B = b
         if total[A] == 0:
-          logging.info('Bootstrap gen: No DATA for state %d  at ns interval:  %d' % (A, i/OBS_PER_NS))
+          logging.info('Bootstrap gen: No DATA for state %d  at interval:  %d' % (A, i/1000))
         else:
           bootstrap[b].append(cnts[b]/total[A])
       if not cumulative:
@@ -122,7 +122,7 @@ def gen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False):
   for b in ab:
     A, B = b
     if total[A] == 0:
-      logging.info('Bootstrap gen: No DATA for state %d  at ns interval:  %d' % (A, i/OBS_PER_NS))
+      logging.info('Bootstrap gen: No DATA for state %d  at interval:  %d' % (A, i/1000))
     else:
       bootstrap[b].append(cnts[b]/total[A])
   return bootstrap

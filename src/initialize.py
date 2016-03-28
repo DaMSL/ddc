@@ -177,7 +177,7 @@ def labelDEShaw_rmsd():
   Returns frame-by-frame labels  (used to seed jobs)
   """
   settings = systemsettings()
-  logging.info('Loading Pre-Calc RMSD Distances from: %s   (Going to Cache it at label:deshaw)','bpti-rmsd-alpha-dspace.npy')
+  logging.info('Loading Pre-Calc RMSD Distances from: %s   (For initial seeding)','bpti-rmsd-alpha-dspace.npy')
   rms = np.load('bpti-rmsd-alpha-dspace.npy')
   prox = np.array([np.argsort(i) for i in rms])
   theta = 0.25
@@ -557,7 +557,7 @@ if __name__ == '__main__':
     settings.envSetup()
     initializecatalog(catalog)
 
-  if args.initpca or args.all:
+  if args.initpca:
     load_PCA_Subspace(catalog)
     # pcaVectorfile = 'data/cpca_pc3.npy'
     # logging.info("Loading cPCA Vectors from %s", pcaVectorfile)

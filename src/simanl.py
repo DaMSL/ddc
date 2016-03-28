@@ -7,6 +7,7 @@ import shutil
 import time
 import fcntl
 import logging
+import math
 from collections import namedtuple, deque
 
 
@@ -24,7 +25,8 @@ from macro.macrothread import macrothread
 import mdtools.deshaw as deshaw
 import datatools.datareduce as dr
 from datatools.rmsd import calc_rmsd
-from datatools.pca import project_pca
+from datatools.pca import project_pca, calc_pca
+from datatools.approx import ReservoirSample
 from overlay.redisOverlay import RedisClient
 from overlay.alluxioOverlay import AlluxioClient
 
@@ -141,6 +143,10 @@ class simulationJob(macrothread):
     logFile = conFile.replace('conf', 'log')      # log in same place as config file
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
     USE_SHM = True
+
+    # Load common settings:
+    # Framesize in ps
+    frame_size = (settings.DCDFREQ * settings.SIM_STEP_SIZE) // 1000
 
 
   # EXECUTE SIMULATION ---------------------------------------------------------
@@ -277,15 +283,13 @@ class simulationJob(macrothread):
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
   # 2. Update Catalog with HD points (TODO: cache this)
-      #  TODO: Pipeline all
-      # off-by-1: append list returns size (not inserted index)
-      #  ADD index to catalog
     file_idx = self.catalog.append({'xid:filelist': [job['dcd']]})[0]
     delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
-    global_idx = self.catalog.append({'xid:reference': delta_xid_index})
-    global_xid_index_slice = [x-1 for x in global_idx]
-    self.data[key]['xid:start'] = global_xid_index_slice[0]
-    self.data[key]['xid:end'] = global_xid_index_slice[-1]
+    global_idx_recv = self.catalog.append({'xid:reference': delta_xid_index})
+    global_index = [x-1 for x in global_idx_recv]
+    # Note: Pipelined insertions should return contiguous set of index points
+    self.data[key]['xid:start'] = global_index[0]
+    self.data[key]['xid:end'] = global_index[-1]
     bench.mark('Indx_Update')
 
 
@@ -295,12 +299,8 @@ class simulationJob(macrothread):
     mylogical_seqnum = str(self.seqNumFromID())
     self.catalog.hset('anl_sequence', job['name'], mylogical_seqnum)
 
-    # INSERT NEW points here into cache/archive .. OR JUS LET CACHE DEAL WITH IT
-    logging.debug(" Loading new conformations into cache....TODO: NEED CACHE LOC")
-    # for i in range(traj.n_frames):
-    #   cache.insert(global_xid_index_slice[i], traj.xyz[i])
-
-  # 4a. Subspace Calcuation: RMS
+  #  DIMENSIONALITY REDUCTION --------------------------------------------------
+  # 4-A. Subspace Calcuation: RMS using Alpha-Filter
     #------ A:  RMSD-ALPHA  ------------------
       #     S_A = rmslist
     logging.debug("3. RMS Calculation")
@@ -321,7 +321,7 @@ class simulationJob(macrothread):
 
     numLabels = len(self.data['centroid'])
     numConf = len(traj.xyz)
-    rmsraw = calc_rmsd(alpha, self.data['centroid'])
+    rmsraw = calc_rmsd(alpha, self.data['centroid'], weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', numConf, numLabels)
 
     # 4. Account for noise
@@ -339,28 +339,17 @@ class simulationJob(macrothread):
       logging.debug("  %s", str(np.argsort(i)))
 
     # 3. Append new points into the data store. 
-    #    r_idx is the returned list of indices for each new RMS point
-    #  TODO: DECIDE on retaining a Reservoir Sample
-    #    for each bin OR to just cache all points (per strata)
-    #  Reservoir Sampliing is Stratified by subspaceHash
-    # logging.debug('Creating reservoir Sample')
-    # reservoirSampling(self.catalog, traj.xyz, rIdx, subspaceHash, 
-    #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
-    #     'rms', lambda key: '%d_%d' % key)
-    # r_idx = []
     pipe = self.catalog.pipeline()
     for si in rmslist:
       pipe.rpush('subspace:rms', bytes(si))
     idxlist = pipe.execute()
-    # for i in idxlist:
-    #   r_idx.append(int(i) - 1)
-
-    logging.debug("R_Index Created (rms).")
 
     # 4. Apply Heuristics Labeling
     logging.debug('Applying Labeling Heuristic')
     rmslabel = []
-
+    binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
+    labeled_points = {b: [] for b in binlist}
+    groupbystate = [[] for i in range(numLabels)]
     pipe = self.catalog.pipeline()
     for i, rms in enumerate(rmslist):
       #  Sort RMSD by proximity & set state A as nearest state's centroid
@@ -390,32 +379,146 @@ class simulationJob(macrothread):
       # Add this index to the set of indices for this respective label
       #  TODO: Should we evict if binsize is too big???
       logging.debug('Label for observation #%3d: %s', i, str((A, B)))
-      pipe.rpush('varbin:rms:%d_%d' % (A, B), global_xid_index_slice[i])
+      pipe.rpush('varbin:rms:%d_%d' % (A, B), global_index[i])
+      labeled_points[(A, B)].append(i)
+
+      # Group high-dim point by state
+      # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
+      groupbystate[A].append(alpha.xyz[i])
 
     pipe.execute()
     # Update Catalog
     idxcheck = self.catalog.append({'label:rms': rmslabel})
+
     bench.mark('RMS')
+    logging.info('Labeled the following by State:')
+    for A in range(numLabels):
+      logging.info('State %d ->  %d', A, len(groupbystate[A]))
 
-
-  # 5b. Subspace Calcuation: PCA
-  #------ B:  PCA  -----------------
+  # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Alpha Filter
+  #------ B:  Covariance Matrix  -----------------
     # 1. Project Pt to PC's for each conform (top 3 PC's)
-    logging.debug("Using following PCA Vectors: %s", str(self.data['pcaVectors'].shape))
 
-    pc_proj = project_pca(alpha.xyz, self.data['pcaVectors'], settings.PCA_NUMPC)
-
-    # pcalist = datareduce.PCA(traj.xyz, self.data['pcaVectors'], numpc=3)
-
-    # 2. Apend subspace in catalog
-    p_idx = []
+    # Calculate Covariance over 200 ps Windows sliding every 100ps
+    #  These could be user influenced...
+    WIN_SIZE = .2
+    SLIDE_AMT = .1
+    logging.debug("Calucation Covariance over trajeectory. frame_size = %f, WINSIZE = %d, Slide = %d", 
+      frame_size, round(WIN_SIZE*frame_size), round(SLIDE_AMT *frame_size))
+    covar = dr.calc_covar(traj.xyz, WIN_SIZE, frame_size, slide=SLIDE_AMT)
+    logging.debug("Calcualted %d covariance matrices. Storing variances", len(covar)) 
     pipe = self.catalog.pipeline()
-    for si in pc_proj:
-      pipe.rpush('subspace:pca', bytes(si))
+    for i, si in enumerate(covar):
+      local_index = int(i * frame_size * SLIDE_AMT)
+      pipe.rpush('subspace:covar:pts', bytes(si))
+      pipe.rpush('subspace:covar:xid', global_index[local_index])
+      pipe.rpush('subspace:covar:fidx', (file_idx, local_index))
     idxlist = pipe.execute()
-    for i in idxlist:
-      p_idx.append(int(i) - 1)
-    logging.debug("P_Index Created (pca) for delta_S_pca")
+
+
+  # 4-C. Subspace Calcuation: PCA using Covariance Matrix, 200ns windows, Alpha Filter
+  #------ C:  Incrementatl PCA by state  -----------------
+  #  Update Incremental PCA Vectors for each state with new data
+
+    # TODO:  This will eventually get moved into a User process macrothread 
+    #   which will set in between analysis and controller. 
+    # For now, we're recalculating using a lock
+
+    # Check if vectors need to be recalculated
+    # Connect to reservoir samples
+    # TODO: Catalog or Cache?
+    reservoir = ReservoirSample('rms', self.catalog)
+    STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
+    for A in range(numLabels):
+      pc_vectors = self.catalog.loadNPArray('subspace:pca:vectors:%d' % A)
+      logging.info('PCA:  Checking if current vectors for state %d are out of date', A)
+      rsize = reservoir.getsize(A)
+      changelist = self.catalog.lrange('subspace:pca:updates:%d' % A, 0, -1)
+      changeamt = np.sum([int(x) for x in changelist])
+      logging.info('   rsize = %s   changeamt = %d ', rsize, changeamt)
+
+      # CHECK if PCA needs to be updated (??? Should we delete all old PC data???)
+      #  Thought is that this will change early on, but should not change after some time
+      #    and this stabilize the PC Vectors for each state (considering the RMSD centroids
+      #    are not going to change)
+      if pc_vectors is None or changeamt > rsize * STALENESS_FACTOR:
+        logging.info('PCA Vectors are old, checking if out of tolerance')
+        # PCA Vectors are out of date for this bin. Update the vectors....
+        sampledata = np.array(reservoir.get(A))
+        logging.debug('SampleData:  %s', str(sampledata.shape))
+        newdata = np.array(groupbystate[A])
+        logging.debug('NewData:  %s', str(newdata.shape))
+        if len(sampledata) + len(newdata) < 2:
+          logging.info("Not enough data to update PC's. Skipping")
+          continue
+        # Include recent data
+        sys.exit(0)
+        sampledata.extend(groupbystate[A])
+        logging.info('   Performing PCA for state %d using traindata of size %d', A, len(sampledata))
+        pca = calc_pca(np.array(sampledata))
+        new_vect = pca.components_
+        if pc_vectors is not None:
+          logging.info('# Comp (99%% of PC Coverage):  Before = %d    After = %d', len(pc_vectors), len(new_vect))
+          logging.info('Delta of top 90%%:')
+          coverage = 0.
+          delta = []
+          for i, variance in enumerate(pca.explained_variance_ratio_):
+            delta.append(LA.norm(pc_vectors[i] - new_vect[i]))
+            coverage += variance
+            if coverage > .9:
+              break
+          logging.info('Variance by PC:')
+          for i, d in enumerate(delta):
+            logging.info(' PC #  %d   var= %6.3f', i, d)
+          logging.info('Total delta is %f', np.sum(delta))
+          logging.info('NOTE: This is a check for PCA Change. TODO: Det threshold to compare delta with')
+
+        lock = self.catalog.lock_acquire('subspace:pca:vectors:%d' % A)
+        if lock is None:
+          logging.info('Could not lock the PC Vectors for State %d. Not updating', A)
+        else:
+          self.catalog.delete('subspace:pca:vectors:%d' % A)
+          self.catalog.storeNPArray('subspace:pca:vectors:%d' % A, new_vect)
+          pc_vectors = new_vect
+
+          # Reset change log
+          self.catalog.ltrim('subspace:pca:updates:%d' % A, len(changelist), -1)
+
+      else:
+        logging.info('  PCA Vectors are fresh -- no need to change them')
+
+
+      logging.debug('alpha %s     pc_v %s    numpc %s', 
+        str(alpha.xyz.shape), str(pc_vectors), str(settings.PCA_NUMPC))
+      #  TODO:  Should we delete old points and re-project reservoir??
+      #   Or keep it and apply decaying factor to the date
+      pc_proj = project_pca(groupbystate[A], pc_vectors, settings.PCA_NUMPC)
+      # 2. Apend subspace in catalog
+      p_idx = []
+      pipe = self.catalog.pipeline()
+      for si in pc_proj:
+        pipe.rpush('subspace:pca:%d' % A, bytes(si))
+      idxlist = pipe.execute()
+      for i in idxlist:
+        p_idx.append(int(i) - 1)
+      logging.debug("P_Index Created (pca) for delta_S_pca")
+
+
+    # 4. Update reservoir sample
+    logging.debug('Updating reservoir Sample')
+    num_inserted = {A: 0 for A in range(numLabels)}
+    for A, ptlist in enumerate(groupbystate):
+      if len(ptlist) == 0:
+        continue
+      num_inserted[A] = reservoir.insert(A, ptlist)
+
+    pipe = self.catalog.pipeline()
+    for A, num in enumerate(num_inserted):
+      if num > 0:
+        pipe.rpush('subspace:pca:updates:%d' % A, num)
+    pipe.execute()
+
+
 
     # 3. Performing tiling over subspace
     #   For Now: Load entire tree into local memory

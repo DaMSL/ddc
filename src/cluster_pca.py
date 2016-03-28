@@ -142,14 +142,16 @@ DEcov = np.load('../data/covar_1ns.npy')
 
 # Using Gen data
 NUMFILES = 150
-dcdlist = r.lrange('xid:filelist', 0, 1400)
+dcdlist = r.lrange('xid:filelist', 0, 10)
 covmat = []
 fmap = []
+trajlist = []
 for i, d in enumerate(dcdlist):
   if i % 100 == 0:
     print('Loading file #', i)
   traj = md.load(d, top=d.replace('dcd', 'pdb'))
   traj.atom_slice(filt, inplace=True)
+  trajlist.append(traj)
   cov = calc_covar(traj.xyz, .2, 1, slide=.1)
   for k in range(len(cov)):
     fmap.append(d)
@@ -169,6 +171,9 @@ for i, d in enumerate(files1):
     fmap.append(d)
   covmat.extend(cov)
 
+
+
+# Incremental PCA:
 
 
 
