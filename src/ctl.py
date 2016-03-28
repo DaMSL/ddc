@@ -23,7 +23,7 @@ import datatools.datareduce as datareduce
 import datatools.datacalc as datacalc
 import mdtools.deshaw as deshaw
 import datatools.kmeans as KM
-from datatools.pca import calc_pca
+from datatools.pca import calc_pca, project_pca
 from datatools.approx import ReservoirSample
 from mdtools.simtool import generateNewJC
 from overlay.redisOverlay import RedisClient
@@ -259,7 +259,7 @@ class controlJob(macrothread):
       logging.debug('--------  BACK PROJECTION:  %d POINTS ---', len(index_list))
       bench = microbench()
 
-      reverse_index = {index_list[i]: i for i in range(len(index_list))}
+      # reverse_index = {index_list[i]: i for i in range(len(index_list))}
 
       source_points = []
       cache_miss = []
@@ -273,20 +273,17 @@ class controlJob(macrothread):
       historical_framelist = []
       pipe = self.catalog.pipeline()
       for idx in index_list:
-        logging.debug('[BP] Dereferencing Index: %s', str(idx))
         # Negation indicates  historical index:
         index = int(idx)
         if index < 0:
           file_index, frame = deshaw.refFromIndex(-idx)
           historical_framelist.append((file_index, frame))
-          logging.debug('[BP] DEShaw:  file #%d,   frame#%d', file_index, frame)
+          # logging.debug('[BP] DEShaw:  file #%d,   frame#%d', file_index, frame)
         else:
           pipe.lindex('xid:reference', index)
 
       # Load higher dim point indices from catalog
       generated_framelist = pipe.execute()
-      for i in generated_framelist:
-        logging.debug('[BP] De-Referenced Gen Frame: %s', str(i))
 
       bench.mark('LD:Redis:xidlist')
 
@@ -325,9 +322,6 @@ class controlJob(macrothread):
           generated_frameMask[key] = groupbyFileIdx[file_index]
           generated_filemap[key] = filename
       bench.mark('GroupBy:Files')
-
-      for k, v in generated_frameMask.items():
-        logging.debug('[BP] GenData lookups: %s, %s', str(k), str(v))
 
       #  Ensure the cache is alive an connected
       self.cacheclient.connect()
@@ -790,7 +784,7 @@ class controlJob(macrothread):
           # Load Vectors
           logging.info('Loading subspace and vectors for state %d', state)
           pca_vect = self.catalog.loadNPArray('subspace:pca:vectors:%d' % state)
-          datapts_raw = self.catalog.lrange('subspace:covar:%d' % state, 0, -1)
+          datapts_raw = self.catalog.lrange('subspace:pca:%d' % state, 0, -1)
           data = np.array([np.fromstring(x) for x in datapts_raw])
           if len(data) == 0:
             logging.info('No data Available for state %d (going to another state (TODO))', state)
@@ -799,13 +793,13 @@ class controlJob(macrothread):
 
           # Back-project all points to higher dimension <- as consolidatd trajectory
           for k in range(len(cov_select)):
-            if len(k) == 0:
+            if len(cov_select[k]) == 0:
               logging.info("NOT selecting cluster state # %d from covariance KMeans clusters", k)
             else:
-              source_cov = self.backProjection(cov_select)
+              source_cov = self.backProjection(cov_select[k])
               # TODO: Weight Preservation when back-projecting
               alpha = datareduce.filter_alpha(source_cov)
-              logging.debug('(BACK)PROJECT %d Covariance points to HD space: %s', len(cov_select), str(traj))
+              logging.debug('(BACK)PROJECT %d Covariance points to HD space: %s', len(cov_select[k]), str(alpha))
               bench.mark('BackProject:COV_To_HD_%d' % k)
 
               # 2. project into PCA space for this state
@@ -819,16 +813,14 @@ class controlJob(macrothread):
               # Initiaze the set of "projected" hcubes in B
               # Project every selected point into PCA and then group by hcube
               for i in range(len(cov_proj_pca)):
-                hcube = hcube_tree.project(cov_proj_pca[i], maxdepth=8)
-                if i % 100 == 0:
-                  logging.debug('PROJECTING %d  ---->  %s', cov_proj_pca[i], str(hcube))
+                hcube = kdtree.project(cov_proj_pca[i], probedepth=8)
                 if hcube not in hcube_B:
                   hcube_B[hcube] = []
                   hcube_B_wgt[hcube] = []
                 # TODO: Preserve per-point weight and use that here
                 hcube_B[hcube].append(i)
                 hcube_B_wgt[hcube].append(cov_clust_wgts[k])
-            logging.debug('Projected %d points into PCA.', len(cov_proj_pca))
+              logging.debug('Projected %d points into PCA.', len(cov_proj_pca))
 
           # FOR NOW: calc aggegrate average Wght for newly projected HCubes
           wgt_B = {k: (1-np.mean(v)) for k, v in hcube_B_wgt.items()}
@@ -845,11 +837,9 @@ class controlJob(macrothread):
         # Get all original HCubes from A for "overlapping" hcubes
         hcube_A = {}
         for k in hcube_list:
-          hcube_A[k] = hcube_tree.retrieve(k)
-        hcube_sizes = [len(k) for k in hcube_A.keys()]
-        low_dim = max(hcube_sizes) + 1
-        total = sum(hcube_sizes)
-        wgt_A = {k: len(hcube_A[k])/(total*(low_dim - len(k))) for k in hcube_list}
+          hcube_A[k] = kdtree.retrieve(k)
+        total = sum([len(v) for k,v in hcube_A.items()])
+        wgt_A = {k: len(v)/total for k, v in hcube_A.items()}
 
         #  GAMMA FUNCTION EXPR # 1 & 2
         # gamma = lambda a, b : a * b
@@ -870,24 +860,39 @@ class controlJob(macrothread):
         logging.info('Resultant HCube Data (for bootstrap)')
         # Get current iteration number
         iteration = int(self.catalog.incr('boot:qry1:count'))
+
+        # Ensure all currently projected HCubes have same # of observations
         pipe = self.catalog.pipeline()
+        for k in hcube_list:
+          pipe.llen('boot:qry1:conv:%s' % k)
+        conv_sizes = pipe.execute()
+
+        pipe = self.catalog.pipeline()
+        # Pad with zeroes (for previous non-projected points) as needed
+        for i, k in enumerate(hcube_list):
+          for j in range(conv_sizes[i], iteration-1):
+            pipe.rpush('boot:qry1:conv:%s' % k, 0)
+
+        # Then push new data:
         for k, v in comb_wgt.items():
           norm_wgt = (v/total) 
-          logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)  (ubrellaW=%0.3f)', 
-            k, len(hcube_A[k]), wgt_A[k], len(hcube_B[k]), wgt_B[k], comb_wgt[k], umbrella[k])
-          pipe.rset('boot:qry1:conv:%s' % k, iteration, norm_wgt)
+          logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)', 
+            k, len(hcube_A[k]), wgt_A[k], len(hcube_B[k]), wgt_B[k], comb_wgt[k])
+          pipe.rpush('boot:qry1:conv:%s' % k, iteration, norm_wgt)
+          # pipe.hset('boot:qry1:conv:%s' % k, iteration, norm_wgt)
         pipe.execute()
 
         convergence = {}
         logging.info('Calculating Convergence for %d keys ', len(hcube_B.keys()))
         for k in hcube_list:
-          convdata = self.catalog.hgetall('boot:qry1:conv:%s' % k)
-          bootstrap = []
-          for i in range(iteration):
-            if i not in convdata:
-              bootstrap.append(0)
-            else:
-              bootstrap.append(float(convdata[str(i)]))
+          # convdata = self.catalog.hgetall('boot:qry1:conv:%s' % k)
+          convdata = self.catalog.lrange('boot:qry1:conv:%s' % k, 0, -1)
+          bootstrap = [float(i) for i in convdata]
+          # for i in range(iteration):
+          #   if i not in convdata:
+          #     bootstrap.append(0)
+          #   else:
+          #     bootstrap.append(float(convdata[str(i)]))
           if iteration > 1:
             mean, CI, stddev, err = datacalc.bootstrap_std(bootstrap)
             convergence[k] = CI / mean  # Total Convergence calculation per key
@@ -895,16 +900,16 @@ class controlJob(macrothread):
             convergence[k] = 1.0
           logging.info('##CONV %0d %10s %.4f', iteration, k, convergence[k])
 
-        conv_max = max(convergence.values())
-        conv_min = min(convergence.values())
-        conv_mean = np.mean(convergence.values())
-        total_convegence = min(1.0, conv_mean)
+        tot_conv_data = np.array(list(convergence.values()))
+        conv_max = np.max(tot_conv_data)
+        conv_min = np.min(tot_conv_data)
+        conv_mean = np.mean(tot_conv_data)
+        total_convergence = min(1.0, conv_mean)
         logging.info('User Total Convergence for QRY1 = %.4f', total_convergence)
-
-        logging.info('  User convergence vals: min=%.4f, max=%.4f, mean=%.4f', total_convergence)
+        logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
 
         # PUSH User's Total Convergence here
-        self.catalog.rpush('boot:qry1:TOTAL', total_convegence)
+        self.catalog.rpush('boot:qry1:TOTAL', total_convergence)
         bench.mark('Boostrap')
 
     # EXECUTE SAMPLER
@@ -920,25 +925,28 @@ class controlJob(macrothread):
         hcube_pdf = []
         for k in hcube_list:
           if convergence[k] <= 0:
-            logging.info('Detected that %s has total converged (not sure if this is even possible)', k)
+            logging.info('Detected that %s has totally converged (not sure if this is even possible)', k)
           else:
             prob = (1 - comb_wgt[k]) / convergence[k]
             hcube_pdf.append(prob)
             logging.info('### PROB %s  %.4f', k, prob)
+        hcube_pdf = np.array(hcube_pdf)
+        hcube_pdf /= np.sum(hcube_pdf)
 
        # TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
         numresources = self.data['numresources']
         sampled_distro_perbin = {k: 0 for k in hcube_list}
         selected_index_list = []
+        coord_origin = []
         while numresources > 0:
           # First selection is biased using PDF from above
           selected_hcube = np.random.choice(hcube_list, p=hcube_pdf)
           sampled_distro_perbin[selected_hcube] += 1
           # Secondary Sampling is Uniform (OR Could Be Weighted again (see write up))
-          selected_index = np.random.choice(list(hcube_A[i]) + list(hcube_B[i]))
+          selected_index = np.random.choice(list(hcube_A[selected_hcube]) + list(hcube_B[selected_hcube]))
           logging.debug('SAMPLER: selected sample #%d from hcube %s', selected_index, selected_hcube)
           selected_index_list.append(selected_index)
-          coord_origin.append(('sim', index, selected_hcube))
+          coord_origin.append(('sim', selected_index, selected_hcube))
           numresources -= 1
 
       logging.info('All Indices sampled. Back projecting to high dim coords')

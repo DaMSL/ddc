@@ -10,11 +10,19 @@ np.set_printoptions(precision=3, suppress=True)
 class ReservoirSample(object):
   """ Retains management over set of samples for common data types. 
   For now: support redis as storage and hold numpy arrays
+  All data items in the sample are consistent (same type/shape)
   """
-  def __init__(self, name, datastore, maxsize=10000):
+  def __init__(self, name, datastore, maxsize=10000, ):
+    #  For now: shape is required with NP array. Eventually this should
+    #  be able to support different data types
     self.name = name
     self.redis = datastore  # Assume redis for now
     self.maxsize = maxsize
+    self.dtype = None
+    self.shape = None
+    if datastore.exists(self.getkey('_dtype')):
+      self.dtype = datastore.get(self.getkey('_dtype'))
+      self.shape = eval(datastore.get(self.getkey('_shape')))
 
   def getkey(self, label):
     return 'rsamp:%s:%s' % (self.name, str(label))
@@ -29,6 +37,10 @@ class ReservoirSample(object):
     rsize = self.redis.llen(key)
     num_inserted = 0
     pipe = self.redis.pipeline()
+    if self.dtype is None:
+      pipe.set(self.getkey('_dtype'), data.dtype.__name__)
+      pipe.set(self.getkey('_shape'), data.shape[1:])
+
     # ALl new points fit inside the reservoir
     if rsize + len(data) <= self.maxsize:
       logging.debug('Available Space in Reservoir %s: %d', str(label), self.maxsize-rsize)
@@ -51,8 +63,16 @@ class ReservoirSample(object):
 
   def get(self, label):
     key = self.getkey(label)
+    if self.dtype is None:
+      logging.error('Reservoir Sample for %s is not defined in the datastore.', key)
+      return []
     data_raw = self.redis.lrange(key, 0, -1)
-    return [np.fromstring(pickle.loads(d)) for d in data_raw]
+    N = len(data_raw)
+    arr = np.zeros(shape = (N,) + self.shape)
+    for i in range(N):
+      raw = pickle.loads(data_raw[i])
+      arr[i] = np.fromstring(raw, dtype=self.dtype).reshape(self.shape)
+    return arr
     
 
 

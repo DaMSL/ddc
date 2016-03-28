@@ -303,7 +303,7 @@ class simulationJob(macrothread):
   # 4-A. Subspace Calcuation: RMS using Alpha-Filter
     #------ A:  RMSD-ALPHA  ------------------
       #     S_A = rmslist
-    logging.debug("3. RMS Calculation")
+    logging.info('---- RMSD Calculation against pre-defined centroids ----')
       #  RMSD is calculated on the Ca ('alpha') atoms in distance space
       #   whereby all pairwise distances are calculated for each frame.
       #   Pairwise distances are plotted in euclidean space
@@ -398,18 +398,19 @@ class simulationJob(macrothread):
   # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Alpha Filter
   #------ B:  Covariance Matrix  -----------------
     # 1. Project Pt to PC's for each conform (top 3 PC's)
+    logging.info('---- Covariance Calculation on 200ns windows (alpha Filter, cartesian Space) ----')
 
     # Calculate Covariance over 200 ps Windows sliding every 100ps
     #  These could be user influenced...
-    WIN_SIZE = .2
-    SLIDE_AMT = .1
-    logging.debug("Calucation Covariance over trajeectory. frame_size = %f, WINSIZE = %d, Slide = %d", 
-      frame_size, round(WIN_SIZE*frame_size), round(SLIDE_AMT *frame_size))
-    covar = dr.calc_covar(traj.xyz, WIN_SIZE, frame_size, slide=SLIDE_AMT)
+    WIN_SIZE_NS = .2
+    SLIDE_AMT_NS = .1
+    logging.debug("Calculating Covariance over trajectory. frame_size = %.1f, WINSIZE = %dps, Slide = %dps", 
+      frame_size, WIN_SIZE_NS*1000, SLIDE_AMT_NS*1000)
+    covar = dr.calc_covar(traj.xyz, WIN_SIZE_NS, frame_size, slide=SLIDE_AMT_NS)
     logging.debug("Calcualted %d covariance matrices. Storing variances", len(covar)) 
     pipe = self.catalog.pipeline()
     for i, si in enumerate(covar):
-      local_index = int(i * frame_size * SLIDE_AMT)
+      local_index = int(i * frame_size * SLIDE_AMT_NS)
       pipe.rpush('subspace:covar:pts', bytes(si))
       pipe.rpush('subspace:covar:xid', global_index[local_index])
       pipe.rpush('subspace:covar:fidx', (file_idx, local_index))
@@ -419,7 +420,7 @@ class simulationJob(macrothread):
   # 4-C. Subspace Calcuation: PCA using Covariance Matrix, 200ns windows, Alpha Filter
   #------ C:  Incrementatl PCA by state  -----------------
   #  Update Incremental PCA Vectors for each state with new data
-
+    logging.info('---- PCA Calculation per state over Alpha Filter in cartesian Space ----')
     # TODO:  This will eventually get moved into a User process macrothread 
     #   which will set in between analysis and controller. 
     # For now, we're recalculating using a lock
@@ -430,6 +431,9 @@ class simulationJob(macrothread):
     reservoir = ReservoirSample('rms', self.catalog)
     STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
     for A in range(numLabels):
+      if len(groupbystate[A]) == 0:
+        logging.info('No data received for state %d.  Not processing this state here.')
+        continue
       pc_vectors = self.catalog.loadNPArray('subspace:pca:vectors:%d' % A)
       logging.info('PCA:  Checking if current vectors for state %d are out of date', A)
       rsize = reservoir.getsize(A)
@@ -444,18 +448,17 @@ class simulationJob(macrothread):
       if pc_vectors is None or changeamt > rsize * STALENESS_FACTOR:
         logging.info('PCA Vectors are old, checking if out of tolerance')
         # PCA Vectors are out of date for this bin. Update the vectors....
-        sampledata = np.array(reservoir.get(A))
-        logging.debug('SampleData:  %s', str(sampledata.shape))
-        newdata = np.array(groupbystate[A])
-        logging.debug('NewData:  %s', str(newdata.shape))
+        sampledata = reservoir.get(A)
+        logging.debug('SampleData:  %s', len(sampledata))
+        newdata = groupbystate[A]
+        logging.debug('NewData:  %s', len(newdata))
         if len(sampledata) + len(newdata) < 2:
           logging.info("Not enough data to update PC's. Skipping")
           continue
         # Include recent data
-        sys.exit(0)
-        sampledata.extend(groupbystate[A])
-        logging.info('   Performing PCA for state %d using traindata of size %d', A, len(sampledata))
-        pca = calc_pca(np.array(sampledata))
+        traindata = np.concatenate((sampledata, groupbystate[A]))
+        logging.info('   Performing PCA for state %d using traindata of size %d', A, len(traindata))
+        pca = calc_pca(np.array(traindata))
         new_vect = pca.components_
         if pc_vectors is not None:
           logging.info('# Comp (99%% of PC Coverage):  Before = %d    After = %d', len(pc_vectors), len(new_vect))
@@ -478,7 +481,7 @@ class simulationJob(macrothread):
           logging.info('Could not lock the PC Vectors for State %d. Not updating', A)
         else:
           self.catalog.delete('subspace:pca:vectors:%d' % A)
-          self.catalog.storeNPArray('subspace:pca:vectors:%d' % A, new_vect)
+          self.catalog.storeNPArray(new_vect, 'subspace:pca:vectors:%d' % A)
           pc_vectors = new_vect
 
           # Reset change log
@@ -492,17 +495,21 @@ class simulationJob(macrothread):
         str(alpha.xyz.shape), str(pc_vectors), str(settings.PCA_NUMPC))
       #  TODO:  Should we delete old points and re-project reservoir??
       #   Or keep it and apply decaying factor to the date
+      logging.info('Projecting %d points onto %d PCs for state %d', len(groupbystate[A]), settings.PCA_NUMPC, A)
       pc_proj = project_pca(groupbystate[A], pc_vectors, settings.PCA_NUMPC)
       # 2. Apend subspace in catalog
       p_idx = []
       pipe = self.catalog.pipeline()
+      key = 'subspace:pca:%d' % A
       for si in pc_proj:
-        pipe.rpush('subspace:pca:%d' % A, bytes(si))
+        pipe.rpush(key, bytes(si))
       idxlist = pipe.execute()
+      logging.info('Stored %d lower dim points %s', len(idxlist), key)
       for i in idxlist:
         p_idx.append(int(i) - 1)
       logging.debug("P_Index Created (pca) for delta_S_pca")
 
+    bench.mark('PCA')
 
     # 4. Update reservoir sample
     logging.debug('Updating reservoir Sample')
@@ -517,67 +524,7 @@ class simulationJob(macrothread):
       if num > 0:
         pipe.rpush('subspace:pca:updates:%d' % A, num)
     pipe.execute()
-
-
-
-    # 3. Performing tiling over subspace
-    #   For Now: Load entire tree into local memory
-
-    #  TODO:  DECONFLICT CONSISTENCY IN UPDATE TO KDTREE -- FOR NOW USE LOCK
-
-    # while True:
-    #   lock = self.catalog.get('hcube:pca:LOCK')
-    #   if lock is None or int(lock) == 0:
-    #     logging.info('HCube KDTree is available for updating')
-    #     break
-    #   logging.info('Waiting to acquire the HCube Lock.....')
-    #   time.sleep(3)
-
-    # logging.info('Acquired the HCube Lock!')
-    # self.catalog.set('hcube:pca:LOCK', 1)
-    # self.catalog.expire('hcube:pca:LOCK', 30)
-
-    # hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
-    # logging.debug('# Loaded keys = %d', len(hcube_mapping.keys()))
-
-    # # 4. Pull entire Subspace (for now)  
-    # #   Note: this is more efficient than inserting new points
-    # #   due to underlying Redis Insertions / Index look up
-    # #   If this become a bottleneck, may need to write custom redis client
-    # #   connection to persist connection and keep socket open (on both ends)
-    # #   Or handle some of this I/O server-side via Lua scipt
-    # packed_subspace = self.catalog.lrange('subspace:pca', 0, -1)
-    # subspace_pca = np.zeros(shape=(len(packed_subspace), settings.PCA_NUMPC))
-    # for x in packed_subspace:
-    #   subspace_pca = np.fromstring(x, dtype=np.float32, count=settings.PCA_NUMPC)
-
-    # # TODO: accessor function is for 1 point (i) and 1 axis (j). 
-    # #  Optimize by changing to pipeline  retrieval for all points given 
-    # #  a list of indices with an axis (if nec'y)
-    # logging.debug("Reconstructing the tree...")
-    # hcube_tree = KDTree.reconstruct(hcube_mapping, subspace_pca)
-
-    # logging.debug("Inserting Delta_S_pca into KDtree (hcubes)")
-    # for i in range(len(pc_proj)):
-    #   hcube_tree.insert(pc_proj[i], p_idx[i])
-
-    # # Ensure hcube_tree is written to catalog
-    # #  TODO:  DECONFLICT CONSISTENCY IN UPDATE TO KDTREE -- FOR NOW USE LOCK
-    # encoded = json.dumps(hcube_tree.encode())
-    # logging.info('Storing in catalog')
-    # pipe = self.catalog.pipeline()
-    # pipe.delete('hcube:pca')
-    # pipe.set('hcube:pca', encoded)
-    # pipe.delete('hcube:pca:LOCK')
-    # pipe.execute()
-    # logging.info('PCA HyperCube KD Tree update (lock released)')
-
-    # TODO: DECIDE on retaining a Reservoir Sample
-    # reservoirSampling(self.catalog, traj.xyz, r_idx, subspaceHash, 
-    #     lambda x: tuple([x]+list(traj.xyz.shape[1:])), 
-    #     'pca', 
-    #     lambda key: '%d_%d' % key)
-    bench.mark('PCA')
+    bench.mark('Reservoir')
 
 
   # ---- POST PROCESSING

@@ -318,9 +318,9 @@ class KDTree(object):
     else:
       axis = node.depth % self.dim
       if point[axis] < node.mid:
-        return '0' + self.project(point, node.left, maxdepth)
+        return '0' + self.project(point, node.left, probedepth)
       else:
-        return '1' + self.project(point, node.right, maxdepth)
+        return '1' + self.project(point, node.right, probedepth)
 
 
   def encode(self):

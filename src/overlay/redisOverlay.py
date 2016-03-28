@@ -256,7 +256,7 @@ class RedisClient(redis.StrictRedis):
         logging.warning('[Redis Client] Current Master is busy. It may be trying to shutdown. Wait and try again')
         time.sleep(3)
         continue
-      except (redis.redis.exceptions.BusyLoadingError) as e:
+      except (redis.BusyLoadingError) as e:
         logging.warning('[Redis Client] Current Master is starting up. Standing by.....')
         time.sleep(10)
         continue
