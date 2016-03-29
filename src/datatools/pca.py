@@ -1,3 +1,9 @@
+"""Principle Component Analysis tools
+
+  Contains both standalone methods and a PC Analyzer Class
+"""
+import abc
+
 import datetime as dt
 
 import mdtraj as md
@@ -9,10 +15,54 @@ from sklearn.decomposition import KernelPCA
 from sklearn.decomposition import IncrementalPCA
 
 
-
-
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
+
+
+class PCAnalyzer(object):
+
+  __metaclass__ = abc.ABCMeta
+
+  def __init__(self):
+    self.n_components = 0
+
+  @abc.abstractmethod
+  def solve(self, X):
+    """ Given Training Data X, solve for the prinicple components
+    """
+    pass
+
+  @abc.abstractmethod
+  def project(self, X, numpc):
+    """ Given Data X, Project high dimensional points 
+    Should return the projected points to numpc components
+    """
+    pass
+
+
+class PCALinear(PCAnalyzer):
+
+  def __init__(self, components):
+    PCAnalyzer.__init__(self)
+    if isinstance(components, int):
+      self.n_components = components
+    self.pca = PCA(n_components = components)
+
+  def solve(self, X):
+    self.dim = np.prod(X.shape[1:])
+    self.pca.fit(X.reshape(len(X), dim))
+    self.pc = self.pca.components_
+
+  def project(self, X, numpc):
+    dimX = np.pod(X.shape[1:])
+    if dimX != self.dim:
+      logging.error('Projection Error in PCA: Cannot reshape/project %s size data using PC Vects of size, %s', str(X.shape), str(self.dim))
+      return None
+    projection = np.zeros(shape=(len(X), numpc))
+    for i, s in enumerate(X):
+      np.copyto(projection[i], np.array([np.dot(s.flatten(),v) for v in self.pc[:numpc]]))
+    return projection
+
 
 def calc_pca(xyz, title=None):
   n_dim = np.prod(xyz.shape[1:])

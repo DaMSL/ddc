@@ -27,73 +27,98 @@ class ReservoirSample(object):
       self.shape = eval(datastore.get(self.getkey('_shape')))
 
   def getkey(self, label):
+    """ Returns the key label for the data store
+    """
     return 'rsamp:%s:%s' % (self.name, str(label))
 
   def getsize(self, label):
+    """ returns the current size of the reservoir
+    """
     key = self.getkey(label)
     return self.redis.llen(key)
 
+  def getN(self, label):
+    """ N is the total of data elements for which the reservoir represents
+    """
+    key = self.getkey(label + ':full')
+    return self.redis.llen(key)
+
+  def getpercent(self, label):
+    rsize = self.getsize(key)
+    N = self.getN(key)
+    if N is None or N == 0:
+      return 0
+    else:
+      return rsize / N
+
   def insert(self, label, data):
+    """ Processes the batch of data one element at a time and applies the 
+    reservoir function to decide on whether or not to insert
+    """
     if isinstance(data, list):
       data = np.array(data)
     logging.info("Reservoir INSERT request for %d points into %s", len(data), label)
     key = self.getkey(label)
     rsize = self.redis.llen(key)
+    N = self.getN(label)
     num_inserted = 0
+
+    # Process everything as one pipeline
     pipe = self.redis.pipeline()
     if self.dtype is None:
       pipe.set(self.getkey('_dtype'), np.lib.format.dtype_to_descr(np.dtype(data.dtype)))
       pipe.set(self.getkey('_shape'), data.shape[1:])
-    pipe.incr(key + ':full', len(data))
 
-    # ALl new points fit inside the reservoir
-    if rsize + len(data) <= self.maxsize:
-      logging.debug('Available Space in Reservoir %s: %d', str(label), self.maxsize-rsize)
-      for si in data:
+    spill = 0
+    for i, elm in enumerate(data):
+      # Caclulate probabilty to insert
+      #  When N < maxsize, rsize == N and data is inserted with P = 1.
+      #  Otherwise probability decreased as N grows
+      P = 1 if N == 0 else rsize / N
+      N += 1
+      do_insert = np.random.random() <= P
+
+      # Not full: Fill sequentially
+      if do_insert and rsize < self.maxsize:
+        logging.debug('Available Space in Reservoir %s: %d', str(label), self.maxsize-rsize)
+        pipe.rpush(key, pickle.dumps(elm))
+        rsize += 1
         num_inserted += 1
-        pipe.rpush(key, pickle.dumps(si))
-    # TODO:  File to capacity before evicting
-    # Implement Eviction policy & replace with new points
-    else:
-      # Freshness Value (retaining more of newer data --> more "fresh" data)
-      logging.debug('Full Reservoir %s: %d', str(label), rsize)
-      PERCENT_OF_NEW_DATA = .5    
-      evictNum = round(len(data) * PERCENT_OF_NEW_DATA)
-      evict = np.random.choice(np.arange(rsize), evictNum)
-      store_sample_index_list = np.random.choice(np.arange(len(data)), evictNum)
-      store_sample = [data[i] for i in store_sample_index_list]
-      for i in range(evictNum):
+
+      # Full Reservoir: evict an element
+      elif do_insert:
+        logging.debug('Full Reservoir %s: %d', str(label), rsize)
+        evict = np.random.randint(np.arange(rsize))
+        pipe.lset(key, evict, pickle.dumps(elm))
+        spill += 1
         num_inserted += 1
-        pipe.lset(key, evict[i], pickle.dumps(store_sample[i]))
-      pipe.incr(key + ':spill', evictNum)
+
+    # Keep track of total # of insertions & evictions
+    pipe.incr(key + ':full', len(data))
+    pipe.incr(key + ':spill', spill)
     pipe.execute()
+
+    # Return # of inserted points
     return num_inserted
 
-  def getpercent(self, label):
-    key = self.getkey(label)
-    rsize = self.redis.llen(key)
-    totalamt = self.redis.get(key + ':full')
-    if totalamt is None or totalamt == 0:
-      return 0
-    else:
-      return rsize / totalamt
-
   def get(self, label):
+    """ Retrieve the entire reservoir
+    """
     key = self.getkey(label)
     if self.dtype is None:
       logging.error('Reservoir Sample for %s is not defined in the datastore.', key)
       return []
     data_raw = self.redis.lrange(key, 0, -1)
-    N = len(data_raw)
-    totalamt = self.redis.get(key + ':full')
+    R = len(data_raw)
+    N = self.redis.getN()
     spillamt = self.redis.get(key + ':spill')
-    if totalamt is None:
-      totalamt = 0
+    if N is None:
+      N = 0
     if spillamt is None:
       spillamt = 0
-    logging.info('##RSAMP SIZE=%d  FULL=%d  SPILL=%d ', N, int(totalamt), int(spillamt))
-    arr = np.zeros(shape = (N,) + self.shape)
-    for i in range(N):
+    logging.info('##RSAMP SIZE=%d  FULL=%d  SPILL=%d ', R, int(N), int(spillamt))
+    arr = np.zeros(shape = (R,) + self.shape)
+    for i in range(R):
       raw = pickle.loads(data_raw[i])
       arr[i] = np.fromstring(raw, dtype=self.dtype).reshape(self.shape)
     return arr

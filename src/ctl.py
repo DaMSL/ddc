@@ -181,7 +181,6 @@ class controlJob(macrothread):
 
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
-      self.slurmParams['partition'] = 'debug'
 
       self.modules.add('namd/2.10')
 
