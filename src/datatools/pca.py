@@ -15,7 +15,6 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
 def calc_pca(xyz, title=None):
-  print(xyz.shape)
   n_dim = np.prod(xyz.shape[1:])
   pca = PCA(n_components = .99)
   pca.fit(xyz.reshape(len(xyz), n_dim))
@@ -37,10 +36,8 @@ def calc_kpca(xyz, kerneltype=None, title=None, n_comp=None):
     klist = [kerneltype]
   for ktype in klist:
     kpca = KernelPCA(kernel=ktype, n_components=n_comp)
-    print('Calculating Kernal for type: ', ktype)
     st = dt.datetime.now()
     kpca.fit(xyz.reshape(len(xyz), n_dim))
-    print('  Time=  %5.1f' % ((dt.datetime.now()-st).total_seconds()))
     if title is not None:
       with open('kpca_%s_%s.dat' % (title, ktype), 'wb') as out:
         out.write(pickle.dumps(kpca))

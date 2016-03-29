@@ -25,10 +25,12 @@ from macro.macrothread import macrothread
 import mdtools.deshaw as deshaw
 import datatools.datareduce as dr
 from datatools.rmsd import calc_rmsd
-from datatools.pca import project_pca, calc_pca
+from datatools.pca import project_pca, calc_pca, calc_kpca
 from datatools.approx import ReservoirSample
 from overlay.redisOverlay import RedisClient
 from overlay.alluxioOverlay import AlluxioClient
+from bench.timer import microbench
+
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -135,7 +137,7 @@ class simulationJob(macrothread):
 
   # PRE-PREOCESS ---------------------------------------------------------
     settings = systemsettings()
-    bench = microbench()
+    bench = microbench('sim', self.seqNumFromID())
     bench.start()
 
     # Prepare working directory, input/output files
@@ -334,9 +336,9 @@ class simulationJob(macrothread):
     # Notes: Delta_S == rmslist
     rmslist = np.array([noisefilt(rmsraw, i) for i in range(numConf)])
 
-    logging.debug("RMS CHECK......")
-    for i in rmslist:
-      logging.debug("  %s", str(np.argsort(i)))
+    # logging.debug("RMS CHECK......")
+    # for i in rmslist:
+    #   logging.debug("  %s", str(np.argsort(i)))
 
     # 3. Append new points into the data store. 
     pipe = self.catalog.pipeline()
@@ -393,12 +395,12 @@ class simulationJob(macrothread):
     bench.mark('RMS')
     logging.info('Labeled the following by State:')
     for A in range(numLabels):
-      logging.info('State %d ->  %d', A, len(groupbystate[A]))
+      logging.info('## %d  %d', A, len(groupbystate[A]))
 
-  # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Alpha Filter
+  # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Full Protein
   #------ B:  Covariance Matrix  -----------------
     # 1. Project Pt to PC's for each conform (top 3 PC's)
-    logging.info('---- Covariance Calculation on 200ns windows (alpha Filter, cartesian Space) ----')
+    logging.info('---- Covariance Calculation on 200ns windows (Full Protein, cartesian Space) ----')
 
     # Calculate Covariance over 200 ps Windows sliding every 100ps
     #  These could be user influenced...
@@ -406,7 +408,8 @@ class simulationJob(macrothread):
     SLIDE_AMT_NS = .1
     logging.debug("Calculating Covariance over trajectory. frame_size = %.1f, WINSIZE = %dps, Slide = %dps", 
       frame_size, WIN_SIZE_NS*1000, SLIDE_AMT_NS*1000)
-    covar = dr.calc_covar(traj.xyz, WIN_SIZE_NS, frame_size, slide=SLIDE_AMT_NS)
+    covar = dr.calc_covar(alpha.xyz, WIN_SIZE_NS, frame_size, slide=SLIDE_AMT_NS)
+    bench.mark('CalcCovar')
     logging.debug("Calcualted %d covariance matrices. Storing variances", len(covar)) 
     pipe = self.catalog.pipeline()
     for i, si in enumerate(covar):
@@ -417,9 +420,9 @@ class simulationJob(macrothread):
     idxlist = pipe.execute()
 
 
-  # 4-C. Subspace Calcuation: PCA using Covariance Matrix, 200ns windows, Alpha Filter
-  #------ C:  Incrementatl PCA by state  -----------------
-  #  Update Incremental PCA Vectors for each state with new data
+  # 4-C. Subspace Calcuation: Kernel PCA using Covariance Matrix, 200ns windows, Alpha Filter
+  #------ C:  Kernel PCA by state  -----------------
+  #  Update PCA Vectors for each state with new data
     logging.info('---- PCA Calculation per state over Alpha Filter in cartesian Space ----')
     # TODO:  This will eventually get moved into a User process macrothread 
     #   which will set in between analysis and controller. 
@@ -434,18 +437,22 @@ class simulationJob(macrothread):
       if len(groupbystate[A]) == 0:
         logging.info('No data received for state %d.  Not processing this state here.')
         continue
+      updateVectors = False
       pc_vectors = self.catalog.loadNPArray('subspace:pca:vectors:%d' % A)
       logging.info('PCA:  Checking if current vectors for state %d are out of date', A)
       rsize = reservoir.getsize(A)
       changelist = self.catalog.lrange('subspace:pca:updates:%d' % A, 0, -1)
       changeamt = np.sum([int(x) for x in changelist])
-      logging.info('   rsize = %s   changeamt = %d ', rsize, changeamt)
+      staleness = changeamt/rsize if rsize > 0 else 0
+      logging.info('##STALE PCA_%d  %.3f', A, staleness)
+      logging.info('Vectors are %f%% stale (rsize = %s   changeamt = %d)', staleness, rsize, changeamt)
 
       # CHECK if PCA needs to be updated (??? Should we delete all old PC data???)
       #  Thought is that this will change early on, but should not change after some time
       #    and this stabilize the PC Vectors for each state (considering the RMSD centroids
       #    are not going to change)
-      if pc_vectors is None or changeamt > rsize * STALENESS_FACTOR:
+      traindata = None
+      if pc_vectors is None or staleness > STALENESS_FACTOR:
         logging.info('PCA Vectors are old, checking if out of tolerance')
         # PCA Vectors are out of date for this bin. Update the vectors....
         sampledata = reservoir.get(A)
@@ -453,13 +460,22 @@ class simulationJob(macrothread):
         newdata = groupbystate[A]
         logging.debug('NewData:  %s', len(newdata))
         if len(sampledata) + len(newdata) < 2:
-          logging.info("Not enough data to update PC's. Skipping")
+          logging.info("Not enough data to update PC's. Skipping-PCA-%d", A)
           continue
         # Include recent data
-        traindata = np.concatenate((sampledata, groupbystate[A]))
-        logging.info('   Performing PCA for state %d using traindata of size %d', A, len(traindata))
-        pca = calc_pca(np.array(traindata))
+        if len(sampledata) == 0:
+          traindata = np.array(groupbystate[A])
+        elif len(groupbystate[A]) == 0:
+          traindata = np.array(sampledata)
+        else:
+          traindata = np.concatenate((np.array(sampledata), np.array(groupbystate[A])))
+        logging.info('   Performing Kernel PCA (Sigmoid) for state %d using traindata of size %d', A, len(traindata))
+
+        # NOTE: Pick PCA Algorithm HERE
+        pca = calc_kpca(np.array(traindata), kerneltype='sigmoid')
+        bench.mark('CalcKPCA_%d'%A)
         new_vect = pca.components_
+        updateVectors = True
         if pc_vectors is not None:
           logging.info('# Comp (99%% of PC Coverage):  Before = %d    After = %d', len(pc_vectors), len(new_vect))
           logging.info('Delta of top 90%%:')
@@ -486,6 +502,7 @@ class simulationJob(macrothread):
 
           # Reset change log
           self.catalog.ltrim('subspace:pca:updates:%d' % A, len(changelist), -1)
+        bench.mark('ConcurrPCAWrite_%d'%A)
 
       else:
         logging.info('  PCA Vectors are fresh -- no need to change them')
@@ -493,18 +510,30 @@ class simulationJob(macrothread):
 
       logging.debug('alpha %s     pc_v %s    numpc %s', 
         str(alpha.xyz.shape), str(pc_vectors), str(settings.PCA_NUMPC))
-      #  TODO:  Should we delete old points and re-project reservoir??
+      #  TODO:  Should we delete old points and re-project reservoir as well??
       #   Or keep it and apply decaying factor to the date
+      #  DOING BOTH FOR COMPARISON
+      bench.mark('start_proj')
       logging.info('Projecting %d points onto %d PCs for state %d', len(groupbystate[A]), settings.PCA_NUMPC, A)
       pc_proj = project_pca(groupbystate[A], pc_vectors, settings.PCA_NUMPC)
+      bench.mark('ProjPCA_%d'%A)
+      if updateVectors:     
+        logging.info('Comparson: Projecting %d points onto %d PCs for state %d', len(traindata), settings.PCA_NUMPC, A)
+        pc_proj_rsamp = project_pca(traindata, pc_vectors, settings.PCA_NUMPC)
+        bench.mark('ProjPCA_RSAMP_%d'%A)
+
       # 2. Apend subspace in catalog
       p_idx = []
       pipe = self.catalog.pipeline()
       key = 'subspace:pca:%d' % A
+      keyrsamp = 'subspace:pcarsamp:%d' % A
       for si in pc_proj:
         pipe.rpush(key, bytes(si))
+      if updateVectors:
+        for si in pc_proj_rsamp:
+          pipe.rpush(keyrsamp, bytes(si))
       idxlist = pipe.execute()
-      logging.info('Stored %d lower dim points %s', len(idxlist), key)
+      logging.info('Stored %d NEWlower dim points %s', len(idxlist), key)
       for i in idxlist:
         p_idx.append(int(i) - 1)
       logging.debug("P_Index Created (pca) for delta_S_pca")
@@ -540,7 +569,7 @@ class simulationJob(macrothread):
 
     # return [job['name']]
     # Return # of observations (frames) processed
-    return [traj.n_frames]
+    return [numConf]
 
 if __name__ == '__main__':
   mt = simulationJob(__file__)

@@ -32,14 +32,17 @@ class ReservoirSample(object):
     return self.redis.llen(key)
 
   def insert(self, label, data):
-    logging.info("Reservoir inserting request for %d points into %s", len(data), label)
+    if isinstance(data, list):
+      data = np.array(data)
+    logging.info("Reservoir INSERT request for %d points into %s", len(data), label)
     key = self.getkey(label)
     rsize = self.redis.llen(key)
     num_inserted = 0
     pipe = self.redis.pipeline()
     if self.dtype is None:
-      pipe.set(self.getkey('_dtype'), data.dtype.__name__)
+      pipe.set(self.getkey('_dtype'), np.lib.format.dtype_to_descr(np.dtype(data.dtype)))
       pipe.set(self.getkey('_shape'), data.shape[1:])
+    pipe.incr(key + ':full', len(data))
 
     # ALl new points fit inside the reservoir
     if rsize + len(data) <= self.maxsize:
@@ -52,14 +55,24 @@ class ReservoirSample(object):
       # Freshness Value (retaining more of newer data --> more "fresh" data)
       logging.debug('Full Reservoir %s: %d', str(label), rsize)
       PERCENT_OF_NEW_DATA = .5    
-      evictNum = math.round(len(data) * PERCENT_OF_NEW_DATA)
+      evictNum = round(len(data) * PERCENT_OF_NEW_DATA)
       evict = np.random.choice(DEFAULT.MAX_RESERVOIR_SIZE, evictNum)
       store_sample = np.random.choice(data, evictNum)
       for i in range(evictNum):
         num_inserted += 1
-        pipe.rset(key, evict[i], pickle.dumps(store_sample[i]))
+        pipe.lset(key, evict[i], pickle.dumps(store_sample[i]))
+      pipe.incr(key + ':spill', evictNum)
     pipe.execute()
     return num_inserted
+
+  def getpercent(self, label):
+    key = self.getkey(label)
+    rsize = self.redis.llen(key)
+    totalamt = self.redis.get(key + ':full')
+    if totalamt is None or totalamt == 0:
+      return 0
+    else:
+      return rsize / totalamt
 
   def get(self, label):
     key = self.getkey(label)
@@ -68,6 +81,9 @@ class ReservoirSample(object):
       return []
     data_raw = self.redis.lrange(key, 0, -1)
     N = len(data_raw)
+    totalamt = self.redis.get(key + ':full')
+    spillamt = self.redis.get(key + ':spill')
+    logging.info('##RSAMP SIZE=%d  FULL=%d  SPILL=%d ', N, int(totalamt), int(spillamt))
     arr = np.zeros(shape = (N,) + self.shape)
     for i in range(N):
       raw = pickle.loads(data_raw[i])

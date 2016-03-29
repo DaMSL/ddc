@@ -30,38 +30,7 @@ def executecmd(cmd):
   return stdout.decode()
 
 
-class microbench:
-  def __init__(self):
-    self._begin = None
-    self.tick = OrderedDict()
-    self.last = None
-    self.recent = None
-  def start(self):
-    self._begin = dt.datetime.now()
-    self.tick['START'] = self._begin
-    self.recent = self._begin
-  def mark(self, label=None):
-    if label is None:
-      label = 'mark-%02d' % len(self.tick.keys())
-    self.tick[label] = dt.datetime.now()
-    self.last = self.recent
-    self.recent = self.tick[label]
-  def delta_last(self):
-    if self.last is None:
-      return 0.
-    return (self.recent-self.last).total_seconds()
-  def show(self):
-    timelist = []
-    for label, ts in self.tick.items():
-      t = (ts-self._begin).total_seconds()
-      if t < 10.:
-        timelist.append('##    %7.2f  %s' % (t, label))
-      else:
-        timelist.append('##    %4d       %s' % (t, label))
-    print ('##    TIME   EVENT')
-    print ('  ------  ---------')
-    for t in timelist:
-      print(t)
+
 
 def singleton(cls):
     instances = {}

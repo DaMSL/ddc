@@ -21,6 +21,7 @@ import redis
 from core.common import * 
 from core.slurm import slurm
 from overlay.redisOverlay import RedisService, RedisClient
+from bench.timer import microbench
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -94,7 +95,7 @@ class macrothread(object):
   def toMID(self, jobid):
     return '%sm-%04d.00' % (self.name[0], int(jobid))
 
-  def fromMID(self, ):
+  def fromMID(self):
     if self.job_id is None:
       return None
 
@@ -108,7 +109,7 @@ class macrothread(object):
   def toWID(self, jobid, worknum):
     return '%sw-%04d.%02d' % (self.name[0], jobid, worknum)
 
-  def seqNumFromID(self, ):
+  def seqNumFromID(self):
     """Returns the logical sequenced number for this macrothread
     """
     if self.job_id is None:
@@ -449,8 +450,8 @@ class macrothread(object):
 
     settings = systemsettings()
 
-    logging.info("APPLICATION:    %s", DEFAULT.APPL_LABEL)
-    logging.info("WORKDIR:  %s", DEFAULT.WORKDIR)
+    logging.info("APPLICATION:    %s", settings.APPL_LABEL)
+    logging.info("WORKDIR:  %s", settings.WORKDIR)
 
     # Read in Slurm params  (TODO: Move to abstract slurm call)
     self.job_id   = os.getenv('JOB_NAME')
@@ -478,13 +479,13 @@ class macrothread(object):
 
     if not self.catalog:
       # self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-      self.catalog = RedisClient(DEFAULT.APPL_LABEL)
+      self.catalog = RedisClient(settings.APPL_LABEL)
 
     if self.catalog.isconnected and self.catalog.ping():
       logging.info('Catalog service is connected')
     else:
       logging.info("Catalog service is not running. Starting the service now")
-      service = RedisService(DEFAULT.APPL_LABEL)
+      service = RedisService(settings.APPL_LABEL)
       self.localcatalogserver = service.start()
       logging.info("Catalog service started as a background thread.")
       #  TODO: Quit and self-reschedule???

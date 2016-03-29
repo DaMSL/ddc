@@ -23,11 +23,13 @@ import datatools.datareduce as datareduce
 import datatools.datacalc as datacalc
 import mdtools.deshaw as deshaw
 import datatools.kmeans as KM
-from datatools.pca import calc_pca, project_pca
+from datatools.pca import calc_kpca, calc_pca, project_pca
 from datatools.approx import ReservoirSample
 from mdtools.simtool import generateNewJC
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
+from bench.timer import microbench
+
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -257,7 +259,7 @@ class controlJob(macrothread):
       """
 
       logging.debug('--------  BACK PROJECTION:  %d POINTS ---', len(index_list))
-      bench = microbench()
+      bench = microbench('bkproj', self.seqNumFromID())
 
       # reverse_index = {index_list[i]: i for i in range(len(index_list))}
 
@@ -285,7 +287,7 @@ class controlJob(macrothread):
       # Load higher dim point indices from catalog
       generated_framelist = pipe.execute()
 
-      bench.mark('LD:Redis:xidlist')
+      bench.mark('BP:LD:Redis:xidlist')
 
 
       ref = deshaw.topo_prot  # Hard coded for now
@@ -321,7 +323,7 @@ class controlJob(macrothread):
           key = os.path.splitext(os.path.basename(filename))[0]
           generated_frameMask[key] = groupbyFileIdx[file_index]
           generated_filemap[key] = filename
-      bench.mark('GroupBy:Files')
+      bench.mark('BP:GroupBy:Files')
 
       #  Ensure the cache is alive an connected
       self.cacheclient.connect()
@@ -387,13 +389,14 @@ class controlJob(macrothread):
           traj = datareduce.load_trajectory(fileno)
         selected_frames = traj.slice(framelist)
         source_points_uncached.extend(selected_frames.xyz)
-        bench.mark('LD:File:%s'%fileno)
+        bench.mark('BP:LD:File:%s'%os.path.basename(fileno))
 
       logging.debug('All Uncached Data collected Total # points = %d', len(source_points_uncached))
       source_traj_uncached = md.Trajectory(np.array(source_points_uncached), ref.top)
-      bench.mark('Build:Traj')
+      bench.mark('BP:Build:Traj')
       bench.show()
 
+      logging.info('--------  Back Projection Complete ---------------')
       if source_traj_cached is None:
         return source_traj_uncached
       else:
@@ -407,7 +410,7 @@ class controlJob(macrothread):
       distribute resources among users' sampled values.
       """
       logging.debug('CTL MT')
-      bench = microbench()
+      bench = microbench('ctl', self.seqNumFromID())
 
     # PRE-PROCESSING ---------------------------------------------------------------------------------
       logging.debug("============================  <PRE-PROCESS>  =============================")
@@ -469,9 +472,8 @@ class controlJob(macrothread):
       # Bootstrap current sample for RMS
       logging.info("RMS Labels for %d points loaded. Calculating PDF.....", len(labeled_pts_rms))
 
+      logging.info("Posterer PDF: This Sample ONLY")
       pdf_rms_iter = datacalc.posterior_prob(labeled_pts_rms)
-
-      logging.info("Posterer PDF:")
 
       vals_iter = {}
       pipe = self.catalog.pipeline()
@@ -482,12 +484,13 @@ class controlJob(macrothread):
         vals_iter[v_i] = val
         pipe.rpush('pdf:iter:%d_%d' % (A, B), val)
       pipe.execute()
+      bench.mark('PostPDF:This')
 
       #  LOAD ALL POINTS TO COMPARE CUMULTIVE vs ITERATIVE:
       #  NOTE: if data is too big, cumulative would need to updated separately
       all_pts_rms = self.catalog.lrange('label:rms', 0, thru_index)
+      logging.info("Posterer PDF: ALL DATA Points Collected")
       pdf_rms_cuml = datacalc.posterior_prob(all_pts_rms)
-      logging.info("Posterer PDF for each variable (CUMULATIVE):")
       pipe = self.catalog.pipeline()
       vals_cuml = {}
       for v_i in binlist:
@@ -497,11 +500,18 @@ class controlJob(macrothread):
         vals_cuml[v_i] = val
         pipe.rpush('pdf:cuml:%d_%d' % (A, B), val)
       pipe.execute()
+      bench.mark('PostPDF:All')
 
-      logging.info('##VAL TS   BIN:  Iterative Cumulative') 
+      logging.info("PDF Comparison for all RMSD Bins")
+      logging.info('##VAL TS   BIN:  ThisSample  AllData') 
+      obs_by_state = [0 for i in range(numLabels)]
       for key in sorted(binlist):
+        A, B = key
+        obs_by_state[A] += int(vals_cuml[key] * thru_index)
         logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
           (self.data['timestep'], str(key), vals_iter[key], vals_cuml[key]))
+
+      logging.info("Total Observations by state: %s", str(obs_by_state))
       bench.mark('PosteriorPDF:RMS')
 
       #  Bootstrap
@@ -538,7 +548,7 @@ class controlJob(macrothread):
         pipe.rpush('boot:cuml:cv', convergence_cuml[b])
 
       pipe.execute()
-      bench.mark('Boostrap')
+      bench.mark('Convergence')
 
 
 
@@ -548,6 +558,7 @@ class controlJob(macrothread):
 
       EXPERIMENT_NUMBER = 6
 
+      logging.info("RUNNING EXPER CONFIGURATION #%d", EXPERIMENT_NUMBER)
       # 1. get all points in some state
       #####  Experment #1: Round-Robin each of 25 bins (do loop to prevent select from empty bin)
       if EXPERIMENT_NUMBER == 1:
@@ -737,21 +748,25 @@ class controlJob(macrothread):
         #  9. ID Overlap
         # 10. Apply Gamme Function
 
+        logging.info("=====  Covariance Matrix PCA-KMeans Calculation (STEP-A)")
         logging.info("Retrieving Covariance Matrices")
         covar_raw = self.catalog.lrange('subspace:covar:pts', 0, -1)
         covar_pts = np.array([np.fromstring(x) for x in covar_raw])
         covar_fidx = self.catalog.lrange('subspace:covar:fidx', 0, -1)
         covar_index = self.catalog.lrange('subspace:covar:xid', 0, -1)
         logging.info("    Pulled %d Covariance Matrices", len(covar_pts))
-        logging.info("Calculating PCA on COvariance")
-        pca_cov = calc_pca(covar_pts)        
+        logging.info("Calculating PCA on COvariance (Pick your PCA Algorithm here)")
+
+        pca_cov = calc_kpca(covar_pts, kerneltype='sigmoid')
+        bench.mark('CaclPCA_COV')        
         logging.info("Projecting Covariance to PC")
         pca_cov_pts = pca_cov.transform(covar_pts)
 
         # TODO:  FOR NOW use 5
         NUM_K = 5
-        logging.info('Running KMeans on covariance data for K =  %d', NUM_K)
+        logging.info('Running KMeans on covariance data for K =  %d  (TODO: vary K)', NUM_K)
         centroid, clusters = KM.find_centers(pca_cov_pts, NUM_K)
+        bench.mark('CalcKMeans_COV')
         # TODO: Eventually implement per-point weights
         cov_label, cov_wght = KM.classify_score(pca_cov_pts, centroid)
         cluster_sizes = np.bincount(cov_label)
@@ -759,27 +774,47 @@ class controlJob(macrothread):
         cov_clust_wgts = cluster_sizes / np.sum(cluster_sizes)
         logging.info('KMeans complete: bincounts is \n   %s', str(cluster_sizes))
 
+
+        cov_iteration = self.catalog.get('subspace:covar:count')
+        cov_iteration = 0 if cov_iteration is None else cov_iteration
+        logging.info("Storing current centroid results (this is iteration #%d", cov_iteration)
+        self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
+        self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
+
+        logging.info("=====  SELECT points from smallest 2 clusters (of STEP-A)")
         # Select smaller clusters from A
         size_order = np.argsort(cluster_sizes)
         Klist = size_order[0:2]  # [, 0:2]
         cov_select = [[] for k in range(NUM_K)]
         cov_weights = [[] for k in range(NUM_K)]
-        logging.info("Selecting data points from smaller cluster(s)")
         for i, L in enumerate(cov_label):
           if L in Klist:
             # Note each covar matrix is 200 raw points -- back project ALL for now
+            # TODO: Should we sample or aproximate here?
             cov_select[L].extend([int(covar_index[i])+offset for offset in range(200)])
             cov_weights[L].extend([cov_wght[i] for offset in range(200)])
 
+        logging.info("Selection Operation results:")
+        for L in Klist:
+          logging.info("Selected %d points for cluster # %d  (from KMeans on Covariance matrices)", len(cov_select[L]), L)
         # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
         reservoir = ReservoirSample('rms', self.catalog)
 
-
+        logging.info("=====  BUILD HCube Tree(s) Using Smallest State(s) (FROM RMSD Obsevations) ")
         hcube_B = {}
         hcube_B_wgt = {}
-        state_list = [0]
+        order_obs_states = np.argsort(obs_by_state)
+        state_list = []
+        logging.info("Scanning current set of obsered states and finding the smallest with data (TODO: multiple states)")
+        for state in order_obs_states:
+          if obs_by_state[state] > 0:
+            state_list.append(state)
+            logging.info("Selecting state %d with %d data points", state, obs_by_state[state])
+            break
         # TODO:  Multiple states for reweighting
         #  Where in Q-Proc tree should these be combined
+
+        logging.info("=====  PROJECT KMeans clustered data into HCube KD Tree(s)")
         for state in state_list:
           # Load Vectors
           logging.info('Loading subspace and vectors for state %d', state)
@@ -787,25 +822,28 @@ class controlJob(macrothread):
           datapts_raw = self.catalog.lrange('subspace:pca:%d' % state, 0, -1)
           data = np.array([np.fromstring(x) for x in datapts_raw])
           if len(data) == 0:
-            logging.info('No data Available for state %d (going to another state (TODO))', state)
+            logging.error('Raw PCA data points should exist for state ', state)
+            break
           logging.info('Building KDtree from data of size: %s', str(data.shape))
           kdtree = KDTree(500, maxdepth=8, data=data)
-
+          bench.mark('KDTreeBuild')
           # Back-project all points to higher dimension <- as consolidatd trajectory
           for k in range(len(cov_select)):
+            logging.info('Collecting covariance points from KMeans Cluster %d', k)
             if len(cov_select[k]) == 0:
-              logging.info("NOT selecting cluster state # %d from covariance KMeans clusters", k)
+              logging.info("NOT selecting cluster # %d from covariance KMeans clusters (none or filtered data)", k)
             else:
+              logging.info("Projecting cluster # %d from covariance KMeans clusters (%d point)", k, len(cov_select[k]))
               source_cov = self.backProjection(cov_select[k])
               # TODO: Weight Preservation when back-projecting
               alpha = datareduce.filter_alpha(source_cov)
-              logging.debug('(BACK)PROJECT %d Covariance points to HD space: %s', len(cov_select[k]), str(alpha))
+              logging.debug('Back Projected %d points to HD space: %s', len(cov_select[k]), str(alpha))
               bench.mark('BackProject:COV_To_HD_%d' % k)
 
               # 2. project into PCA space for this state
               cov_proj_pca = project_pca(alpha.xyz, pca_vect, settings.PCA_NUMPC)
               logging.debug('Project to PCA:  %s', str(cov_proj_pca.shape))
-              bench.mark('Project:COV_To_PCA_%d' % k)
+              bench.mark('Project:HD_To_PCA_%d' % k)
 
               # 3. Map into existing hcubes 
               #  A -> PCA  and B -> COV
@@ -825,14 +863,7 @@ class controlJob(macrothread):
           # FOR NOW: calc aggegrate average Wght for newly projected HCubes
           wgt_B = {k: (1-np.mean(v)) for k, v in hcube_B_wgt.items()}
 
-
-              # # Gather the hcube stats for wgt calc
-              # hcube_sizes = [len(k) for k in hcube_B.keys()]
-              # low_dim = max(hcube_sizes) + 1
-              # total = sum(hcube_sizes)
-              # # calc Wght
-              # wgt_B = {k: len(hcube_B[k])/(total*(low_dim - len(k))) for k in hcube_B.keys()}
-
+        logging.info("=====  REWEIGHT with Overlappig HCubes  (TODO: fine grained geometric overlap (is it necessary)")
         hcube_list = sorted(hcube_B.keys())
         # Get all original HCubes from A for "overlapping" hcubes
         hcube_A = {}
@@ -857,20 +888,52 @@ class controlJob(macrothread):
 
 
         ####  User Query Convergence
+        logging.info("=====  CALCULATE User Query Convergence")
         logging.info('Resultant HCube Data (for bootstrap)')
         # Get current iteration number
         iteration = int(self.catalog.incr('boot:qry1:count'))
 
         # Ensure all currently projected HCubes have same # of observations
+        hc_conv_keys = self.catalog.keys('boot:qry1:conv:*')
+        offset = len('boot:qry1:conv:')
+        all_hc = [k[offset:] for k in hc_conv_keys]
+
+        # Get ALL convergence data for all HCubes
         pipe = self.catalog.pipeline()
-        for k in hcube_list:
-          pipe.llen('boot:qry1:conv:%s' % k)
-        conv_sizes = pipe.execute()
+        for k in hc_conv_keys:
+          pipe.lrange(k, 0, -1)
+        hc_conv_vals_aslist = pipe.execute()
+        hc_conv_vals = {}
+        for i, k in enumerate(hc_conv_keys):
+          if hc_conv_vals_aslist[i] is None or len(hc_conv_vals_aslist[i]) == 0:
+            hc_conv_vals[k[offset:]] = []
+          else:
+            hc_conv_vals[k[offset:]] = [float(val) for val in hc_conv_vals_aslist[i]]
 
         pipe = self.catalog.pipeline()
-        # Pad with zeroes (for previous non-projected points) as needed
-        for i, k in enumerate(hcube_list):
-          for j in range(conv_sizes[i], iteration-1):
+        # Ensure convergence is consitently calculated for all HCubes overlapping
+        # in this interation. 
+        #  If it's a child HCube, pad with the convergence of the parent
+        #  If it's a newly disovered HCube (or one which was not recently discovered) pad with zeros
+        for hc in hcube_list:
+          if hc in hc_conv_vals and (len(hc_conv_vals[hc]) == iteration - 1):
+            logging.debug('HC, `%s` is up to date with %d values', hc, len(hc_conv_vals[hc]))
+            continue
+          if hc not in hc_conv_vals:
+            hc_conv_vals[hc] = []
+          logging.debug('HC, `%s` is missing data.  LEN=%d  Iter=%d', hc, len(hc_conv_vals[hc]), (iteration-1))
+          # Newly discovered HCube: First Check if parent was discovered and use those stats
+          if hc not in all_hc:
+            for j in range(1, len(hc)-1):
+              # Find the parent HCube
+              if hc[:-j] in all_hc:
+                for val in hc_conv_vals[hc[:-j]]:
+                  hc_conv_vals[hc].append(val)
+                  pipe.rpush('boot:qry1:conv:%s' % k, val)
+                break
+
+          # Pad with zeroes (for previous non-projected points) as needed
+          for j in range(len(hc_conv_vals[hc]), iteration-1):
             pipe.rpush('boot:qry1:conv:%s' % k, 0)
 
         # Then push new data:
