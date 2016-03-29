@@ -394,7 +394,7 @@ class controlJob(macrothread):
       logging.debug('All Uncached Data collected Total # points = %d', len(source_points_uncached))
       source_traj_uncached = md.Trajectory(np.array(source_points_uncached), ref.top)
       bench.mark('BP:Build:Traj')
-      bench.show()
+      # bench.show()
 
       logging.info('--------  Back Projection Complete ---------------')
       if source_traj_cached is None:
@@ -757,7 +757,8 @@ class controlJob(macrothread):
         logging.info("    Pulled %d Covariance Matrices", len(covar_pts))
         logging.info("Calculating PCA on COvariance (Pick your PCA Algorithm here)")
 
-        pca_cov = calc_kpca(covar_pts, kerneltype='sigmoid')
+        # pca_cov = calc_kpca(covar_pts, kerneltype='sigmoid')
+        pca_cov = calc_pca(covar_pts)
         bench.mark('CaclPCA_COV')        
         logging.info("Projecting Covariance to PC")
         pca_cov_pts = pca_cov.transform(covar_pts)

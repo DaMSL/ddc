@@ -472,8 +472,10 @@ class simulationJob(macrothread):
         logging.info('   Performing Kernel PCA (Sigmoid) for state %d using traindata of size %d', A, len(traindata))
 
         # NOTE: Pick PCA Algorithm HERE
-        pca = calc_kpca(np.array(traindata), kerneltype='sigmoid')
+        # pca = calc_kpca(np.array(traindata), kerneltype='sigmoid')
+        pca = calc_pca(np.array(traindata))
         bench.mark('CalcKPCA_%d'%A)
+        # new_vect = pca.alphas_.T
         new_vect = pca.components_
         updateVectors = True
         if pc_vectors is not None:
@@ -482,15 +484,19 @@ class simulationJob(macrothread):
           coverage = 0.
           delta = []
           for i, variance in enumerate(pca.explained_variance_ratio_):
-            delta.append(LA.norm(pc_vectors[i] - new_vect[i]))
+            if len(pc_vectors) < i and len(new_vect) < i:
+              delta.append(LA.norm(pc_vectors[i] - new_vect[i]))
+            else:
+              break
             coverage += variance
             if coverage > .9:
               break
-          logging.info('Variance by PC:')
+          logging.info('Checking PC comparison on top %f%% of coverage. Variance by PC:', (coverage*100))
           for i, d in enumerate(delta):
             logging.info(' PC #  %d   var= %6.3f', i, d)
           logging.info('Total delta is %f', np.sum(delta))
-          logging.info('NOTE: This is a check for PCA Change. TODO: Det threshold to compare delta with')
+          logging.info('PC Coverage Checked is %f%% (check if > 90%%)', (coverage*100))
+          logging.info('NOTE: This is a check for PCA Change. TODO: Det threshold to compare delta for Staleness in accuracy vs computation time')
 
         lock = self.catalog.lock_acquire('subspace:pca:vectors:%d' % A)
         if lock is None:
@@ -502,6 +508,7 @@ class simulationJob(macrothread):
 
           # Reset change log
           self.catalog.ltrim('subspace:pca:updates:%d' % A, len(changelist), -1)
+          lock = self.catalog.lock_release('subspace:pca:vectors:%d' % A, lock)
         bench.mark('ConcurrPCAWrite_%d'%A)
 
       else:

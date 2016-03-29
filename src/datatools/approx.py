@@ -3,6 +3,8 @@ import numpy as np
 import logging
 import math
 
+from core.common import *
+
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
@@ -50,14 +52,16 @@ class ReservoirSample(object):
       for si in data:
         num_inserted += 1
         pipe.rpush(key, pickle.dumps(si))
+    # TODO:  File to capacity before evicting
     # Implement Eviction policy & replace with new points
     else:
       # Freshness Value (retaining more of newer data --> more "fresh" data)
       logging.debug('Full Reservoir %s: %d', str(label), rsize)
       PERCENT_OF_NEW_DATA = .5    
       evictNum = round(len(data) * PERCENT_OF_NEW_DATA)
-      evict = np.random.choice(DEFAULT.MAX_RESERVOIR_SIZE, evictNum)
-      store_sample = np.random.choice(data, evictNum)
+      evict = np.random.choice(np.arange(rsize), evictNum)
+      store_sample_index_list = np.random.choice(np.arange(len(data)), evictNum)
+      store_sample = [data[i] for i in store_sample_index_list]
       for i in range(evictNum):
         num_inserted += 1
         pipe.lset(key, evict[i], pickle.dumps(store_sample[i]))
@@ -83,6 +87,10 @@ class ReservoirSample(object):
     N = len(data_raw)
     totalamt = self.redis.get(key + ':full')
     spillamt = self.redis.get(key + ':spill')
+    if totalamt is None:
+      totalamt = 0
+    if spillamt is None:
+      spillamt = 0
     logging.info('##RSAMP SIZE=%d  FULL=%d  SPILL=%d ', N, int(totalamt), int(spillamt))
     arr = np.zeros(shape = (N,) + self.shape)
     for i in range(N):

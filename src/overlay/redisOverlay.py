@@ -482,18 +482,18 @@ class RedisClient(redis.StrictRedis):
     arr = np.fromstring(elm['data'], dtype=header['dtype'])
     return arr.reshape(header['shape'])
 
-  def lock_acquire(self, key, time=30):
+  def lock_acquire(self, key, hold_time=30):
     """ Acquires a lock for the given key (concurrency control)
     """
-    timeout = int(time * 1.5)
+    timeout = int(hold_time * 1.5)
 
     while True:
       lock = self.get(key + ':LOCK')
-      if lock is None or int(lock) == 0:
+      if lock is None:
         logging.info('Acquiring Lock for %s', key)
         unique_key = getUID()
         self.set(key + ':LOCK', unique_key)
-        self.expire(key + ':LOCK', 30)
+        self.expire(key + ':LOCK', hold_time)
         return unique_key   # Return unique key for this process
       timeout -= 1
       if timeout == 0:
