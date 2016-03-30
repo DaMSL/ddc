@@ -659,7 +659,7 @@ class controlJob(macrothread):
           sampled_set.append(traj)
         bench.mark('Sampler')
 
-      
+     
       ###### EXPERIMENT #5:  BIASED (Umbrella) SAMPLER
       if EXPERIMENT_NUMBER == 5:
         pipe = self.catalog.pipeline()
@@ -730,8 +730,6 @@ class controlJob(macrothread):
           traj = self.backProjection([i])
           sampled_set.append(traj)
         bench.mark('Sampler')
-
-      
 
       ###### EXPERIMENT #6:  REWEIGHT OPERATOR, et al
       if EXPERIMENT_NUMBER == 6:
@@ -968,7 +966,7 @@ class controlJob(macrothread):
         conv_min = np.min(tot_conv_data)
         conv_mean = np.mean(tot_conv_data)
         total_convergence = min(1.0, conv_mean)
-        logging.info('User Total Convergence for QRY1 = %.4f', total_convergence)
+        logging.info('##TOTAL_CONV QRY1 = %.4f', total_convergence)
         logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
 
         # PUSH User's Total Convergence here

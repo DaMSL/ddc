@@ -34,14 +34,15 @@ class ReservoirSample(object):
   def getsize(self, label):
     """ returns the current size of the reservoir
     """
-    key = self.getkey(label)
+    key = self.getkey(str(label))
     return self.redis.llen(key)
 
   def getN(self, label):
     """ N is the total of data elements for which the reservoir represents
     """
-    key = self.getkey(label + ':full')
-    return self.redis.llen(key)
+    key = self.getkey(str(label) + ':full')
+    val = self.redis.get(key)
+    return 0 if val is None else int(val)
 
   def getpercent(self, label):
     rsize = self.getsize(key)
@@ -80,20 +81,21 @@ class ReservoirSample(object):
 
       # Not full: Fill sequentially
       if do_insert and rsize < self.maxsize:
-        logging.debug('Available Space in Reservoir %s: %d', str(label), self.maxsize-rsize)
+        # logging.debug('Available Space in Reservoir %s: %d', str(label), self.maxsize-rsize)
         pipe.rpush(key, pickle.dumps(elm))
         rsize += 1
         num_inserted += 1
 
       # Full Reservoir: evict an element
       elif do_insert:
-        logging.debug('Full Reservoir %s: %d', str(label), rsize)
-        evict = np.random.randint(np.arange(rsize))
+        # logging.debug('Full Reservoir %s: %d', str(label), rsize)
+        evict = np.random.randint(rsize)
         pipe.lset(key, evict, pickle.dumps(elm))
         spill += 1
         num_inserted += 1
 
     # Keep track of total # of insertions & evictions
+    logging.info("##RSAMP Inserted= %d Evict= %d", num_inserted, spill)
     pipe.incr(key + ':full', len(data))
     pipe.incr(key + ':spill', spill)
     pipe.execute()
@@ -104,7 +106,7 @@ class ReservoirSample(object):
   def get(self, label):
     """ Retrieve the entire reservoir
     """
-    key = self.getkey(label)
+    key = self.getkey(str(label))
     if self.dtype is None:
       logging.error('Reservoir Sample for %s is not defined in the datastore.', key)
       return []

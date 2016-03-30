@@ -435,7 +435,7 @@ class simulationJob(macrothread):
     STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
     for A in range(numLabels):
       if len(groupbystate[A]) == 0:
-        logging.info('No data received for state %d.  Not processing this state here.')
+        logging.info('No data received for state %d.  Not processing this state here.', A)
         continue
       updateVectors = False
       pc_vectors = self.catalog.loadNPArray('subspace:pca:vectors:%d' % A)

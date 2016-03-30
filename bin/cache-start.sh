@@ -7,7 +7,8 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/ovs-cache.log
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
-#SBATCH --partition=lrgmem,shared,parallel,gpu,debug
+#SBATCH --partition=lrgmem
+#SBATCH --mem=30000
 
 module load namd
 module load redis
