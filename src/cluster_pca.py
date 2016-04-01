@@ -10,7 +10,7 @@ from datatools.datareduce import *
 from datatools.rmsd import *
 from mdtools.deshaw import *
 
-HOST = 'bigmem0016'
+HOST = 'compute0038'
 PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
 topo = md.load(PDB_PROT)
 filt = topo.top.select_atom_indices('alpha')

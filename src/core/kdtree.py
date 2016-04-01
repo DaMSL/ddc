@@ -243,17 +243,17 @@ class KDTree(object):
     max_gap = 0
     sorted_vals = sorted(vals)
     for i in range(1, len(sorted_vals)):
-      gap = v[i] - v[i-1]
+      gap = sorted_vals[i] - sorted_vals[i-1]
       if gap > max_gap:
         max_gap = gap
-        mid = max_gap/2 + v[i-1]    
+        mid = max_gap/2 + sorted_vals[i-1]    
 
     node.mid = mid
     left = deque()
     right = deque()
     while len(node.elm) > 0:
       pt = int(node.elm.popleft())
-      if self.deref_pt(pt)[axis] >= imd:
+      if self.deref_pt(pt)[axis] >= mid:
         right.append(pt)
       else:
         left.append(pt)

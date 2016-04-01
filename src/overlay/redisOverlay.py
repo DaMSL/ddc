@@ -6,6 +6,7 @@
 import os
 import time
 import numpy as np
+
 from collections import deque
 from threading import Thread, Event
 import logging
@@ -17,7 +18,7 @@ import json
 
 import redis
 
-from core.common import systemsettings, executecmd, getUID
+from core.common import systemsettings, executecmd, executecmd_pid, getUID
 from core.kvadt import kv2DArray, decodevalue
 from overlay.overlayService import OverlayService
 
@@ -57,6 +58,16 @@ class RedisService(OverlayService):
       host, port = self.getconnection()
       self.shutdowncmd = 'redis-cli -h %s -p %s shutdown' % (host, port)
 
+    # FOR IDLE REPORTING and Metric Recording
+    self.persist = True
+    self.idle_report = 0
+    self.idle_actual = 0
+    self.IDLE_REPORT_THETA = 60   # we will consider the service "idle" if it receives no request for 1 min
+
+    # The Command monitor to track idle time
+    self.cmd_mon = None
+    self.cmd_mon_pid = None
+
   def ping(self, host='localhost', port=None):
     """Heartbeat to the local Redis Server
     """
@@ -66,6 +77,78 @@ class RedisService(OverlayService):
     ping_cmd = 'redis-cli -h %s -p %s ping' % (host, port)
     pong = executecmd(ping_cmd).strip()
     return (pong == 'PONG')
+
+
+  def cmd_monitor(self):
+    up = self.state_running.wait(self.SERVICE_STARTUP_DELAY)
+    if not up:
+      logging.warning('COMMAND Monitor never Started. Running state was never detected')
+      return
+
+    log = logging.getLogger('redis_mon')
+    log.setLevel(logging.INFO)
+    fh = logging.FileHandler('redis_mon.log')
+    fh.setLevel(logging.INFO)
+    fmt = logging.Formatter('%(message)s')
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+    log.propagate = False
+
+    cmd = 'redis-cli monitor'
+    task = proc.Popen(cmd, shell=True,
+                                stdin=None,
+                                stdout=proc.PIPE,
+                                stderr=proc.STDOUT)
+
+    # Poll process for new output until finished; buffer output
+    # NOTE: Buffered output reduces message traffic via mesos
+    BUFFER_SIZE = 128
+    last_ts = 0
+    last = 0
+    cmd_count = 0
+    logbuffer = ''
+    while not self.terminationFlag.is_set():
+      output = task.stdout.readline()
+      logbuffer += output.decode()
+      if output == '' and task.poll() != None:
+        break
+      # If buffer-size is reached: send update message
+      #  Where to put this info???
+      if len(logbuffer) > BUFFER_SIZE:
+        for line in logbuffer.split('\n'):
+          elms = line.split()
+          if len(elms) > 3:
+            ts = int(elms[0].split('.')[0])
+            cmd = elms[3].replace('"', '').upper()
+            if cmd == 'PING':
+              continue
+            if ts == last:
+              cmd_count += 1
+            else:
+              log.info('%d %d', ts, cmd_count)
+              last = ts
+              cmd_cound = 1
+        logbuffer = ""
+
+    for line in logbuffer.split('\n'):
+      elms = line.split()
+      if len(elms) == 1:
+        pass
+      else:
+        ts = int(elms[0].split('.')[0])
+        cmd = elms[3].replace('"', '').upper()
+        if cmd == 'PING':
+          continue
+        if ts == last:
+          cmd_count += 1
+        else:
+          log.info('%d %d', ts, cmd_count)
+          last = ts
+          cmd_count = 1
+
+    exitCode = task.returncode
+    logging.info("Redis Monitor is Completed. Exit: %d", exitCode)      
+
 
   def prepare_service(self):
     # Prepare 
@@ -85,6 +168,12 @@ class RedisService(OverlayService):
     self.launchcmd = 'redis-server %s' % self.config
     self.shutdowncmd = 'redis-cli shutdown'
 
+    self.cmd_mon = Thread(target=self.cmd_monitor)
+    self.cmd_mon.start()
+
+    # LAUNCH THIS:
+    #  redis monitor > redis_mon.log 2>&1 &
+
   def idle(self):
     return False
     if self.connection is None:
@@ -95,7 +184,10 @@ class RedisService(OverlayService):
     for client in self.connection.client_list():
       if client['name'] == 'monitor':
         continue
-      if int(client['idle']) < self.CATALOG_IDLE_THETA:
+      # READ IN Last N lines of the monitor log
+      if self.persist:
+        return False
+      else:
         logging.debug('[Monitor - %s]  Service was idle for more than %d seconds. Stopping.', self._name_svc, CATALOG_IDLE_THETA)
         return True
     return False
@@ -211,6 +303,10 @@ class RedisService(OverlayService):
     self.connection.slaveof()
 
   def tear_down(self):
+    if self.cmd_mon_pid is not None:
+      exectutecmd('kill -9 %d' % self.cmd_mon_pid)
+    if self.cmd_mon is not None and self.cmd_mon.is_alive():
+      logging.warning("WARNING. The contol Monitor thread was still alive (somehow)")
     logging.info("[Redis] Tear down complete.")
 
 class RedisClient(redis.StrictRedis):

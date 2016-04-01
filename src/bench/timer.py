@@ -25,6 +25,7 @@ class microbench:
     self.last = None
     self.recent = None
     self.name = name
+    self.uid = int('000000' if uid is None else uid)
     # Set up logging
     log = logging.getLogger(name)
     log.setLevel(logging.INFO)
@@ -73,3 +74,27 @@ class microbench:
       str_d = '%f'%d if d < 10 else '%d'%d
       self.log.info('%d,%s,%s,%s',num,str_t,str_d,label)
       num += 1
+
+  def postdb(self):
+    try:
+      conn = db.getConn()
+      cur = conn.cursor()
+      qry = "SELECT expid FROM expr WHERE expname='%s';" % self.name
+      cur.execute(qry)
+      eid = int(cur.fetchone()[0])
+      last = None
+      num = 0
+      for label, ts in self.tick.items():
+        r = (ts-self._begin).total_seconds()
+        if last is None:
+          last = ts
+        d = (ts-last).total_seconds()
+        last = ts
+        db.insert('bench_ctl', eid, self.uid, num, r, d, label)
+        num += 1
+      conn.commit()
+      conn.close()
+    except Exception as inst:
+      print("[DB] Failed to insert benchmark values:" )
+      traceback.print_exc()
+      conn.close()

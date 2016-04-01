@@ -1,9 +1,12 @@
 import sqlite3
 import sys
 import os
+import logging
 from collections import OrderedDict
 import datetime as dt
 import subprocess as proc
+
+from core.common import systemsettings
 
 import mdtraj as md
 import matplotlib.pyplot as plt
@@ -13,6 +16,68 @@ import numpy as np
 
 
 HOME = os.environ['HOME']
+default_log_loc = HOME + '/ddc/results/'
+
+
+dbDisabled = False
+
+
+class StatCollector:
+  def __init__(self, name, uid=None):
+    setting = systemsettings()
+    self.stat = OrderedDict()
+    self.name = name
+    self.uid = int('000000' if uid is None else uid)
+    # Set up logging
+    log = logging.getLogger(name)
+    log.setLevel(logging.INFO)
+    fh = logging.FileHandler(default_log_loc + 'stat_' + name + '.log')
+    fh.setLevel(logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    if uid is None:
+      fmt = logging.Formatter(name + ',%(message)s')
+    else:
+      fmt = logging.Formatter(uid + ',%(message)s')
+    fh.setFormatter(fmt)
+    ch.setFormatter(fmt)
+    log.addHandler(fh)
+    log.addHandler(ch)
+    log.propagate = False
+    self.log = log
+
+
+  def collect(self, key, value):
+    self.stat[key] = value
+
+  def show(self):
+    num = 0
+    for label, data in self.stat.items():
+      if isinstance(data, list):
+        view = ','.join([str(i) for i in data])
+      else:
+        view = str(data)
+      self.log.info('%d,%s,%s',num,label,data)
+      num += 1
+
+  def postdb(self):
+    try:
+      eid = db.get_expid(self.name)
+      num = 0
+      for label, data in self.stat.items():
+        if isinstance(data, list):
+          view = ','.join([str(i) for i in data])
+        else:
+          view = str(data)
+        db.insert('stat_ctl', eid, self.uid, label, view)
+        num += 1
+      conn.commit()
+      conn.close()
+    except Exception as inst:
+      print("[DB] Failed to insert CTL stats values:" )
+      traceback.print_exc()
+      conn.close()
+
 
 def scrap_cw(appl_name):
   ts = None
@@ -49,7 +114,9 @@ def scrap_cw(appl_name):
   for k, v in sorted(data.items()):
     print(k, np.mean([float(p[1]) for p in v]))
 
-dbDisabled = False
+
+
+
 
 
 
@@ -76,14 +143,6 @@ def timecmd(cmd, verbose=True):
     print ('  Time: ', diff)
   return diff 
 
-loc = '/dev/shm/tmp'
-data = []
-for i in range(5):
-  t = timecmd(lambda: md.load(loc+'/bpti-all-03%d.dcd'%i, top=loc+'/bpti-all.pdb'))
-  data.append(t)
-print('Avg time [%s]  ' % loc, np.mean(data))
-
-idxfilt = [23, 46, 125, 154, 202, 209, 211, 344, 555, 666]
 
   # home = os.environ['HOME']
   # dcd = home + '/work/bpti/' + filename
@@ -106,3 +165,7 @@ def timefld(n):
   end = dt.datetime.now()
   print ('Time: ', (end-start).total_seconds())
   return tr
+
+
+
+

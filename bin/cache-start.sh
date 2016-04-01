@@ -8,7 +8,7 @@
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/ovs-cache.log
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
 #SBATCH --partition=lrgmem
-#SBATCH --mem=30000
+#SBATCH --mem=120000
 
 module load namd
 module load redis

@@ -40,11 +40,11 @@
         "timestep": 0,
         "terminate": "no",
         "numLabels": 5,
-        "runtime": 200000,
+        "runtime": 150000,
 	"dcdfreq": 500,
-    "numresources": 20,
+    "numresources": 12,
     "backproj:approxlimit": 50,
-    "ctlBatchSize_min": 800,
+    "ctlBatchSize_min": 600,
     "ctlBatchSize_max": 1000,
 	"ctlIndexHead": 0
 
@@ -66,7 +66,7 @@
         "max_num_new_jc": 10,
         "monitor_wait_delay": 30,
         "nodes": 1,
-        "partition": "parallel",
+        "partition": "debug,shared,parallel",
 	"rmsd_theta": 0.33,
         "raw_archive": "/home-1/bring4@jhu.edu/work/bpti",
         "workdir": "/home-1/bring4@jhu.edu/work"

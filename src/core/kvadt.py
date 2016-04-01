@@ -101,7 +101,7 @@ class kvadt(object):
     raise NotImplemented
 
   @abc.abstractmethod
-  def set(self, index):
+  def set(self, key, index):
     """
     Set value in the adt at key, index
     """
@@ -209,6 +209,107 @@ class kv2DArray(kvadt):
     mat = self.getAll()
     for row in mat:
       logging.info('   ' + " ".join([fmt%x for x in row]))
+
+
+
+class kvMapList(kvadt):
+
+  """
+  Wrapper for a map of key->list  
+  Each element in the map is a list; Ensures every list is the same size
+  and pads new elements with the default value
+  """
+  __metaclass__ = abc.ABCMeta
+
+  def __init__(self, db, name, default=0):
+    kvadt.__init__(self, db, name)
+
+    self.db = db
+    self.name = name
+    self.default = default
+    self.length = 0
+    self.labellist = []
+    self.type = None
+
+    # Check if the array already exists
+    length = self.db.exists(self.name + ':total')
+    if stored:
+      self.length = int(length)
+      self.labellist = self.db.lrange(self.name + ':labels', 0, -1)
+
+  def key(self, name, x):
+    """X is either a number or a pair of numbers
+    """
+    if isinstance(x, str):
+      return self.name + x
+    elif isinstance(x, tuple):
+      return self.name +':%d_%d' % x
+    else:
+      return self.name + str(x)
+
+  def __get__(self):
+    return self._value
+
+  def __set__(self, value):
+    self._value = value
+
+  def _elmkey (self, x, y):
+    return self.key(self.name, x, y)
+
+  def get (self):
+    mapping = {}
+    if self.labellist is None:
+      logging.warning('Cannot get lists for %s. No data exists')
+      return {}
+
+    lcast = lambda x: int(x) if isinstance(x, int) else tuple(x)
+
+    pipe = self.db.pipeline()
+    for label in self.labellist:
+      pipe.lrange(self.name + ':' + label)
+    results = pipe.execute()
+
+    for i, vals in enumerate(results):
+      key = lcast(self.labellist[i])
+      mapping[key] = vals
+
+    self._value = mapping
+    return mapping
+
+
+  def merge(self, mapping):
+    pipe = self.db.pipeline()
+    for k in mapping.keys():
+      label = self.key(k)
+      pipe.rpush(self.name + ':' + label)
+      if label not in self.labellist:
+        self.labellist.append(label)
+        pipe.rpush(self.name + ':labels', label)
+    pipe.incr(self.name + ':total')
+    pipe.execute()
+
+
+  def set (self, key, index):
+    pass
+    
+
+  # Single Element operations
+  def setelm (self, x, y, elm):
+    self.db.set(self._elmkey(x, y), elm)
+
+  def getelm (self, x, y):
+    return float(self.db.get(self._elmkey(x, y)))
+
+  def incr (self, x, y, amt=1):
+    self.db.incrbyfloat(self._elmkey(x, y), amt)
+    # else:
+    #   logging.error("ERROR!  Trying to increment a non-number")
+
+  def display(self):
+    mat = self.getAll()
+    for row in mat:
+      logging.info('   ' + " ".join([fmt%x for x in row]))
+
 
 
 def runtest():

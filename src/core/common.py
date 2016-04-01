@@ -30,6 +30,13 @@ def executecmd(cmd):
   return stdout.decode()
 
 
+def executecmd_pid(cmd):
+  task = proc.Popen(cmd, shell=True,
+          stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
+  stdout, stderr = task.communicate()
+  return stdout.decode(), task.pid
+
+
 
 
 def singleton(cls):
@@ -64,6 +71,7 @@ class systemsettings:
     #  READ & SET for EACH 
     application = os.path.basename(self._confile).split('.')[0]
     self.APPL_LABEL  = application
+    self.name = application   #Alias
     self.WORKDIR     = ini.get('workdir', '.')
 
     self.LOGDIR = os.path.join(self.WORKDIR, 'log', application)

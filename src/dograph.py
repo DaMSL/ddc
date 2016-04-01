@@ -94,6 +94,13 @@ def linegraph(X, title):
   plt.close()  
 
 
+
+def linegraphcsv(X, title, nolabel=False):
+  """ Plots line series for a csv list
+  """
+  
+
+
 # encode = [0, 4, 2, 3, 1]
 # gmm_res = [encode[g] for g in gmmfull5]
 # gmmc = [np.argmax(np.bincount(gmm_res[i:i+25])) for i in range(0, 103125, 25)]

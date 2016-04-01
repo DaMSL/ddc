@@ -18,13 +18,16 @@ from sklearn.decomposition import IncrementalPCA
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
-
 class PCAnalyzer(object):
 
   __metaclass__ = abc.ABCMeta
 
   def __init__(self):
     self.n_components = 0
+    self.dim = None
+    self.type = None
+    self.pca = None
+    self.trainsize = 0
 
   @abc.abstractmethod
   def solve(self, X):
@@ -33,11 +36,43 @@ class PCAnalyzer(object):
     pass
 
   @abc.abstractmethod
-  def project(self, X, numpc):
+  def project(self, X):
     """ Given Data X, Project high dimensional points 
     Should return the projected points to numpc components
     """
     pass
+
+  def store(self, db, key):
+    logging.info('Storing PCA Analyzer of type: %s', self.type)
+    db.hmset(key, {'type': self.type,
+        'dim': self.dim,
+        'trainsize': self.trainsize,
+        'n_comp': self.n_components,
+        'data': pickle.dumps(self.pca)})
+
+  @classmethod
+  def load(cls, db, key):
+    """ Load a PC analyzer from the datastore and cast it to the
+    correct child object
+    """
+    obj = db.hgetall(key)
+    if obj == {}:
+      return None
+    print('Loaded Obj', obj['type'])
+    n_comp = obj['n_comp']
+    analyzer = None
+    if obj['type'] == 'linear':
+      analyzer = PCALinear(n_comp)
+    elif obj['type'] == 'kernel':
+      analyzer = PCAKernel(n_comp)
+    if not analyzer:
+      print('Could not load the analyzer')
+      return None
+    analyzer.pca = pickle.loads(obj['data'])
+    analyzer.dim = eval(str(obj['dim']))
+    analyzer.trainsize = int(obj['dim'])
+    return analyzer
+
 
 
 class PCALinear(PCAnalyzer):
@@ -47,21 +82,47 @@ class PCALinear(PCAnalyzer):
     if isinstance(components, int):
       self.n_components = components
     self.pca = PCA(n_components = components)
+    self.type = 'linear'
 
   def solve(self, X):
     self.dim = np.prod(X.shape[1:])
-    self.pca.fit(X.reshape(len(X), dim))
-    self.pc = self.pca.components_
+    self.pca.fit(X.reshape(len(X), self.dim))
+    self.trainsize = len(X)
 
-  def project(self, X, numpc):
-    dimX = np.pod(X.shape[1:])
+  def project(self, X):
+    dimX = np.prod(X.shape[1:])
     if dimX != self.dim:
       logging.error('Projection Error in PCA: Cannot reshape/project %s size data using PC Vects of size, %s', str(X.shape), str(self.dim))
       return None
-    projection = np.zeros(shape=(len(X), numpc))
-    for i, s in enumerate(X):
-      np.copyto(projection[i], np.array([np.dot(s.flatten(),v) for v in self.pc[:numpc]]))
+    projection = self.pca.transform(X.reshape(len(X), dimX))
     return projection
+
+
+
+class PCAKernel(PCAnalyzer):
+
+  def __init__(self, components, ktype='poly'):
+    PCAnalyzer.__init__(self)
+    if isinstance(components, int):
+      self.n_components = components
+    self.pca = KernelPCA(kernel=ktype, n_components=components)
+    self.type = 'kernel'
+
+  def solve(self, X):
+    self.dim = np.prod(X.shape[1:])
+    self.pca.fit(X.reshape(len(X), self.dim))
+    self.trainsize = len(X)
+
+  def project(self, X):
+    dimX = np.prod(X.shape[1:])
+    if dimX != self.dim:
+      logging.error('Projection Error in KPCA: Cannot reshape/project %s size data using PC Vects of size, %s', str(X.shape), str(self.dim))
+      return None
+    projection = self.pca.transform(X.reshape(len(X), dimX))
+    return projection
+
+
+
 
 
 def calc_pca(xyz, title=None):
@@ -161,3 +222,43 @@ def stepwise_kpca(X, gamma, n_components):
     lambdas = [eigvals[-i] for i in range(1,n_components+1)]
 
     return alphas, lambdas
+
+
+
+if __name__ == '__main__':
+  X = np.random.random(size=(1000, 12, 3))
+  Y = np.random.random(size=(1000, 12, 3))
+
+  print("Linear PCA Check")
+  lpca = PCALinear(5)
+  lpca.solve(X)
+  p1 = lpca.project(X)
+  print(p1.shape)
+
+  print("Kernel PCA Check")
+  kpca = PCAKernel(5)
+  kpca.solve(X)
+  p2 = kpca.project(X)
+  p3 = kpca.project(Y)
+  print(p2.shape)
+  print(kpca.pca.get_params())
+
+  import redis
+  print("Storage Check")
+  r = redis.StrictRedis(decode_responses=True)
+  lpca.store(r, 'test_lpca')
+  kpca.store(r, 'test_kpca')
+
+  print("Load Check")
+  l2 = PCAnalyzer.load(r, 'test_lpca')
+  k2 = PCAnalyzer.load(r, 'test_kpca')
+  print(kpca.pca.get_params())
+
+  print("Correctness Check")
+  y1 = lpca.project(Y)
+  y2 = l2.project(Y)
+  print(y1 == y2)
+
+  y1 = kpca.project(Y)
+  y2 = k2.project(Y)
+  print(y1 == y2)

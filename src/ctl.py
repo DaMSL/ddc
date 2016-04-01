@@ -23,12 +23,14 @@ import datatools.datareduce as datareduce
 import datatools.datacalc as datacalc
 import mdtools.deshaw as deshaw
 import datatools.kmeans as KM
-from datatools.pca import calc_kpca, calc_pca, project_pca
+# from datatools.pca import calc_kpca, calc_pca, project_pca
+from datatools.pca import PCAnalyzer, PCAKernel
 from datatools.approx import ReservoirSample
 from mdtools.simtool import generateNewJC
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
+from bench.stats import StatCollector
 
 
 __author__ = "Benjamin Ring"
@@ -40,104 +42,6 @@ __status__ = "Development"
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 np.set_printoptions(precision=5, suppress=True)
-
-
-def makeLogisticFunc (maxval, steep, midpt):
-  return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
-
-skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
-
-
-def bootstrap (source, samplesize=.1, N=50, interval=.95):
-  """
-  Bootstrap algorithm for sampling and confidence interval estimation
-  """
-  ci_lo = (1. - interval)/2
-  ci_hi  = 1. - ci_lo
-
-  # Get unique label/category/hcube ID's
-  V = set()
-  for i in source:
-    V.add(i)
-  # print ("BS: labels ", str(V))
-
-  #  EXPERIMENT #1, 4+:  SAMPLE SIZE WAS 10%
-  L = round(len(source) * samplesize)
-  #  EXPERIMENT #2&3:  FIXED SAMPLE SIZE OF 100K (or less)
-  # L = min(len(source), 100000)
-
-  # Calculate mu_hat from bootstrap -- REMOVED
-  # mu_hat = {}
-  # groupby = {v_i: 0 for v_i in V}
-  # for s in source:
-  #   groupby[s] += 1
-  # for v_i in V:
-  #   mu_hat[v_i] = groupby[v_i]/L
-
-  # Iterate for each bootstrap and generate statistical distributions
-  boot = {i : [] for i in V}
-  for i in range(N):
-    strap   = [source[np.random.randint(len(source))] for n in range(L)]
-    groupby = {v_i: 0 for v_i in V}
-    for s in strap:
-      groupby[s] += 1
-    for v_i in V:
-      boot[v_i].append(groupby[v_i]/L)
-  probility_est = {}
-  for v_i in V:
-    P_i = np.mean(boot[v_i])
-    delta  = np.array(sorted(boot[v_i]))  #CHECK IF mu or P  HERE
-    ciLO = delta[round(N*ci_lo)]
-    ciHI = delta[math.floor(N*ci_hi)]
-    probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
-  return probility_est
-
-
-def bootstrap_by_state (source, samplesize=.1, N=50, interval=.95):
-  """
-  Bootstrap algorithm for sampling and confidence interval estimation
-  """
-  ci_lo = (1. - interval)/2
-  ci_hi  = 1. - ci_lo
-
-  # Get unique label/category/hcube ID's
-  V = set()
-  for i in source:
-    V.add(i)
-
-  #  EXPERIMENT #1, 4+:  SAMPLE SIZE WAS 10%
-  L = round(len(source) * samplesize)
-  #  EXPERIMENT #2&3:  FIXED SAMPLE SIZE OF 100K (or less)
-  # L = min(len(source), 100000)
-
-  # Iterate for each bootstrap and generate statistical distributions
-  boot = {i : [] for i in V}
-  for i in range(N):
-    strap   = [source[np.random.randint(len(source))] for n in range(L)]
-    groupby = {v_i: 0 for v_i in V}
-    totals = [0 for i in range(5)]
-    for s in strap:
-      groupby[s] += 1
-    for v_i in V:
-      A, B = eval(v_i)
-      if A != B:
-        totals[A] += groupby[v_i]
-    for v_i in V:
-      A, B = eval(v_i)
-      if A != B:  
-        boot[v_i].append(groupby[v_i]/totals[A])
-  probility_est = {}
-  for v_i in V:
-    A, B = eval(v_i)
-    if A == B:
-      probility_est[v_i] = (0, 0, 0, 0.)
-    else:
-      P_i = np.mean(boot[v_i])
-      delta  = np.array(sorted(boot[v_i]))  #CHECK IF mu or P  HERE
-      ciLO = delta[round(N*ci_lo)]
-      ciHI = delta[math.floor(N*ci_hi)]
-      probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
-  return probility_est
 
 
 def q_select (T, value, limit=None):
@@ -162,6 +66,7 @@ class controlJob(macrothread):
       self.addMut('jcqueue')
       self.addMut('converge')
       self.addMut('ctlIndexHead')
+      self.addMut('ctlCountHead')
       self.addImmut('ctlSplitParam')
       self.addImmut('ctlDelay')
       self.addImmut('numLabels')
@@ -409,7 +314,6 @@ class controlJob(macrothread):
       distribute resources among users' sampled values.
       """
       logging.debug('CTL MT')
-      bench = microbench('ctl', self.seqNumFromID())
 
     # PRE-PROCESSING ---------------------------------------------------------------------------------
       logging.debug("============================  <PRE-PROCESS>  =============================")
@@ -418,6 +322,9 @@ class controlJob(macrothread):
       logging.info('TIMESTEP: %d', self.data['timestep'])
 
       settings = systemsettings()
+      bench = microbench('ctl_%s' % settings.name, self.seqNumFromID())
+      stat = StatCollector('ctl_%s' % settings.name, self.seqNumFromID())
+
       # Connect to the cache
       self.cacheclient = CacheClient(settings.APPL_LABEL)
 
@@ -430,40 +337,19 @@ class controlJob(macrothread):
       bench.start()
       logging.debug('Loading RMS Labels')
       start_index = max(0, self.data['ctlIndexHead'])
+
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
       logging.debug(" Start_index=%d,  thru_index=%d,   ctlIndexHead=%d", start_index, thru_index, self.data['ctlIndexHead'])
       labeled_pts_rms = self.catalog.lrange('label:rms', start_index, thru_index)
       
+      num_pts = len(labeled_pts_rms)
       self.data['ctlIndexHead'] = thru_index
 
-      logging.debug('##NUM_RMS_THIS_ROUND: %d', len(labeled_pts_rms))
+      thru_count = self.catalog.get('observe:count')
+
+      logging.debug('##NUM_RMS_THIS_ROUND: %d', num_pts)
+      stat.collect('numpts', len(labeled_pts_rms))
       self.catalog.rpush('datacount', len(labeled_pts_rms))
-      # # varest_counts_rms = {}
-      # # total = 0
-      # # for i in labeled_pts_rms:
-      # #   total += 1
-      # #   if i not in varest_counts_rms:
-      # #     varest_counts_rms[i] = 0
-      # #   varest_counts_rms[i] += 1
-
-      # # Load PCA Subspace of hypecubes  (for read only)
-      # # hcube_mapping = json.loads(self.catalog.get('hcube:pca'))
-      # # logging.debug('  # Loaded PCA keys = %d', len(hcube_mapping.keys      # TODO: accessor function is for 1 point (i) and 1 axis (j). 
-      # #  Optimize by changing to pipeline  retrieval for all points given 
-      # #  a list of indices with an axis
-      # # LOAD in enture PCA Subspace
-
-      # #  TODO: Approximiation HERE <<--------------
-      # # func = lambda i,j: np.fromstring(self.catalog.lindex('subspace:pca', i))[j]
-      # packed_subspace = self.catalog.lrange('subspace:pca', 0, -1)
-      # pca_subspace = np.zeros(shape=(len(packed_subspace), settings.PCA_NUMPC))
-      # for x in packed_subspace:
-      #   pca_subspace = np.fromstring(x, dtype=np.float32, count=settings.PCA_NUMPC)
-
-      # bench.mark('LD:pcasubspace:%d' % len(pca_subspace))
-      # logging.debug("Reconstructing the tree... (%d pca pts)", len(pca_subspace))
-      # hcube_tree = KDTree.reconstruct(hcube_mapping, pca_subspace)
-      # bench.mark('KDTreee_build')
 
     # Calculate variable PDF estimations for each subspace via bootstrapping:
       logging.debug("=======================  <SUBSPACE CONVERENCE>  =========================")
@@ -477,85 +363,60 @@ class controlJob(macrothread):
       vals_iter = {}
       pipe = self.catalog.pipeline()
       for v_i in binlist:
-        key = str(v_i)
-        A, B = eval(key)
-        val = 0 if key not in pdf_rms_iter.keys() else pdf_rms_iter[key]
+        A, B = v_i
+        val = 0 if v_i not in pdf_rms_iter.keys() else pdf_rms_iter[v_i]
         vals_iter[v_i] = val
-        pipe.rpush('pdf:iter:%d_%d' % (A, B), val)
+        pipe.rpush('pdf:local:%d_%d' % (A, B), val)
       pipe.execute()
       bench.mark('PostPDF:This')
 
       #  LOAD ALL POINTS TO COMPARE CUMULTIVE vs ITERATIVE:
       #  NOTE: if data is too big, cumulative would need to updated separately
-      all_pts_rms = self.catalog.lrange('label:rms', 0, thru_index)
+
+      #  FOR EARLIER EXPIRIMENTS: We pulled ALL pts to calc global PDF
+      # all_pts_rms = self.catalog.lrange('label:rms', 0, thru_index)
+      # pdf_rms_cuml = datacalc.posterior_prob(all_pts_rms)
       logging.info("Posterer PDF: ALL DATA Points Collected")
-      pdf_rms_cuml = datacalc.posterior_prob(all_pts_rms)
-      pipe = self.catalog.pipeline()
+
+      # Retrieve Previous Cuml stats
       vals_cuml = {}
+      pipe = self.catalog.pipeline()
       for v_i in binlist:
-        key = str(v_i)
-        A, B = eval(key)
-        val = 0 if key not in pdf_rms_cuml.keys() else pdf_rms_cuml[key]
-        vals_cuml[v_i] = val
-        pipe.rpush('pdf:cuml:%d_%d' % (A, B), val)
+        A, B = v_i
+        pipe.llen('varbin:rms:%d_%d' % (A, B))
+      results = pipe.execute()
+      logging.debug('Global Counts retrieved for %d keys', len(results))
+
+      for i, elm in enumerate(results):
+        val = int(elm) if elm is not None else 0
+        vals_cuml[binlist[i]] = val
+
+      # Calculate incremental PDF
+      pdf_rms_cuml = datacalc.incremental_posterior_prob(vals_cuml, labeled_pts_rms)
+
+      pipe = self.catalog.pipeline()
+      for v_i in binlist:
+        A, B = v_i
+        pipe.rpush('pdf:global:%d_%d' % (A, B), pdf_rms_cuml[v_i])
       pipe.execute()
       bench.mark('PostPDF:All')
 
       logging.info("PDF Comparison for all RMSD Bins")
-      logging.info('##VAL TS   BIN:  ThisSample  AllData') 
+      logging.info('##VAL TS   BIN:  Local  Global') 
       obs_by_state = [0 for i in range(numLabels)]
       for key in sorted(binlist):
         A, B = key
-        obs_by_state[A] += int(vals_cuml[key] * thru_index)
+        obs_by_state[A] += int(vals_iter[key]*num_pts) + int(vals_cuml[key] * thru_index)
         logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
           (self.data['timestep'], str(key), vals_iter[key], vals_cuml[key]))
 
       logging.info("Total Observations by state: %s", str(obs_by_state))
-      bench.mark('PosteriorPDF:RMS')
-
-      #  Bootstrap
-      logging.info("Running both iterative and cumualtive Bootstrap on %d points.", len(all_pts_rms))
-      boot_length = len(labeled_pts_rms) // (settings.RUNTIME_FIXED/settings.DCDFREQ)
-      boot_iter = datacalc.gen_bootstraps(all_pts_rms, boot_length)
-      boot_cuml = datacalc.gen_bootstraps(all_pts_rms, boot_length, cumulative=True)
-
-      stats_iter = {b: datacalc.bootstrap_std(boot_iter[b]) for b in binlist}
-      stats_cuml = {b: datacalc.bootstrap_std(boot_cuml[b]) for b in binlist}
-
-      #  Convergence is a list corresponding to 25 bins (for discrete PDF selection below)
-      convergence_iter = [0 for i in range(len(binlist))]
-      convergence_cuml = [0 for i in range(len(binlist))]
-
-      #  Exctract bootstrap stats, calculate convergence and save to catalog
-      pipe = self.catalog.pipeline()
-      for b, v_i in enumerate(binlist):
-        A, B = v_i
-        mean, CI, stddev, err = stats_iter[v_i]
-        if mean > 0:
-          convergence_iter[b] = CI/mean
-        pipe.rpush('boot:iter:mn', mean)
-        pipe.rpush('boot:iter:ci', CI)
-        pipe.rpush('boot:iter:er', err)
-        pipe.rpush('boot:iter:cv', convergence_iter[b])
-
-        mean, CI, stddev, err = stats_cuml[v_i]
-        if mean > 0:
-          convergence_cuml[b] = CI/mean
-        pipe.rpush('boot:cuml:mn', mean)
-        pipe.rpush('boot:cuml:ci', CI)
-        pipe.rpush('boot:cuml:er', err)
-        pipe.rpush('boot:cuml:cv', convergence_cuml[b])
-
-      pipe.execute()
-      bench.mark('Convergence')
-
-
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
       #   Using RMS and PCA, umbrella sample transitions out of state 3
 
-      EXPERIMENT_NUMBER = 6
+      EXPERIMENT_NUMBER = 7
 
       logging.info("RUNNING EXPER CONFIGURATION #%d", EXPERIMENT_NUMBER)
       # 1. get all points in some state
@@ -732,7 +593,7 @@ class controlJob(macrothread):
         bench.mark('Sampler')
 
       ###### EXPERIMENT #6:  REWEIGHT OPERATOR, et al
-      if EXPERIMENT_NUMBER == 6:
+      if EXPERIMENT_NUMBER in [6, 7]:
         #  1. RUN PCA on Covariance Matrices and project using PCA
         #  2. Calculate KMeans using varying K-clusters
         #  3. Score each point with distance to centroid
@@ -752,79 +613,123 @@ class controlJob(macrothread):
         covar_fidx = self.catalog.lrange('subspace:covar:fidx', 0, -1)
         covar_index = self.catalog.lrange('subspace:covar:xid', 0, -1)
         logging.info("    Pulled %d Covariance Matrices", len(covar_pts))
-        logging.info("Calculating PCA on COvariance (Pick your PCA Algorithm here)")
+        logging.info("Calculating Kernel PCA on Covariance (Pick your PCA Algorithm here)")
+        stat.collect('kpcatrainsize', len(covar_pts))
 
-        # pca_cov = calc_kpca(covar_pts, kerneltype='sigmoid')
-        pca_cov = calc_pca(covar_pts)
-        bench.mark('CaclPCA_COV')        
+
+        # LOAD KPCA, CHECK SIZE/STALENESS & RE_CALC ONLY IF NEEDED
+        kpca_key = 'subspace:covar:kernel'
+        kpca = PCAnalyzer.load(self.catalog, kpca_key)
+        if kpca is None:
+          kpca = PCAKernel(None, 'rbf')
+          kpca.solve(covar_pts)
+
+        #  Check if the Kernel is old, but cap at 5K Pts (is this enough?)
+        if min(5000, len(covar_pts)) > (kpca.trainsize * 1.2):
+          logging.info('PCA Kernel is old (Updating it). Trained on data set of size %d. Current reservoir is %d pts.', tsize, rsize)
+          kpca.solve(traindata)
+
+        bench.mark('CaclKPCA_COV')        
         logging.info("Projecting Covariance to PC")
-        pca_cov_pts = pca_cov.transform(covar_pts)
+        pca_cov_pts = kpca.project(covar_pts)
+        bench.mark('ProjKPCA')
 
-        # TODO:  FOR NOW use 5
-        NUM_K = 5
+        # OW/ PROJECT NEW PTS ONLY -- BUT RETAIN grouped index of all points
+
+        # TODO:  FOR NOW use 5  (AND SAME WITH KMEANS RE-CALC)
+        # TODO:  Using 8 with EXP 7  (AND SAME WITH KMEANS RE-CALC)
+        NUM_K = 8
         logging.info('Running KMeans on covariance data for K =  %d  (TODO: vary K)', NUM_K)
         centroid, clusters = KM.find_centers(pca_cov_pts, NUM_K)
         bench.mark('CalcKMeans_COV')
+
         # TODO: Eventually implement per-point weights
         cov_label, cov_wght = KM.classify_score(pca_cov_pts, centroid)
         cluster_sizes = np.bincount(cov_label)
-        # For now, use normatizes cluster sizes as the weights
+        # For now, use normalized cluster sizes as the weights
         cov_clust_wgts = cluster_sizes / np.sum(cluster_sizes)
-        logging.info('KMeans complete: bincounts is \n   %s', str(cluster_sizes))
-
+        logging.info('KMeans complete: bincounts is   %s', str(cluster_sizes))
+        stat.collect('KMeansCluster', cluster_sizes)
 
         cov_iteration = self.catalog.get('subspace:covar:count')
         cov_iteration = 0 if cov_iteration is None else cov_iteration
         logging.info("Storing current centroid results (this is iteration #%d", cov_iteration)
         self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
         self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
+        bench.mark('KmeansComplete')
 
         logging.info("=====  SELECT points from smallest 2 clusters (of STEP-A)")
+
+        # TODO:  Here is the update for newly labeled data
+        groupby_label = {k: [] for k in range(NUM_K)}
+        for i, L in enumerate(cov_label):
+          groupby_label[L].append(i)
+
+        MAX_SAMPLE_SIZE   = 250   # Max # of cov "pts" to back project
+        COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
+        MAX_PT_PER_MATRIX =  50   # 10% of points from Source Covariance matrix
+
+        # FOR EXPERIMENT # 7 -->  We are using approximiation here. Will need to 
+        #  Save approx amt.
+        #   After analysis ~ 250 max pull pts should be small enough per (500 total)
         # Select smaller clusters from A
         size_order = np.argsort(cluster_sizes)
         Klist = size_order[0:2]  # [, 0:2]
         cov_select = [[] for k in range(NUM_K)]
         cov_weights = [[] for k in range(NUM_K)]
-        for i, L in enumerate(cov_label):
-          if L in Klist:
-            # Note each covar matrix is 200 raw points -- back project ALL for now
-            # TODO: Should we sample or aproximate here?
-            cov_select[L].extend([int(covar_index[i])+offset for offset in range(200)])
-            cov_weights[L].extend([cov_wght[i] for offset in range(200)])
+        for L in Klist:
+          if len(groupby_label[L]) <= MAX_SAMPLE_SIZE:
+            covlist = groupby_label[L]
+          else:
+            covlist = np.random.choice(groupby_label[L], MAX_SAMPLE_SIZE)
+          for cov in covlist:
+            selected_hd_idx = np.random.choice(COVAR_SIZE, MAX_PT_PER_MATRIX).tolist()
+            cov_select[L].extend([int(covar_index[cov]) + i for i in selected_hd_idx])
+            cov_weights[L].extend([cov_wght[cov] for i in range(MAX_SAMPLE_SIZE)])
 
         logging.info("Selection Operation results:")
+        approx_factor = {}
         for L in Klist:
           logging.info("Selected %d points for cluster # %d  (from KMeans on Covariance matrices)", len(cov_select[L]), L)
+          approx_factor[L] = len(cov_select[L]) / (COVAR_SIZE * len(groupby_label[L]))
+          logging.info("##APPOX: %d  %f", L, approx_factor[L])
+        bench.mark('SampleKMCluster')
+
         # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
         reservoir = ReservoirSample('rms', self.catalog)
 
         logging.info("=====  BUILD HCube Tree(s) Using Smallest State(s) (FROM RMSD Obsevations) ")
         hcube_B = {}
         hcube_B_wgt = {}
-        order_obs_states = np.argsort(obs_by_state)
-        state_list = []
-        logging.info("Scanning current set of obsered states and finding the smallest with data (TODO: multiple states)")
-        for state in order_obs_states:
-          if obs_by_state[state] > 0:
-            state_list.append(state)
-            logging.info("Selecting state %d with %d data points", state, obs_by_state[state])
-            break
-        # TODO:  Multiple states for reweighting
-        #  Where in Q-Proc tree should these be combined
+
+
+
+        state_order = deque(np.argsort(obs_by_state))
+        state_list = deque()
+        logging.info("Scanning current set of observed states and finding the smallest with data (TODO: multiple states)")
+        while len(state_order) > 0:
+          A = state_order.popleft()
+          if obs_by_state[A] > 0:
+            state_list.append(A)
 
         logging.info("=====  PROJECT KMeans clustered data into HCube KD Tree(s)")
         for state in state_list:
           # Load Vectors
-          logging.info('Loading subspace and vectors for state %d', state)
-          pca_vect = self.catalog.loadNPArray('subspace:pca:vectors:%d' % state)
-          datapts_raw = self.catalog.lrange('subspace:pca:%d' % state, 0, -1)
-          data = np.array([np.fromstring(x) for x in datapts_raw])
+          logging.info('Loading subspace and kernel for state %d', state)
+
+          # LOAD KPCA Kernel matrix
+          kpca_key = 'subspace:pca:kernel:%d' % state
+          kpca = PCAnalyzer.load(self.catalog, kpca_key)
+
+          data_raw = self.catalog.lrange('subspace:pca:%d' % state, 0, -1)
+          data = np.array([np.fromstring(x) for x in data_raw])
           if len(data) == 0:
-            logging.error('Raw PCA data points should exist for state ', state)
-            break
+            logging.error('Raw PCA data points should exist for state %d.. Try another state', state)
+            continue
           logging.info('Building KDtree from data of size: %s', str(data.shape))
-          kdtree = KDTree(500, maxdepth=8, data=data)
-          bench.mark('KDTreeBuild')
+          kdtree = KDTree(100, maxdepth=8, data=data)
+          bench.mark('KDTreeBuild_%d' % state)
+
           # Back-project all points to higher dimension <- as consolidatd trajectory
           for k in range(len(cov_select)):
             logging.info('Collecting covariance points from KMeans Cluster %d', k)
@@ -839,7 +744,9 @@ class controlJob(macrothread):
               bench.mark('BackProject:COV_To_HD_%d' % k)
 
               # 2. project into PCA space for this state
-              cov_proj_pca = project_pca(alpha.xyz, pca_vect, settings.PCA_NUMPC)
+              # cov_proj_pca = project_pca(alpha.xyz, pca_vect, settings.PCA_NUMPC)
+              
+              cov_proj_pca = kpca.project(alpha.xyz)
               logging.debug('Project to PCA:  %s', str(cov_proj_pca.shape))
               bench.mark('Project:HD_To_PCA_%d' % k)
 
@@ -860,6 +767,9 @@ class controlJob(macrothread):
 
           # FOR NOW: calc aggegrate average Wght for newly projected HCubes
           wgt_B = {k: (1-np.mean(v)) for k, v in hcube_B_wgt.items()}
+          break  # hence only 1 state for now
+
+        bench.mark('ProjComplete')
 
         logging.info("=====  REWEIGHT with Overlappig HCubes  (TODO: fine grained geometric overlap (is it necessary)")
         hcube_list = sorted(hcube_B.keys())
@@ -946,14 +856,8 @@ class controlJob(macrothread):
         convergence = {}
         logging.info('Calculating Convergence for %d keys ', len(hcube_B.keys()))
         for k in hcube_list:
-          # convdata = self.catalog.hgetall('boot:qry1:conv:%s' % k)
           convdata = self.catalog.lrange('boot:qry1:conv:%s' % k, 0, -1)
           bootstrap = [float(i) for i in convdata]
-          # for i in range(iteration):
-          #   if i not in convdata:
-          #     bootstrap.append(0)
-          #   else:
-          #     bootstrap.append(float(convdata[str(i)]))
           if iteration > 1:
             mean, CI, stddev, err = datacalc.bootstrap_std(bootstrap)
             convergence[k] = CI / mean  # Total Convergence calculation per key
@@ -961,17 +865,23 @@ class controlJob(macrothread):
             convergence[k] = 1.0
           logging.info('##CONV %0d %10s %.4f', iteration, k, convergence[k])
 
-        tot_conv_data = np.array(list(convergence.values()))
-        conv_max = np.max(tot_conv_data)
-        conv_min = np.min(tot_conv_data)
-        conv_mean = np.mean(tot_conv_data)
-        total_convergence = min(1.0, conv_mean)
+        if len(convergence.values()) == 0:
+          logging.info('Not enough data collected yet.')
+          total_convergence = 1.
+        else:  
+          tot_conv_data = np.array(list(convergence.values()))
+          conv_max = np.max(tot_conv_data)
+          conv_min = np.min(tot_conv_data)
+          conv_mean = np.mean(tot_conv_data)
+          total_convergence = min(1.0, conv_mean)
+          logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
+
         logging.info('##TOTAL_CONV QRY1 = %.4f', total_convergence)
-        logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
+        stat.collect('qry1conv', total_convergence)
 
         # PUSH User's Total Convergence here
         self.catalog.rpush('boot:qry1:TOTAL', total_convergence)
-        bench.mark('Boostrap')
+        bench.mark('Bootstrap')
 
     # EXECUTE SAMPLER
         logging.debug("=======================  <DATA SAMPLER>  =========================")

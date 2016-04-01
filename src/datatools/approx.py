@@ -112,7 +112,7 @@ class ReservoirSample(object):
       return []
     data_raw = self.redis.lrange(key, 0, -1)
     R = len(data_raw)
-    N = self.redis.getN()
+    N = self.getN(label)
     spillamt = self.redis.get(key + ':spill')
     if N is None:
       N = 0
