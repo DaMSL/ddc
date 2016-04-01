@@ -102,7 +102,7 @@ class RedisService(OverlayService):
 
     # Poll process for new output until finished; buffer output
     # NOTE: Buffered output reduces message traffic via mesos
-    BUFFER_SIZE = 128
+    BUFFER_SIZE = 4096
     last_ts = 0
     last = 0
     cmd_count = 0
@@ -120,29 +120,33 @@ class RedisService(OverlayService):
           if len(elms) > 3:
             ts = int(elms[0].split('.')[0])
             cmd = elms[3].replace('"', '').upper()
-            if cmd == 'PING':
-              continue
+            ignore = (cmd == 'PING')
             if ts == last:
               cmd_count += 1
             else:
-              log.info('%d %d', ts, cmd_count)
+              if not ignore:
+                if cmd_count == 1:
+                  log.info('%d %d', ts, cmd_count)
+                else: 
+                  log.info('%d %d', last, cmd_count-1)
               last = ts
-              cmd_cound = 1
+              cmd_count = 1
         logbuffer = ""
 
     for line in logbuffer.split('\n'):
       elms = line.split()
-      if len(elms) == 1:
-        pass
-      else:
+      if len(elms) > 3:
         ts = int(elms[0].split('.')[0])
         cmd = elms[3].replace('"', '').upper()
-        if cmd == 'PING':
-          continue
+        ignore = (cmd == 'PING')
         if ts == last:
           cmd_count += 1
         else:
-          log.info('%d %d', ts, cmd_count)
+          if not ignore:
+            if cmd_count == 1:
+              log.info('%d %d', ts, cmd_count)
+            else: 
+              log.info('%d %d', last, cmd_count-1)
           last = ts
           cmd_count = 1
 
@@ -168,8 +172,8 @@ class RedisService(OverlayService):
     self.launchcmd = 'redis-server %s' % self.config
     self.shutdowncmd = 'redis-cli shutdown'
 
-    self.cmd_mon = Thread(target=self.cmd_monitor)
-    self.cmd_mon.start()
+    # self.cmd_mon = Thread(target=self.cmd_monitor)
+    # self.cmd_mon.start()
 
     # LAUNCH THIS:
     #  redis monitor > redis_mon.log 2>&1 &
@@ -605,7 +609,7 @@ class RedisClient(redis.StrictRedis):
     lock = self.get(key + ':LOCK')
     if lock == passcode:
       self.delete(key + ':LOCK')
-      logging.info('Lock relased for %s', key)
+      logging.info('Lock released for %s', key)
       return True
     else:
       logging.info('Wrong process tried to release lock on %s', key)

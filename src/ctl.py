@@ -996,6 +996,7 @@ class controlJob(macrothread):
       bench.mark('PostProcessing')
       print ('## TS=%d' % self.data['timestep'])
       bench.show()
+      stat.show()
 
       return list(jcqueue.keys())
 

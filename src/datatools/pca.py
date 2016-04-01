@@ -70,7 +70,7 @@ class PCAnalyzer(object):
       return None
     analyzer.pca = pickle.loads(obj['data'])
     analyzer.dim = eval(str(obj['dim']))
-    analyzer.trainsize = int(obj['dim'])
+    analyzer.trainsize = int(obj['trainsize'])
     return analyzer
 
 
@@ -90,6 +90,8 @@ class PCALinear(PCAnalyzer):
     self.trainsize = len(X)
 
   def project(self, X):
+    if isinstance(X, list):
+      X = np.array(X)
     dimX = np.prod(X.shape[1:])
     if dimX != self.dim:
       logging.error('Projection Error in PCA: Cannot reshape/project %s size data using PC Vects of size, %s', str(X.shape), str(self.dim))
@@ -114,6 +116,8 @@ class PCAKernel(PCAnalyzer):
     self.trainsize = len(X)
 
   def project(self, X):
+    if isinstance(X, list):
+      X = np.array(X)
     dimX = np.prod(X.shape[1:])
     if dimX != self.dim:
       logging.error('Projection Error in KPCA: Cannot reshape/project %s size data using PC Vects of size, %s', str(X.shape), str(self.dim))

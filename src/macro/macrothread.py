@@ -454,7 +454,8 @@ class macrothread(object):
     logging.info("WORKDIR:  %s", settings.WORKDIR)
 
     # Read in Slurm params  (TODO: Move to abstract slurm call)
-    self.job_id   = os.getenv('JOB_NAME')
+    if self.job_id is None:
+      self.job_id   = os.getenv('JOB_NAME')
     self.slurm_id = os.getenv('SLURM_JOB_ID')
 
     logging.debug('EnVars Follow.q....')

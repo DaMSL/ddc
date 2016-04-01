@@ -54,11 +54,6 @@ def initializecatalog(catalog):
   """
   settings = systemsettings()
 
-  # TODO:  Job ID Management  Doesn't
-  # ids = {'id_' + name : 0 for name in ['sim', 'anl', 'ctl', 'gc']}
-  # for k,v in ids.items():
-  #   settings.schema[k] = type(v).__name__
-
   logging.debug("Clearing Catalog.")
   if not catalog.isconnected:
     logging.warning('Catalog is not started. Please start it first.')
@@ -77,32 +72,6 @@ def initializecatalog(catalog):
 
   # Initialize Candidate Pools
   numLabels  = int(catalog.get('numLabels'))
-  # pools      = [[[] for i in range(numLabels)] for j in range(numLabels)]
-  # candidates = [[[] for i in range(numLabels)] for j in range(numLabels)]
-
-  #  Create Candidate Pools from RMSD for all source DEShaw data
-  # logging.info("Loading DEShaw RMS Values")
-  # rms = np.load('data/rmsd.npy')
-  # stddev = 1.1136661550671645
-  # theta = stddev / 4
-  # logging.info("Creating candidate pools")
-  # for i, traj in enumerate(rms):
-  #   for f, conform in enumerate(traj):
-  #     ordc = np.argsort(conform)
-  #     A = ordc[0]
-  #     proximity = abs(conform[ordc[1]] - conform[A])
-  #     B = ordc[1] if proximity < theta else A
-  #     pools[A][B].append('%03d:%03d'%(i,f))
-  # logging.info("All Candidates Found! Randomly selecting.....")
-
-  # for i in range(5):
-  #   for j in range(5):
-  #     size = min(1000, len(pools[i][j]))
-  #     if size == 0:
-  #       logging.info("  No candidates for pool (%d,%d)", i, j)
-  #     else:
-  #       candidates[i][j] = random.sample(pools[i][j], size)
-  #       logging.info("  (%d,%d)  %d", i, j, len(candidates[i][j]))
 
   logging.info("Updating Catalog")
 
@@ -110,17 +79,7 @@ def initializecatalog(catalog):
   logging.info("Deleting existing candidates and controids")
   pipe.delete('centroid')
   pipe.delete('pcaVectors')
-  # for i in range(numLabels):
-  #   for j in range(numLabels):
-  #     pipe.delete(kv2DArray.key('candidatePool', i, j))
-
-  # for i in range(numLabels):
-  #   for j in range(numLabels):
-  #     for c in candidates[i][j]:
-  #       pipe.rpush(kv2DArray.key('candidatePool', i, j), c)
   pipe.execute()
-
-  # centfile = 'data/centroid.npy'
 
   # New distance space based centroids
   centfile = settings.RMSD_CENTROID_FILE
@@ -129,12 +88,11 @@ def initializecatalog(catalog):
   centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
 
-
   # Initialize observations matrix
-  logging.info('Initializing observe and runtime matrices')
-  observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
-  launch  = kv2DArray(catalog, 'launch',  mag=numLabels, init=0)
-  runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
+  # logging.info('Initializing observe and runtime matrices')
+  # observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
+  # launch  = kv2DArray(catalog, 'launch',  mag=numLabels, init=0)
+  # runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
 
 def load_PCA_Subspace(catalog):
 
@@ -189,6 +147,9 @@ def labelDEShaw_rmsd():
     B = prox[i][1] if proximity < theta else A
     rmslabel.append((A, B))
   return rmslabel
+
+
+
 
 def seedJob_Uniform(catalog, num=1):
   """
@@ -256,6 +217,91 @@ def seedJob_Uniform(catalog, num=1):
       catalog.rpush('jcqueue', jcID)
       catalog.hmset(wrapKey('jc', jcID), config)
 
+
+def makejobconfig(catalog):
+  logging.info('Seeding 1 job')
+  settings = systemsettings()
+
+  # Generate new set of params/coords
+  pdbfile, dcdfile = deshaw.getHistoricalTrajectory_prot(0)
+  traj = md.load(dcdfile, top=pdbfile, frame=0)
+  jcID, params = generateNewJC(traj)
+
+  # Update Additional JC Params and Decision History, as needed
+  config = dict(params,
+      name    = jcID,
+      runtime = settings.init['runtime'],
+      dcdfreq = settings.init['dcdfreq'],
+      interval = settings.DCDFREQ * settings.SIM_STEP_SIZE,                       
+      temp    = 310,
+      timestep = 0,
+      gc      = 1,
+      origin  = 'deshaw',
+      src_index = 0,
+      src_bin  = (0, 0),
+      application   = settings.name)
+  logging.info("New Simulation Job Created: %s", jcID)
+  for k, v in config.items():
+    logging.debug("   %s:  %s", k, str(v))
+  catalog.rpush('jcqueue', jcID)
+  catalog.hmset(wrapKey('jc', jcID), config)
+
+
+
+def resetAnalysis(catalog):
+  """Removes all analysis data from the database
+  """
+  settings = systemsettings()
+
+  keylist0 =['completesim',
+            'label:rms',
+            'observe:count',
+            'rsamp:rms:_dtype',
+            'rsamp:rms:_shape',
+            'subspace:rms',
+            'xid:filelist',
+            'xid:reference  ',
+            'subspace:covar:fidx',
+            'subspace:covar:pts',
+            'subspace:covar:xid']
+  keylist1 =['subspace:pca:%d',
+            'subspace:pca:kernel:%d',
+            'subspace:pca:updates:%d',
+            'rsamp:rms:%d',
+            'rsamp:rms:%d:full',
+            'rsamp:rms:%d:spill']
+  keylist2 =['observe:rms:%d_%d']
+
+  logging.info("Clearing the database of recent data")
+  count = 0
+  for key in keylist0:
+    count += catalog.delete(key)
+
+  for key in keylist1:
+    for A in range(5):
+      count += catalog.delete(key % A)
+
+  for key in keylist2:
+    for A in range(5):
+      for B in range(5):
+        count += catalog.delete(key % (A, B))
+
+  logging.info('Removed %d keys', count)
+
+  jobs = catalog.hgetall('anl_sequence')
+  logging.info('RE-RUN THESE JOBS')
+  orderedjobs = sorted(jobs.items(), key=lambda x: x[1])
+  seqnum = 1
+  fileseq = 0
+  for k, v in orderedjobs:
+    if seqnum == 100:
+      fileseq += 1
+      seqnum = 1
+    print('src/simanl.py -a --useid="sw-%04d.%02d" -c %s -w %s' % 
+      (fileseq,seqnum,settings.name, k))
+    seqnum += 1
+
+    
 
 #############################
 
@@ -529,9 +575,11 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('name', default='default')
   parser.add_argument('--seedjob', action='store_true')
+  parser.add_argument('--onejob', action='store_true')
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--updateschema', action='store_true')
   parser.add_argument('--initpca', action='store_true')
+  parser.add_argument('--reset', action='store_true')
   parser.add_argument('--all', action='store_true')
 
   # parser.add_argument('--initarchive', action='store_true')
@@ -557,6 +605,9 @@ if __name__ == '__main__':
     settings.envSetup()
     initializecatalog(catalog)
 
+  if args.onejob:
+    makejobconfig(catalog)
+
   if args.initpca:
     load_PCA_Subspace(catalog)
     # pcaVectorfile = 'data/cpca_pc3.npy'
@@ -574,6 +625,8 @@ if __name__ == '__main__':
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     updateschema(catalog)
 
+  if args.reset:
+    resetAnalysis(catalog)
 
 
   # if args.loadindex is not None:

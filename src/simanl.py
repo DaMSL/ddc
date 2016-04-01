@@ -81,11 +81,14 @@ class simulationJob(macrothread):
     self.skip_simulation = False
 
     self.parser.add_argument('-a', '--analysis', action='store_true')
+    self.parser.add_argument('--useid')
     args = self.parser.parse_args()
     if args.analysis:
       logging.info('SKIPPING SIMULATION')
       self.skip_simulation = True
 
+    if args.useid:
+      self.job_id = args.useid
 
   def term(self):
     return False
@@ -387,7 +390,7 @@ class simulationJob(macrothread):
 
       # Group high-dim point by state
       # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
-      groupbystate[A].append(alpha.xyz[i])
+      groupbystate[A].append(i)
 
     # 3. Append new points into the data store. 
     pipe = self.catalog.pipeline()
@@ -446,6 +449,8 @@ class simulationJob(macrothread):
     reservoir = ReservoirSample('rms', self.catalog)
     # STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
 
+    num_inserted = {A: 0 for A in range(numLabels)}
+
     for A in range(numLabels):
       if len(groupbystate[A]) == 0:
         logging.info('No data received for state %d.  Not processing this state here.', A)
@@ -466,7 +471,7 @@ class simulationJob(macrothread):
 
       #  KPCA is out of date is the sample size is 20% larger than previously used  set
       #  Heuristics --- this could be a different "staleness" factor or we can check it some other way
-      if newkpca or rsize > (tsize + 1.2):
+      if newkpca or rsize > (tsize * 1.5):
         logging.info('PCA Kernel is old (Updating it). Trained on data set of size %d. Current reservoir is %d pts.', tsize, rsize)
 
         #  Should we only use a sample here??? (not now -- perhaps with larger rervoirs or if KPCA is slow
@@ -492,9 +497,12 @@ class simulationJob(macrothread):
           lock = self.catalog.lock_release(kpca_key, lock)
         bench.mark('ConcurrPCAWrite_%d'%A)
 
+        #  NOTE::::  SET MAX # OF PC's STORED AND/OR KPCA N_COMPONENT SIZE (ILO ALL)
+
         # Project Reservoir Sample to the Kernel and overwrite current set of points
         #  This should only happen up until the reservior is filled
         # If we are approx above to train, be sure to project all reservor points
+        logging.info('Clearing and Re-Projecting the entire reservoir of %d points for State %d.', rsize, A)
         rsamp_lowdim = kpca.project(traindata)
         pipe = self.catalog.pipeline()
         pipe.delete('subspace:pca:%d'%A)
@@ -507,8 +515,12 @@ class simulationJob(macrothread):
         logging.info('PCA Kernel is good -- no need to change them')
 
       bench.mark('start_ProjPCA')
-      logging.info('Projecting %d points on Kernel PCA for state %d', len(groupbystate[A]), settings.PCA_NUMPC, A)
-      pc_proj = kpca.project(groupbystate[A])
+      num_hd_pts = len(groupbystate[A])
+      logging.info('Projecting %d points on Kernel PCA for state %d', num_hd_pts, A)
+      hd_pts = np.zeros(shape=((num_hd_pts,)+alpha.xyz.shape[1:]), dtype=np.float32)
+      for i, index in enumerate(groupbystate[A]):
+        np.copyto(hd_pts[i], alpha.xyz[index])
+      pc_proj = kpca.project(hd_pts)
       bench.mark('ProjPCA_%d'%A)
 
       # 2. Append subspace in catalog
@@ -516,25 +528,17 @@ class simulationJob(macrothread):
       for si in pc_proj:
         pipe.rpush('subspace:pca:%d' % A, bytes(si))
       pipe.execute()
-      logging.info('Stored NEW lower dim points %s', len(idxlist), key)
+      logging.info('Stored NEW lower dim points %s', len(idxlist))
+
+      logging.debug('Updating reservoir Sample')
+      num_inserted[A] = reservoir.insert(A, hd_pts)
 
     bench.mark('PCA')
-
-    # 4. Update reservoir sample
-    logging.debug('Updating reservoir Sample')
-    num_inserted = {A: 0 for A in range(numLabels)}
-    for A, ptlist in enumerate(groupbystate):
-      if len(ptlist) == 0:
-        continue
-      num_inserted[A] = reservoir.insert(A, ptlist)
-
     pipe = self.catalog.pipeline()
     for A, num in enumerate(num_inserted):
       if num > 0:
         pipe.rpush('subspace:pca:updates:%d' % A, num)
     pipe.execute()
-    bench.mark('Reservoir')
-
 
   # ---- POST PROCESSING
     if USE_SHM:
@@ -546,6 +550,7 @@ class simulationJob(macrothread):
     # For benchmarching:
     # print('##', job['name'], dcdfilesize/(1024*1024*1024), traj.n_frames)
     bench.show()
+    stat.show()
 
     # Return # of observations (frames) processed
     return [numConf]

@@ -166,8 +166,6 @@ def runquery(query, withheader=False):
     print("Ad Hoc Query Failed:" )
     traceback.print_exc()
 
-
-
 def insert(table, *values):
   try:
     print('TABLE IS ', table)
@@ -183,8 +181,6 @@ def insert(table, *values):
       print("Failed to insert Experiment: ")
       print(inst)
 
-
-
 def get_expid(name):
   cur = conn.cursor()
   qry = "SELECT expid FROM expr WHERE expname='%s';" % name
@@ -192,9 +188,8 @@ def get_expid(name):
   cur.execute(qry)
   return int(cur.fetchone()[0])
 
-
 def loadbenchctl(name):
-  srcfile = os.path.join(os.environ['HOME'], 'ddc', 'results', 'bench_ctl.log')  
+  srcfile = os.path.join(os.environ['HOME'], 'ddc', 'results', 'bench_ctl_%s.log')  
   try:
     eid = get_expid(name)
     with open(srcfile) as src:
@@ -205,9 +200,6 @@ def loadbenchctl(name):
   except Exception as inst:
     print("Failed to insert values:" )
     traceback.print_exc()
-
-
-
 
 def qrygraph_line(query, title, rowhead=False):
   data = runquery(query, True)
@@ -264,6 +256,47 @@ def removebrace(s):
     s = s.replace(br, '')
   return s
 
+
+def scrape_bench_ctl(name):
+  eid = get_expid(name)
+  with open((HOME + '/ddc/results/benchcons/ctl_%s.txt' % name)) as sfile:
+    src = sfile.read().strip()
+    bench = []
+    data = []
+    postdata = False
+    collect = False
+    cid = 0
+    for line in src.split('\n'):
+      if line.startswith('==>'):
+        postdata = True
+        collect = True
+      if line.startswith('CATALOG APP'):
+        collect = False
+      if postdata and len(data) > 0:
+        last = 0
+        insertcnt = 0
+        for n, tick in enumerate(data):
+          if tick[0] == 'TIME':
+            continue
+          r = float(tick[0])
+          l = tick[1]
+          d = r - last if len(tick) == 2 else float(tick[2])
+          insert('bench_ctl', int(eid), cid, n, float(r), float(d), l)
+          insertcnt += 1
+          last = r
+        print('Insert for %d:  %d' % (cid, insertcnt))
+        cid += 1
+        data = []
+        postdata = False
+      if collect and line.startswith('##'):
+        stat = line.split()
+        val = stat[1].strip()
+        label = stat[2].strip()
+        if len(label) > 6:
+          label = label[:6]
+        data.append((val, label))
+
+
 def ctl_file_parser(name):
   os.chdir(HOME + '/work/log/%s/' % name)
   print(len(os.listdir()))
@@ -295,3 +328,16 @@ def ctl_file_parser(name):
           numres = int(elm[-1])
     nums.append((cid, numpts))
   return nums
+
+
+
+# Queries to run:
+
+# run("SELECT expname, avg(deltatime), max(deltatime) FROM bench_ctl B, expr E where label='Sample' and E.expid=B.expid GROUP BY expname;")
+
+
+run("SELECT expname, label, avg(deltatime), avg(num) as num FROM bench_ctl B, expr E where E.expid=B.expid and B.expid=8 GROUP BY expname, label order by expname, num;")
+
+run("SELECT expname, max(runtime) FROM bench_ctl B, expr E where E.expid=B.expid GROUP BY expname order by expname;")
+
+run("select expname, avg(time) from (SELECT expid, ctlid, max(runtime) as time FROM bench_ctl GROUP BY expid, ctlid) T,  expr E where E.expid=T.expid GROUP BY expname;")

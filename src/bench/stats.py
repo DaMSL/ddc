@@ -29,7 +29,7 @@ class StatCollector:
     self.name = name
     self.uid = int('000000' if uid is None else uid)
     # Set up logging
-    log = logging.getLogger(name)
+    log = logging.getLogger('stat' + name)
     log.setLevel(logging.INFO)
     fh = logging.FileHandler(default_log_loc + 'stat_' + name + '.log')
     fh.setLevel(logging.INFO)
