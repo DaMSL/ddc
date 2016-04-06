@@ -24,7 +24,10 @@ tables = {
 'expr':
 """CREATE TABLE IF NOT EXISTS expr (
   expid integer,
-  expname text
+  expname text,
+  runtime integer,
+  dcdfreq integer,
+  numresorces interger
 );
 """,
 'conv':
@@ -35,8 +38,18 @@ tables = {
   val real
 );
 """,
-'bench_ctl':
-"""CREATE TABLE IF NOT EXISTS bench_ctl (
+'bctl':
+"""CREATE TABLE IF NOT EXISTS bctl (
+  expid integer,
+  ctlid integer,
+  num integer,
+  runtime real,
+  deltatime real,
+  label text
+);
+""",
+'bsim':
+"""CREATE TABLE IF NOT EXISTS bsim (
   expid integer,
   ctlid integer,
   num integer,
@@ -82,7 +95,8 @@ tables = {
 insertion = {
   'expr': "INSERT INTO expr (expid, expname) VALUES (%d, '%s');",
   'conv': "INSERT INTO conv (expname, ts, label, val) VALUES (%s, %d, %s, %f);",
-  'bench_ctl': "INSERT INTO bench_ctl (expid, ctlid, num, runtime, deltatime, label) VALUES (%d, %d, %d, %f, %f, '%s');"}
+  'bctl': "INSERT INTO bctl (expid, ctlid, num, runtime, deltatime, label) VALUES (%d, %d, %d, %f, %f, '%s');",
+  'bsim': "INSERT INTO bsim (expid, ctlid, num, runtime, deltatime, label) VALUES (%d, %d, %d, %f, %f, '%s');"}
 
 autoid = []
 
@@ -188,19 +202,6 @@ def get_expid(name):
   cur.execute(qry)
   return int(cur.fetchone()[0])
 
-def loadbenchctl(name):
-  srcfile = os.path.join(os.environ['HOME'], 'ddc', 'results', 'bench_ctl_%s.log')  
-  try:
-    eid = get_expid(name)
-    with open(srcfile) as src:
-      entry = src.read().strip().split('\n')
-      for e in entry:
-        cid, n, r, d, l = e.split(',')
-        insert('bench_ctl', int(eid), int(cid), int(n), float(r), float(d), l)
-  except Exception as inst:
-    print("Failed to insert values:" )
-    traceback.print_exc()
-
 def qrygraph_line(query, title, rowhead=False):
   data = runquery(query, True)
   name = data[0]
@@ -251,10 +252,49 @@ def benchmark_graph(datalabel, expname=None, Xseries=None):
 
 # Insert an experiment and return the experiment_id associated with it
 
+def loadbenchctl(name):
+  srcfile = os.path.join(os.environ['HOME'], 'ddc', 'results', 'bench_ctl_%s.log' % name)  
+  try:
+    eid = get_expid(name)
+    with open(srcfile) as src:
+      entry = src.read().strip().split('\n')
+      for e in entry:
+        v = e.split(',')
+        if len(v) != 5:
+          continue
+        cid, n, r, d, l = v
+        insert('bctl', int(eid), int(cid), int(n), float(r), float(d), l)
+  except Exception as inst:
+    print("Failed to insert values:" )
+    traceback.print_exc()
+
+
+def loadbenchsim(name):
+  srcfile = os.path.join(os.environ['HOME'], 'ddc', 'results', 'bench_sim_%s.log' % name)  
+  try:
+    eid = get_expid(name)
+    with open(srcfile) as src:
+      entry = src.read().strip().split('\n')
+      for e in entry:
+        v = e.split(',')
+        if len(v) != 5:
+          continue
+        cid, n, r, d, l = v
+        insert('bsim', int(eid), int(cid), int(n), float(r), float(d), l)
+  except Exception as inst:
+    print("Failed to insert values:" )
+    traceback.print_exc()
+
+
+
 def removebrace(s):
   for br in ['[', ']', '(', ')', '{', '}', ',']:
     s = s.replace(br, '')
   return s
+
+
+
+
 
 
 def scrape_bench_ctl(name):
@@ -330,14 +370,49 @@ def ctl_file_parser(name):
   return nums
 
 
+def scrape_bench_sim(name):
+  eid = get_expid(name)
+  with open((HOME + '/ddc/results/benchcons/sim_%s.txt' % name)) as sfile:
+    src = sfile.read().strip()
+    bench = []
+    data = []
+    postdata = False
+    collect = False
+    cid = 0
+    for line in src.split('\n'):
+      if line.startswith('  ------'):
+        data = []
+      elif line.startswith('##'):
+        stat = line.split()
+        val = stat[1].strip()
+        label = stat[2].strip()
+        if len(label) > 6:
+          label = label[:6]
+        data.append((val, label))
+      elif line.startswith('CATALOG APP') and len(data) > 0:
+        last = 0
+        insertcnt = 0
+        for n, tick in enumerate(data):
+          if tick[0] == 'TIME':
+            continue
+          r = float(tick[0])
+          l = tick[1]
+          d = r - last if len(tick) == 2 else float(tick[2])
+          insert('bsim', int(eid), cid, n, float(r), float(d), l)
+          insertcnt += 1
+          last = r
+        cid += 1
+        data = []
+      else:
+        data = []
+
 
 # Queries to run:
 
 # run("SELECT expname, avg(deltatime), max(deltatime) FROM bench_ctl B, expr E where label='Sample' and E.expid=B.expid GROUP BY expname;")
 
+# run("SELECT expname, label, avg(deltatime), avg(num) as num FROM bench_ctl B, expr E where E.expid=B.expid and B.expid=8 GROUP BY expname, label order by expname, num;")
 
-run("SELECT expname, label, avg(deltatime), avg(num) as num FROM bench_ctl B, expr E where E.expid=B.expid and B.expid=8 GROUP BY expname, label order by expname, num;")
+# run("SELECT expname, max(runtime) FROM bench_ctl B, expr E where E.expid=B.expid GROUP BY expname order by expname;")
 
-run("SELECT expname, max(runtime) FROM bench_ctl B, expr E where E.expid=B.expid GROUP BY expname order by expname;")
-
-run("select expname, avg(time) from (SELECT expid, ctlid, max(runtime) as time FROM bench_ctl GROUP BY expid, ctlid) T,  expr E where E.expid=T.expid GROUP BY expname;")
+# run("select expname, avg(time) from (SELECT expid, ctlid, max(runtime) as time FROM bench_ctl GROUP BY expid, ctlid) T,  expr E where E.expid=T.expid GROUP BY expname;")

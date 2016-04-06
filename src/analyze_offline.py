@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import argparse
 import os
 import sys
@@ -19,15 +21,13 @@ import mdtools.deshaw as deshaw
 import datatools.datareduce as dr
 from datatools.rmsd import calc_rmsd
 from datatools.pca import project_pca
+from bench.stats import StatCollector
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
 __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
-
-logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
-
 
 
 class offlineAnalysis(object):
@@ -66,8 +66,9 @@ class offlineAnalysis(object):
     self.storeNPArray(self.centroid, 'centroid')
 
 
-  def analyze_dcd(self, key, force=False):
+  def analyze_dcd(self, key, num=0, force=False):
     logging.info("OFFLINE ANALYSIS FOR:  %s", key)
+    stat  = StatCollector('sim_naive', '%06d'%num)
     filelist = self.catalog.lrange('xid:filelist', 0, -1)
     job = self.catalog.hgetall('jc_' + key)
 
@@ -85,21 +86,21 @@ class offlineAnalysis(object):
   # 2. Update Catalog with HD points (TODO: cache this)
     file_idx = self.append({'xid:filelist': [job['dcd']]})[0]
     delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
-    global_idx = self.append({'xid:reference': delta_xid_index})
-    global_xid_index_slice = [x-1 for x in global_idx]
-    job['xid:start'] = global_xid_index_slice[0]
-    job['xid:end'] = global_xid_index_slice[-1]
+    global_idx_recv = self.append({'xid:reference': delta_xid_index})
+    global_index = [x-1 for x in global_idx_recv]
+    catalog.hset('jc_' + key, 'xid:start', global_index[0])
+    catalog.hset('jc_' + key, 'xid:end', global_index[-1])
 
   # 3. Update higher dimensional index
-    # Logical Sequence # should be unique seq # derived from manager (provides this
-    #  worker's instantiation with a unique ID for indexing)
-    logging.debug("3. RMS Calculation")
     # 1. Filter to Alpha atoms
     alpha = traj.atom_slice(deshaw.FILTER['alpha'])
 
+    #  Set Weights
+    cw = [.92, .94, .96, .99, .99]
     numLabels = len(self.centroid)
     numConf = len(traj.xyz)
-    rmsraw = calc_rmsd(alpha, self.centroid)
+    stat.collect('numpts',numConf)
+    rmsraw = calc_rmsd(alpha, self.centroid, weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', numConf, numLabels)
 
     # 2. Account for noise
@@ -108,9 +109,6 @@ class offlineAnalysis(object):
     nwidth = noise//(2*stepsize)
     noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
     rmslist = np.array([noisefilt(rmsraw, i) for i in range(numConf)])
-    logging.debug("RMS CHECK......")
-    for i in rmslist:
-      logging.debug("  %s", str(np.argsort(i)))
 
     # 3. Append new points into the data store. 
     pipe = self.catalog.pipeline()
@@ -119,27 +117,43 @@ class offlineAnalysis(object):
     idxlist = pipe.execute()
 
     # 4. Apply Heuristics Labeling
-    logging.debug('Applying Labeling Heuristic')
     rmslabel = []
+    binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
+    label_count = {b: 0 for b in binlist}
+    groupbystate = [[] for i in range(numLabels)]
     pipe = self.catalog.pipeline()
     for i, rms in enumerate(rmslist):
-      #  Sort RMSD by proximity & set state A as nearest state's centroid
       prox = np.argsort(rms)
       A = prox[0]
       theta = .33
       proximity = abs(rms[prox[1]] - rms[A])    #abs
       B = prox[1] if proximity < theta else A
       rmslabel.append((A, B))
-      logging.debug('Label for observation #%3d: %s', i, str((A, B)))
-      pipe.rpush('varbin:rms:%d_%d' % (A, B), global_xid_index_slice[i])
+      # logging.debug('Label for observation #%3d: %s', i, str((A, B)))
+      pipe.rpush('varbin:rms:%d_%d' % (A, B), global_index[i])
+      label_count[(A, B)] += 1
+      groupbystate[A].append(alpha.xyz[i])
 
     pipe.execute()
     # Update Catalog
     idxcheck = self.append({'label:rms': rmslabel})
 
+    for b in binlist:
+      pipe.rpush('observe:rms:%d_%d' % b, label_count[b])
+    pipe.incr('observe:count')
+    pipe.execute()
+    bincounts = [len(groupbystate[A]) for A in range(5)]
+    stat.collect('observe', bincounts)
+    stat.show()
+    stat.wipe()
+    
+
+
 if __name__ == '__main__':
+  logging.basicConfig(format='%(message)s', level=logging.DEBUG)
   parser = argparse.ArgumentParser()
   parser.add_argument('-j', '--job')
+  parser.add_argument('--jobfile')
   args = parser.parse_args()
 
   catalog = redis.StrictRedis(port=6381, decode_responses=True)
@@ -148,6 +162,12 @@ if __name__ == '__main__':
 
   if args.job:
     task.analyze_dcd(args.job)
+  elif args.jobfile:
+    logging.info('Reading all jobs from: %s', args.jobfile)
+    with open(args.jobfile) as src:
+      for i, job in enumerate(src.read().strip().split('\n')):
+        logging.info('Procesing job #%d  (%s)', i, job)
+        task.analyze_dcd(job, num=i)
   else:
-    with open('dcd_order.txt')
+    logging.info("Need to provide a job or jobfile")
 

@@ -72,10 +72,15 @@ class RedisService(OverlayService):
     """Heartbeat to the local Redis Server
     """
     # TODO: Should wrap around try/catch and propagate an IO exception
-    if port is None:
-      port = self._port
-    ping_cmd = 'redis-cli -h %s -p %s ping' % (host, port)
-    pong = executecmd(ping_cmd).strip()
+    while true:
+      if port is None:
+        port = self._port
+      ping_cmd = 'redis-cli -h %s -p %s ping' % (host, port)
+      pong = executecmd(ping_cmd).strip()
+      if 'LOADING' in pong:
+        time.sleep(1)
+        continue
+      break
     return (pong == 'PONG')
 
 
