@@ -25,7 +25,7 @@ if __name__ == "__main__":
   parser.add_argument('service')
   parser.add_argument('command')
   parser.add_argument('-n', '--name')
-  parser.add_argument('-r', '--role', default='MASTER')
+  parser.add_argument('-r', '--role', default='SLAVE')
   args = parser.parse_args()
 
   logging.info('\n\nOverlay Executor:  service=`%s`   cmd=`%s`', args.service, args.command)
@@ -41,7 +41,7 @@ if __name__ == "__main__":
     if args.name is None:
       logging.error('ERROR. Service requires a application name with corresponding input (json) confile file')
       sys.exit()
-    service = RedisService(args.name)
+    service = RedisService(args.name, isaggressive=True, role=args.role)
   elif args.service == 'cache':
     if args.name is None:
       logging.error('ERROR. Service requires a application name with corresponding input (json) confile file')

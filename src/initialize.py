@@ -40,14 +40,12 @@ def updateschema(catalog):
   for k, v in settings.init.items():
     if k not in dtype_map:
       dtype_map[k] = type(v).__name__
+      settings.schema[k] = type(v).__name__
 
   for k, v in dtype_map.items():
     logging.info('Setting schema:    %s  %s', k, str(v))
 
   catalog.hmset("META_schema", dtype_map)
-
-DESHAW_PTS_FILE =  os.getenv('HOME') + '/work/data/debug/bpti_10p.npy'
-DESHAW_SAMPLE_FACTOR = 10  # As in 1/10th of full data set
 
 def initializecatalog(catalog):
   """Initialize the Catalog for an experiment
@@ -141,15 +139,13 @@ def labelDEShaw_rmsd():
   theta = 0.25
   logging.info('Labeling All DEShaw Points.')
   rmslabel = []
-  for i in range(len(rms)):
+  # Only use N-% of all points
+  for i in range(0, len(rms), 100):
     A = prox[i][0]
     proximity = abs(rms[i][prox[i][1]] - rms[i][A])    #abs
     B = prox[i][1] if proximity < theta else A
     rmslabel.append((A, B))
   return rmslabel
-
-
-
 
 def seedJob_Uniform(catalog, num=1):
   """
@@ -161,6 +157,11 @@ def seedJob_Uniform(catalog, num=1):
   settings = systemsettings()
   numLabels = int(catalog.get('numLabels'))
   binlist = [(A, B) for A in range(numLabels) for B in range(numLabels)]
+
+  dcdfreq = int(catalog.get('dcdfreq'))
+  runtime = int(catalog.get('runtime'))
+  sim_step_size = int(catalog.get('sim_step_size'))
+
   if catalog.exists('label:deshaw'):
     rmslabel = [eval(x) for x in catalog.lrange('label:deshaw', 0, -1)]
   else:
@@ -201,9 +202,9 @@ def seedJob_Uniform(catalog, num=1):
       # Update Additional JC Params and Decision History, as needed
       config = dict(params,
           name    = jcID,
-          runtime = settings.init['runtime'],
-          dcdfreq = settings.init['dcdfreq'],
-          interval = settings.DCDFREQ * settings.SIM_STEP_SIZE,                       
+          runtime = runtime,
+          dcdfreq = dcdfreq,
+          interval = dcdfreq * sim_step_size,                       
           temp    = 310,
           timestep = 0,
           gc      = 1,
@@ -227,12 +228,16 @@ def makejobconfig(catalog):
   traj = md.load(dcdfile, top=pdbfile, frame=0)
   jcID, params = generateNewJC(traj)
 
+  dcdfreq = catalog.get('dcdfreq')
+  runtime = catalog.get('runtime')
+  sim_step_size = catalog.get('sim_step_size')
+
   # Update Additional JC Params and Decision History, as needed
   config = dict(params,
       name    = jcID,
-      runtime = settings.init['runtime'],
-      dcdfreq = settings.init['dcdfreq'],
-      interval = settings.DCDFREQ * settings.SIM_STEP_SIZE,                       
+      runtime = runtime,
+      dcdfreq = dcdfreq,
+      interval = dcdfreq * sim_step_size,
       temp    = 310,
       timestep = 0,
       gc      = 1,
@@ -304,6 +309,8 @@ def resetAnalysis(catalog):
     
 
 #############################
+DESHAW_PTS_FILE =  os.getenv('HOME') + '/work/data/debug/bpti_10p.npy'
+DESHAW_SAMPLE_FACTOR = 10  # As in 1/10th of full data set
 
 def calcDEShaw_PCA(catalog, force=False):
   numPC = 3
@@ -608,14 +615,6 @@ if __name__ == '__main__':
   if args.onejob:
     makejobconfig(catalog)
 
-  if args.initpca:
-    load_PCA_Subspace(catalog)
-    # pcaVectorfile = 'data/cpca_pc3.npy'
-    # logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
-    # pcaVectors = np.load(pcaVectorfile)
-    # catalog.storeNPArray(pcaVectors, 'pcaVectors')
-    # calcDEShaw_PCA(catalog)
-
   if args.seedjob or args.all:
     numresources = int(catalog.get('numresources'))
     initialJobPerBin = max(1, numresources//25)
@@ -627,6 +626,14 @@ if __name__ == '__main__':
 
   if args.reset:
     resetAnalysis(catalog)
+
+  if args.initpca:
+    load_PCA_Subspace(catalog)
+    # pcaVectorfile = 'data/cpca_pc3.npy'
+    # logging.info("Loading cPCA Vectors from %s", pcaVectorfile)
+    # pcaVectors = np.load(pcaVectorfile)
+    # catalog.storeNPArray(pcaVectors, 'pcaVectors')
+    # calcDEShaw_PCA(catalog)
 
 
   # if args.loadindex is not None:

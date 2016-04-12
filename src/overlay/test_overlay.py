@@ -6,7 +6,7 @@ def test_overlay():
   assert True == True
   print ('Is True')
 
-def test_redisclient():
+def test_redisclient(name='overlap'):
   name = 'test_overlay'
   client = RedisClient(name)
   if not client.isconnected:
@@ -29,4 +29,27 @@ def test_redisclient():
   print(client.incr('foo'))
   print(client.get('foo'))
 
+import redis, time
+from overlay.redisOverlay import RedisClient
+from overlay.overlayException import *
+from core.common import *
 
+def check_except(name='reweight3'):
+  while True:
+    time.sleep(.5)
+    try:
+      print('Init Client')
+      client = RedisClient(name)
+      print('Ping Client')
+      print('UP = ', client.ping())     
+    except redis.RedisError as e:
+      print(e.__name__)
+      continue
+    except OverlayNotAvailable as e:
+      print('Overlay not available')
+      continue
+
+if __name__ == '__main__':
+  conf = systemsettings()
+  conf.applyConfig('reweight3.json')
+  check_except()

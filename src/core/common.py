@@ -58,6 +58,9 @@ class systemsettings:
 
   def applyConfig(self, ini_file=None):
 
+    if self.configured():
+      return
+
     if ini_file is not None:
       self._confile = ini_file
     logging.info("Applying System Settings from inifile:  %s", self._confile)   
@@ -78,7 +81,7 @@ class systemsettings:
     self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
     self.DATADIR = os.path.join(self.WORKDIR, 'data', application)
 
-    # Overlay Service generic (or should this unique to ea. service????)
+    # Overlay Service generic (or should this be unique to ea. service????)
     self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
     self.CATALOG_IDLE_THETA    = ini.get('catalog_idle_theta', 300)
     self.CATALOG_STARTUP_DELAY = ini.get('catalog_startup_delay', 10)
@@ -94,24 +97,8 @@ class systemsettings:
     # FOR shared Lustre (not working!)
     # self.ALLUXIO_UNDERFS = os.path.join(self.WORKDIR, 'alluxio', application)
     # FOR local UFS (will need to clean up!)
-    self.ALLUXIO_UNDERFS = '/tmp/alluxio'
-    self.ALLUXIO_WORKER_MEM = '20GB'
-
-
-
-    # <DEPPRICATE>
-    self.catalogConfig  = dict(
-        name=ini.get('catalog_name', application),
-        port=ini.get('catalog_port', '6379') )
-    self.archiveConfig  = dict(
-        name=ini.get('archive_name', 'archive'),
-        port=ini.get('archive_port', '6380') )
-    self.HASH_NAME             = ini.get('hash_name', 'rbphash')  #TODO CHANGE NAME
-
-
-    # Filter Options: {‘all’, ‘alpha’, ‘minimal’, ‘heavy’, ‘water’}
-    # atom_filter = ini.get('atom_filter', 'heavy')
-    # self.ATOM_SELECT_FILTER = lambda x: x.top.select_atom_indices(selection=atom_filter)
+    # self.ALLUXIO_UNDERFS = '/tmp/alluxio'
+    # self.ALLUXIO_WORKER_MEM = '20GB'
 
 
     # Analysis Setting
@@ -119,11 +106,11 @@ class systemsettings:
 
     # Controller Settings
     # self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
-    self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
-    self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
+    # self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
+    # self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
   
     # Potentailly Dynamic
-    self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
+    # self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
     self.PARTITION = ini.get('partition', 'shared')
 
     #  PARAMS TO BE SET:
@@ -132,10 +119,10 @@ class systemsettings:
     self.PCA_VECTOR_FILE = ini.get('pca_vector_file', 'data/pca_comp.npy')
     self.PCA_NUMPC = ini.get('pca_numpc', 3)
 
-    self.OBS_NOISE = ini.get('obs_noise', 10000)
-    self.RUNTIME_FIXED = ini.get('runtime', 100000)
-    self.DCDFREQ = ini.get('dcdfreq', 500)
-    self.SIM_STEP_SIZE = 2   #FIXED at 2 fs per timestep
+    # self.OBS_NOISE = ini.get('obs_noise', 10000)
+    # self.RUNTIME_FIXED = ini.get('runtime', 100000)
+    # self.DCDFREQ = ini.get('dcdfreq', 500)
+    # self.SIM_STEP_SIZE = 2   #FIXED at 2 fs per timestep
 
 
     # Config Schema -- placed here for now (TODO: Split????)    
@@ -149,8 +136,6 @@ class systemsettings:
     self.schema = defaults['schema']
     self.init = defaults['init']
 
-    # TODO: Migration to system settings accessors....
-    self.name = self.APPL_LABEL
 
     # make_config_file = 'default.conf'
 
@@ -178,7 +163,7 @@ class systemsettings:
     self.NUM_VAR = n
   
   def envSetup(self):
-    for d in [self.JOBDIR, self.LOGDIR, self.DATADIR, self.ALLUXIO_UNDERFS]:
+    for d in [self.JOBDIR, self.LOGDIR, self.DATADIR]:
       if not os.path.exists(d):
         os.mkdir(d)
 

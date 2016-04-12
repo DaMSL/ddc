@@ -279,6 +279,8 @@ def check_bpti_rms(observations, centroid, skip=40):
   print ('Miss rate: %5.2f  (%d)' % ((miss/(hit+miss)), miss))
 
 
+
+
 if __name__ == '__main__':
   #  FOR Calculting Centroids and RMSD of ALL conforms in D.E.Shaw Dataset
   settings = systemsettings()

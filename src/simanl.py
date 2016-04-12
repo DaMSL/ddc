@@ -16,6 +16,7 @@ from sendfile import sendfile
 import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
+import redis
 
 from core.common import *
 from core.slurm import slurm
@@ -30,6 +31,7 @@ from datatools.pca import PCAnalyzer, PCAKernel
 from datatools.approx import ReservoirSample
 from overlay.redisOverlay import RedisClient
 from overlay.alluxioOverlay import AlluxioClient
+from overlay.overlayException import OverlayNotAvailable
 from bench.timer import microbench
 from bench.stats import StatCollector
 
@@ -43,8 +45,11 @@ __status__ = "Development"
 
 logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
-PARALLELISM = 24
+PARALLELISM = 12
 SIM_STEP_SIZE = 2
+
+# Factor used to "simulate" long running jobs using shorter sims
+SIMULATE_RATIO = 50
 
 class simulationJob(macrothread):
   """Macrothread to run MD simuation. Each worker runs one simulation
@@ -64,6 +69,11 @@ class simulationJob(macrothread):
     self.addImmut('numLabels')
     self.addImmut('terminate')
     self.addImmut('sim_conf_template')
+    self.addImmut('dcdfreq')
+    self.addImmut('runtime')
+    self.addImmut('obs_noise')
+    self.addImmut('sim_step_size')
+    self.addAppend('xid:filelist')
 
     # Local Data to this running instance
     self.cpu = 1
@@ -76,7 +86,7 @@ class simulationJob(macrothread):
     # self.slurmParams['share'] = None
 
     self.slurmParams['cpus-per-task'] = PARALLELISM
-    self.slurmParams['time'] = '2:00:0'
+    # self.slurmParams['time'] = '2:00:0'
 
     self.skip_simulation = False
 
@@ -104,39 +114,14 @@ class simulationJob(macrothread):
   def configElasPolicy(self):
     self.delay = self.data['simDelay']
 
-  # def preparejob(self, job):
-  #   logging.debug('Simlation is preparing job %s', job)
-  #   key = wrapKey('jc', i)
-  #   params = self.catalog.hgetall(key)
-  #   logging.debug(" Job Candidate Params:")
-  #   for k, v in params.items():
-  #     logging.debug("    %s: %s" % (k, v))
-    # if 'parallel' in job:
-    #   numnodes = job['parallel']
-    #   total_tasks = numnodes * 24       # Total # cpu per node should be detectable
-    #   self.modules.add('namd/2.10-mpi')
-    #   self.slurmParams['partition'] = 'parallel'
-    #   self.slurmParams['ntasks-per-node'] = 24
-    #   self.slurmParams['nodes'] = numnodes
-    #   del self.slurmParams['cpus-per-task']
-
-
   def fetch(self, i):
     # Load parameters from catalog
-
     key = wrapKey('jc', i)
     params = self.catalog.hgetall(key)
     logging.debug(" Job Candidate Params:")
     for k, v in params.items():
       logging.debug("    %s: %s" % (k, v))
-
     self.addMut(key, params)
-
-    # Increment launch count
-    # A, B = eval(params['targetBin'])
-    # logging.debug("Increment Launch count for %s", params['targetBin'])
-    # self.data['launch'][A][B] += 1
-
     return params
 
   def execute(self, job):
@@ -146,6 +131,7 @@ class simulationJob(macrothread):
     bench = microbench('sim_%s' % settings.name, self.seqNumFromID())
     bench.start()
     stat  = StatCollector('sim_%s' % settings.name, self.seqNumFromID())
+    mylogical_seqnum = str(self.seqNumFromID())
 
     # Prepare working directory, input/output files
     conFile = os.path.join(job['workdir'], job['name'] + '.conf')
@@ -153,10 +139,8 @@ class simulationJob(macrothread):
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
     USE_SHM = True
 
-    # Load common settings:
-    # Framesize in ps
-    frame_size = (settings.DCDFREQ * settings.SIM_STEP_SIZE) // 1000
-
+    frame_size = (SIMULATE_RATIO * int(job['interval'])) // (1000)
+    logging.info('Frame Size is %d  Using Sim Ratio of 1:%d', frame_size, SIMULATE_RATIO)
 
   # EXECUTE SIMULATION ---------------------------------------------------------
     if self.skip_simulation:
@@ -232,7 +216,7 @@ class simulationJob(macrothread):
       bench.mark('SimExec:%s' % job['name'])
 
       # Internal stats
-      sim_length = settings.SIM_STEP_SIZE * int(job['runtime'])
+      sim_length = self.data['sim_step_size'] * int(job['runtime'])
       sim_realtime = bench.delta_last()
       sim_run_ratio =  (sim_realtime/60) / (sim_length/1000000)
       logging.info('##SIM_RATIO %6.3f  min-per-ns-sim', sim_run_ratio)
@@ -292,22 +276,6 @@ class simulationJob(macrothread):
     bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
-  # 2. Update Catalog with HD points (TODO: cache this)
-    file_idx = self.catalog.append({'xid:filelist': [job['dcd']]})[0]
-    delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
-    global_idx_recv = self.catalog.append({'xid:reference': delta_xid_index})
-    global_index = [x-1 for x in global_idx_recv]
-    # Note: Pipelined insertions should return contiguous set of index points
-    self.data[key]['xid:start'] = global_index[0]
-    self.data[key]['xid:end'] = global_index[-1]
-    bench.mark('Indx_Update')
-
-
-  # 3. Update higher dimensional index
-    # Logical Sequence # should be unique seq # derived from manager (provides this
-    #  worker's instantiation with a unique ID for indexing)
-    mylogical_seqnum = str(self.seqNumFromID())
-    self.catalog.hset('anl_sequence', job['name'], mylogical_seqnum)
 
   #  DIMENSIONALITY REDUCTION --------------------------------------------------
   # 4-A. Subspace Calcuation: RMS using Alpha-Filter
@@ -337,7 +305,7 @@ class simulationJob(macrothread):
 
     # 4. Account for noise
     #    For now: noise is user-defined; TODO: Factor in to Kalman Filter
-    noise = DEFAULT.OBS_NOISE
+    noise = self.data['obs_noise']
     stepsize = 500 if 'interval' not in job else int(job['interval'])
     nwidth = noise//(2*stepsize)
     noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
@@ -356,7 +324,6 @@ class simulationJob(macrothread):
     binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
     label_count = {b: 0 for b in binlist}
     groupbystate = [[] for i in range(numLabels)]
-    pipe = self.catalog.pipeline()
     for i, rms in enumerate(rmslist):
       #  Sort RMSD by proximity & set state A as nearest state's centroid
       prox = np.argsort(rms)
@@ -385,28 +352,13 @@ class simulationJob(macrothread):
       # Add this index to the set of indices for this respective label
       #  TODO: Should we evict if binsize is too big???
       logging.debug('Label for observation #%3d: %s', i, str((A, B)))
-      pipe.rpush('varbin:rms:%d_%d' % (A, B), global_index[i])
       label_count[(A, B)] += 1
 
       # Group high-dim point by state
       # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
       groupbystate[A].append(i)
 
-    # 3. Append new points into the data store. 
-    pipe = self.catalog.pipeline()
-    for si in rmslist:
-      pipe.rpush('subspace:rms', bytes(si))
-    idxlist = pipe.execute()
-
-    for b in binlist:
-      pipe.rpush('observe:rms:%d_%d' % b, label_count[b])
-    pipe.incr('observe:count')
-    pipe.execute()
     stat.collect('observe', label_count)
-
-    # Update Catalog
-    idxcheck = self.catalog.append({'label:rms': rmslabel})
-
     bench.mark('RMS')
     logging.info('Labeled the following by State:')
     for A in range(numLabels):
@@ -426,14 +378,71 @@ class simulationJob(macrothread):
     covar = dr.calc_covar(alpha.xyz, WIN_SIZE_NS, frame_size, slide=SLIDE_AMT_NS)
     bench.mark('CalcCovar')
     logging.debug("Calcualted %d covariance matrices. Storing variances", len(covar)) 
-    pipe = self.catalog.pipeline()
-    for i, si in enumerate(covar):
-      local_index = int(i * frame_size * SLIDE_AMT_NS)
-      pipe.rpush('subspace:covar:pts', bytes(si))
-      pipe.rpush('subspace:covar:xid', global_index[local_index])
-      pipe.rpush('subspace:covar:fidx', (file_idx, local_index))
-    idxlist = pipe.execute()
+
+
+  #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
+    while True:
+      try:
+        if self.catalog is None:
+          self.catalog = RedisClient(settings.name)
+        self.catalog.ping()
+        break
+      except OverlayNotAvailable as e:
+        self.start_local_catalog()
+        self.catalog = None
+      except redis.RedisError as e:
+        self.catalog = None      
+
+  # Update Catalog with 1 Long Atomic Transaction  
+    global_index = []
+    with self.catalog.pipeline() as pipe:
+      while True:
+        try:
+          logging.debug('Update Filelist')
+          pipe.watch(wrapKey('jc', job['name']))
+          file_idx = pipe.rpush('xid:filelist', job['dcd']) - 1
+          # HD Points
+          logging.debug('Update HD Points')
+          for x in range(traj.n_frames):
+            # Note: Pipelined insertions "should" return contiguous set of index points
+            index = pipe.rpush('xid:reference', (file_idx, x)) - 1
+            global_index.append(index - 1) 
+
+          pipe.multi()
+          logging.debug('Update RMS Subspace')
+          for x in range(traj.n_frames):
+            A, B = rmslabel[i]
+            # Labeled Observation (from RMSD)
+            pipe.rpush('label:rms', rmslabel[x])
+            pipe.rpush('varbin:rms:%d_%d' % (A, B), index)
+            pipe.rpush('subspace:rms', bytes(rmslist[x]))
+
+          logging.debug('Update OBS Counts')
+          for b in binlist:
+            pipe.rpush('observe:rms:%d_%d' % b, label_count[b])
+          pipe.incr('observe:count')
+          pipe.hset('anl_sequence', job['name'], mylogical_seqnum)
+
+          logging.debug('Update Covar Subspace')
+          for i, si in enumerate(covar):
+            local_index = int(i * frame_size * SLIDE_AMT_NS)
+            pipe.rpush('subspace:covar:pts', bytes(si))
+            pipe.rpush('subspace:covar:xid', global_index[local_index])
+            pipe.rpush('subspace:covar:fidx', (file_idx, local_index))
+
+          logging.debug('Executing')
+          pipe.execute()
+          break
+        except redis.WatchError as e:
+          logging.debug('WATCH ERROR')
+          continue
+
+    self.data[key]['xid:start'] = global_index[0]
+    self.data[key]['xid:end'] = global_index[-1]
+    bench.mark('Indx_Update')
     stat.collect('numcovar', len(covar))
+
+  # (Should we Checkpoint here?)
 
   # 4-C. Subspace Calcuation: PCA BY Strata (PER STATE) using Alpha Filter
   #------ C:  GLOBAL PCA by state  -----------------
@@ -461,7 +470,8 @@ class simulationJob(macrothread):
       kpca = PCAnalyzer.load(self.catalog, kpca_key)
       newkpca = False
       if kpca is None:
-        kpca = PCAKernel(None, 'sigmoid')
+        # kpca = PCAKernel(None, 'sigmoid')
+        kpca = PCAKernel(10, 'sigmoid')
         newkpca = True
 
 

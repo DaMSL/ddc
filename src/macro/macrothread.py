@@ -21,6 +21,8 @@ import redis
 from core.common import * 
 from core.slurm import slurm
 from overlay.redisOverlay import RedisService, RedisClient
+from overlay.overlayException import OverlayNotAvailable
+
 from bench.timer import microbench
 
 __author__ = "Benjamin Ring"
@@ -36,6 +38,7 @@ class macrothread(object):
   __metaclass__ = abc.ABCMeta
 
   def __init__(self, fname, name):
+    settings = systemsettings()
     self.name = name
     self.fname = fname
 
@@ -49,7 +52,7 @@ class macrothread(object):
     # Default to json ini file:
     if not self.config.endswith('json'):
       self.config += '.json'
-    DEFAULT.applyConfig(self.config)
+    settings.applyConfig(self.config)
 
     # Thread State
     self._mut = []
@@ -75,10 +78,10 @@ class macrothread(object):
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
-    self.slurmParams = {'time':'4:0:0', 
+    self.slurmParams = {'time':'0:30:0', 
               'nodes':1, 
               'cpus-per-task':1, 
-              'partition':DEFAULT.PARTITION, 
+              'partition':settings.PARTITION, 
               'job-name':self.name,
               'workdir' : os.getcwd()}
 
@@ -260,10 +263,10 @@ class macrothread(object):
       else:
         if type(self.data[key]) in [int, float, np.ndarray]:
           state[key] = self.data[key] - self.origin[key]
-        elif isinstance(self.data, list):
+        elif isinstance(self.data[key], list):
           state[key] = [x for x in self.data[key] if x not in self.origin[key]]
-        elif isinstance(self.data, dict):
-          state[key] = {k:v for k.v in self.data[key].items if k not in self.origin[key].keys()}
+        elif isinstance(self.data[key], dict):
+          state[key] = {k:v for k,v in self.data[key].items() if k not in self.origin[key].keys()}
         else:
           logging.error("CANNOT APPEND data `%s` of type of %s", key, str(type(self.data[key])))
     
@@ -445,6 +448,20 @@ class macrothread(object):
     return self.parser
 
 
+  def start_local_catalog(self, isaggressive=False):
+      service = RedisService(settings.name, isaggressive=False)
+      self.localcatalogserver = service.start()
+      logging.info("Catalog service started as a background thread. Waiting on it...")
+      timeout = settings.CATALOG_STARTUP_DELAY
+      while timeout > 0:
+        if service.ping():
+          return True
+        logging.info("Waiting on the Server. Will timeout in %d secs.", timeout)
+        time.sleep(1)
+        timeout -= 1
+      self.localcatalogserver = None
+      return False
+
   def run(self):
     args = self.parser.parse_args()
 
@@ -458,7 +475,7 @@ class macrothread(object):
       self.job_id   = os.getenv('JOB_NAME')
     self.slurm_id = os.getenv('SLURM_JOB_ID')
 
-    logging.debug('EnVars Follow.q....')
+    logging.debug('EnVars')
 
     for i in ['SBATCH_JOBID', 'SBATCH_JOB_NAME', 'SLURM_JOB_ID', 'SLURM_JOBID', 'SLURM_JOB_NAME']:
       logging.debug('    %s : %s', i, os.getenv(i))
@@ -477,19 +494,39 @@ class macrothread(object):
       sys.exit(0)
 
     # Both Worker & Manager need catalog to run; load it here and import schema
+    retry = 3
+    connected = False
+    while retry > 0:
+      retry -= 1
+      logging.info('Trying to estabish connection to the Catalog Service')
+      try:
+        self.catalog = RedisClient(settings.name)
+        if self.catalog.isconnected and self.catalog.ping():
+          logging.info('Catalog service is connected')
+          connected = True
+          break
+        logging.info("Catalog service is not running. Trying to start the service now")
+        self.start_local_catalog()
+      except (redis.RedisError, OverlayNotAvailable) as e:
+        self.catalog = None
+        self.start_local_catalog()
 
-    if not self.catalog:
-      # self.catalog = redisCatalog.dataStore(**DEFAULT.catalogConfig)
-      self.catalog = RedisClient(settings.APPL_LABEL)
+    if not connected:
+      # If the catalog is unavailable. Fail this thread and re-schedule it
+      if args.workinput:
+        relaunch_cmd = "python3 %s -c %s -w" % (self.fname, self.config, args.workinput)
+      else:
+        self.slurmParams['cpus-per-task'] = 1
+        relaunch_cmd = "python3 %s -c %s" % (self.fname, self.config)
 
-    if self.catalog.isconnected and self.catalog.ping():
-      logging.info('Catalog service is connected')
-    else:
-      logging.info("Catalog service is not running. Starting the service now")
-      service = RedisService(settings.APPL_LABEL)
-      self.localcatalogserver = service.start()
-      logging.info("Catalog service started as a background thread.")
-      #  TODO: Quit and self-reschedule???
+      self.slurmParams['job-name'] = self.job_id
+      slurm.sbatch(taskid =self.slurmParams['job-name'],
+                options   = self.slurmParams,
+                modules   = self.modules,
+                cmd       = relaunch_cmd)
+      # NOTE: This should be handled in an exception (need to figure out which one)
+      #  And then raise a custom OverlayConnectionError here
+      return
 
     self.catalog.loadSchema()   # Should this be called from within the catalog module?
 

@@ -6,6 +6,7 @@ from collections import namedtuple
 import logging
 import argparse
 import pytest
+import pyslurm
 
 from core.common import systemsettings
 
@@ -26,6 +27,25 @@ def chmodX(path):
     mode |= (mode & 0o444) >> 2 
     os.chmod(path, mode)
 
+
+
+# USEFUL COMMANDS:
+
+# pyslurm.slurm_get_end_time(uint32_t JobID=0)
+
+#  'eligible_time': 1459546387,
+#  'end_time': 1460842402,
+#  'job_id': 5640778,
+#  'job_state': b'RUNNING',
+#  'name': "b'serial'",
+#  'run_time': 416671,
+#  'run_time_str': '4-19:44:31',
+#  'start_time': 1459546388,
+#  'submit_time': 1459546387,
+#  'time_limit': 21600,  IN MINUTES
+
+
+
 class slurm:
   """Slurm interface for peforming simple SLURM operations. Only includes the ability
   to schedule a job and to retrieve job information (for now)
@@ -42,6 +62,41 @@ class slurm:
   def run(cls, cmd):
     out = proc.call('srun ' + cmd, shell=True)
     return out
+
+
+  @classmethod
+  def jobinfo(cls, jobid):
+    out = proc.check_output('scontrol show jobid %d' % jobid, shell=True)
+    info = {}
+    for i in out.decode().split('\n'):
+      for j in i.split():
+        elm = j.split('=')
+        if len(elm) == 2:
+          k, v = elm
+          info[k] = v
+    return info
+
+
+  @classmethod
+  def getJob(cls, jobid):
+    job = pyslurm.job().get()[jobid]
+    p = {}
+    p['time']     = job['time_limit_str']
+    p['nodes']    = job['num_nodes']
+    p['cpus-per-task'] = job['cpus_per_task']
+    p['partition']= job['partition'].decode()
+    p['job-name'] = job['name'].decode()
+    p['workdir']  = job['work_dir'].decode()
+    return p
+
+  @classmethod
+  def time_left(cls, jobid):
+    """ Return Time left IN SECONDS
+    """
+    job = pyslurm.job().get()[jobid]
+    ts = dt.now().timestamp()
+    return (job['end_time'] - ts)
+
 
   @classmethod
   def getJobs(**kwargs):
