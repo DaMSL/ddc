@@ -93,6 +93,7 @@ class OverlayService(object):
     self._name_svc = svc_name
     self._name_app = name
     self.lockfile = '%s_%s.lock' % (self._name_app, self._name_svc)
+    logging.info('MY Lock file is: %s', self.lockfile)
 
     self.numslaves = kwargs.get('numslaves', 0)
     self.launchcmd = None
@@ -129,8 +130,8 @@ class OverlayService(object):
 
     # TODO: Should we require basic setting via systemsetting object???
     #   and thus, enforce this object on the abstract class?
-    self.SERVICE_STARTUP_DELAY = 10
-    self.SERVICE_HEARTBEAT_DELAY = 10
+    self.SERVICE_STARTUP_DELAY = 60
+    self.SERVICE_HEARTBEAT_DELAY = 60
 
     # Register tty signaling to gracefully shutdown when halted externall7
     #   (e.g. from scancel)
@@ -268,6 +269,7 @@ class OverlayService(object):
         logging.error("[%s] BAD state from existing %s. Removing it retrying to lock it.", self._name_svc, self.lockfile)
         if os.path.exists(self.lockfile):
           os.remove(self.lockfile)
+        self._role = 'MASTER'
         continue
 
       if state == 'START':
@@ -346,11 +348,15 @@ class OverlayService(object):
 
     self._state = 'RUN'
     self.state_running.set()
-    logging.info("[%s] My Service started local on %s. Starting the local monitor.", self._name_svc, self._host)    
+    logging.info("[%s] My Service started local on %s (ROLE=%s). Starting the local monitor.", self._name_svc, self._role, self._host)    
     ts = dt.now().timestamp()
 
     if self._role  == 'MASTER':
-      os.remove(self.lockfile)
+      if os.path.exists(self.lockfile):
+        logging.info("[%s] Removing and creating the Lockfile.", self._name_svc)    
+        os.remove(self.lockfile)
+      else:
+        logging.info("[%s] Creating a new Lockfile.", self._name_svc)    
       lock = os.open(self.lockfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
       os.write(lock, bytes('%s,%d,%f,%f,%s\n' % (self._host, self._port, ts, self.ttl, 'RUN'), 'UTF-8'))
       os.close(lock)

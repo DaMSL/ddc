@@ -492,8 +492,6 @@ class RedisClient(redis.StrictRedis):
     self.port = None
     self.pool = None
 
-    print('LOCKFILE', self.lockfile)
-
     connect_wait = 0
     while True:
       try:
@@ -577,10 +575,9 @@ class RedisClient(redis.StrictRedis):
             logging.debug("CLIENT_DELAY,CONN,%.1f",connect_wait)
           return cursor
       except (ConnectionResetError, ConnectionAbortedError, redis.ReadOnlyError) as e:
-        logging.warning('[Redis Client] Current Master is busy. It may be trying to shutdown. Wait and try again')
+        logging.warning('[Redis Client] Current Master is busy. It may be trying to shutdown. Backing off and rechecking the Master')
         time.sleep(5)
         connect_wait += (dt.now()-start).total_seconds()
-        continue
       except (redis.BusyLoadingError) as e:
         logging.warning('[Redis Client] Current Master is starting up. Standing by.....')
         time.sleep(5)

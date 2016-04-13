@@ -80,6 +80,7 @@ class controlJob(macrothread):
       self.addImmut('dcdfreq')
       self.addImmut('runtime')
       self.addImmut('sim_step_size')
+      self.addImmut('observe:count')
           
       self.addImmut('launch')
       self.addAppend('timestep')
@@ -341,6 +342,10 @@ class controlJob(macrothread):
       binlist = [(A, B) for A in range(numLabels) for B in range(numLabels)]
 
     # LOAD all new subspaces (?) and values
+
+      ##### BARRIER
+      self.wait_catalog()
+
       # Load new RMS Labels -- load all for now
       bench.start()
       logging.debug('Loading RMS Labels')
@@ -353,11 +358,20 @@ class controlJob(macrothread):
       num_pts = len(labeled_pts_rms)
       self.data['ctlIndexHead'] = thru_index
 
-      thru_count = self.catalog.get('observe:count')
+      thru_count = self.data['observe:count']
 
       logging.debug('##NUM_RMS_THIS_ROUND: %d', num_pts)
       stat.collect('numpts', len(labeled_pts_rms))
-      self.catalog.rpush('datacount', len(labeled_pts_rms))
+
+      # Load count by bin
+      pipe = self.catalog.pipeline()
+      for v_i in binlist:
+        A, B = v_i
+        pipe.llen('varbin:rms:%d_%d' % (A, B))
+      bincounts = pipe.execute()
+      logging.debug('Global Counts retrieved for %d keys', len(bincounts))
+
+
 
     # Calculate variable PDF estimations for each subspace via bootstrapping:
       logging.debug("=======================  <SUBSPACE CONVERGENCE>  =========================")
@@ -369,13 +383,13 @@ class controlJob(macrothread):
       pdf_rms_iter = datacalc.posterior_prob(labeled_pts_rms)
 
       vals_iter = {}
-      pipe = self.catalog.pipeline()
+      # pipe = self.catalog.pipeline()
       for v_i in binlist:
         A, B = v_i
         val = 0 if v_i not in pdf_rms_iter.keys() else pdf_rms_iter[v_i]
         vals_iter[v_i] = val
-        pipe.rpush('pdf:local:%d_%d' % (A, B), val)
-      pipe.execute()
+      #   pipe.rpush('pdf:local:%d_%d' % (A, B), val)
+      # pipe.execute()
       bench.mark('PostPDF:This')
 
       #  LOAD ALL POINTS TO COMPARE CUMULTIVE vs ITERATIVE:
@@ -388,33 +402,35 @@ class controlJob(macrothread):
 
       # Retrieve Previous Cuml stats
       vals_cuml = {}
-      pipe = self.catalog.pipeline()
-      for v_i in binlist:
-        A, B = v_i
-        pipe.llen('varbin:rms:%d_%d' % (A, B))
-      results = pipe.execute()
-      logging.debug('Global Counts retrieved for %d keys', len(results))
-
-      for i, elm in enumerate(results):
+      for i, elm in enumerate(bincounts):
         val = int(elm) if elm is not None else 0
         vals_cuml[binlist[i]] = val
 
       # Calculate incremental PDF
       pdf_rms_cuml = datacalc.incremental_posterior_prob(vals_cuml, labeled_pts_rms)
 
-      pipe = self.catalog.pipeline()
+      # pipe = self.catalog.pipeline()
+      # for v_i in binlist:
+      #   A, B = v_i
+      #   pipe.rpush('pdf:global:%d_%d' % (A, B), pdf_rms_cuml[v_i])
+      # pipe.execute()
+      bench.mark('PostPDF:All')
+
+
+
       for v_i in binlist:
         A, B = v_i
         pipe.rpush('pdf:global:%d_%d' % (A, B), pdf_rms_cuml[v_i])
-      pipe.execute()
-      bench.mark('PostPDF:All')
+        pipe.rpush('pdf:local:%d_%d' % (A, B), vals_iter[v_i])
+
+
 
       logging.info("PDF Comparison for all RMSD Bins")
       logging.info('##VAL TS   BIN:  Local  Global') 
       obs_by_state = [0 for i in range(numLabels)]
       for key in sorted(binlist):
         A, B = key
-        obs_by_state[A] += int(vals_iter[key]*num_pts) + int(vals_cuml[key] * thru_index)
+        obs_by_state[A] += int(vals_cuml[key])
         logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
           (self.data['timestep'], str(key), vals_iter[key], vals_cuml[key]))
 
@@ -423,6 +439,10 @@ class controlJob(macrothread):
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
       #   Using RMS and PCA, umbrella sample transitions out of state 3
+
+
+      ##### BARRIER
+      self.wait_catalog()
 
       EXPERIMENT_NUMBER = 7
 
@@ -614,28 +634,35 @@ class controlJob(macrothread):
         # 10. Apply Gamme Function
 
         logging.info("=====  Covariance Matrix PCA-KMeans Calculation (STEP-A)")
-        logging.info("Retrieving Covariance Matrices")
+        logging.info("Retrieving All Covariance Vectors")
         covar_raw = self.catalog.lrange('subspace:covar:pts', 0, -1)
         covar_pts = np.array([np.fromstring(x) for x in covar_raw])
         covar_fidx = self.catalog.lrange('subspace:covar:fidx', 0, -1)
         covar_index = self.catalog.lrange('subspace:covar:xid', 0, -1)
-        logging.info("    Pulled %d Covariance Matrices", len(covar_pts))
-        logging.info("Calculating Kernel PCA on Covariance (Pick your PCA Algorithm here)")
+        logging.info("    Pulled %d Covariance Vectors", len(covar_pts))
+        logging.info("Calculating Kernel PCA on Covariance (or Pick your PCA Algorithm here)")
         stat.collect('kpcatrainsize', len(covar_pts))
 
 
         # LOAD KPCA, CHECK SIZE/STALENESS & RE_CALC ONLY IF NEEDED
         kpca_key = 'subspace:covar:kernel'
         kpca = PCAnalyzer.load(self.catalog, kpca_key)
+        update_kcpa = False
         if kpca is None:
           # kpca = PCAKernel(None, 'rbf')
           kpca = PCAKernel(10, 'sigmoid')
           kpca.solve(covar_pts)
+          update_kcpa = True
 
         #  Check if the Kernel is old, but cap at 5K Pts (is this enough?)
-        if min(5000, len(covar_pts)) > (kpca.trainsize * 1.5):
-          logging.info('PCA Kernel is old (Updating it). Trained on data set of size %d. Current reservoir is %d pts.', tsize, rsize)
+        elif min(5000, len(covar_pts)) > (kpca.trainsize * 1.5):
+          logging.info('PCA Kernel is old (Updating it). Trained on data set of size %d. Current Data set is %d pts.', kpca.trainsize, len(covar_pts))
+          if len(covar_pts) > 5000:
+            traindata = np.random.choice(covar_pts, 5000)
+          else:
+            traindata = covar_pts
           kpca.solve(traindata)
+          update_kcpa = True
 
         bench.mark('CaclKPCA_COV')        
         logging.info("Projecting Covariance to PC")
@@ -654,16 +681,19 @@ class controlJob(macrothread):
         # TODO: Eventually implement per-point weights
         cov_label, cov_wght = KM.classify_score(pca_cov_pts, centroid)
         cluster_sizes = np.bincount(cov_label)
-        # For now, use normalized cluster sizes as the weights
-        cov_clust_wgts = cluster_sizes / np.sum(cluster_sizes)
+
+        # For now, use normalized cluster sizes as the weights inverted (1-X)
+        cov_clust_wgts = (1 - cluster_sizes / np.sum(cluster_sizes))
         logging.info('KMeans complete: bincounts is   %s', str(cluster_sizes))
         stat.collect('KMeansCluster', cluster_sizes)
 
         cov_iteration = self.catalog.get('subspace:covar:count')
         cov_iteration = 0 if cov_iteration is None else cov_iteration
         logging.info("Storing current centroid results (this is iteration #%d", cov_iteration)
-        self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
-        self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
+
+
+        # self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
+        # self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
         bench.mark('KmeansComplete')
 
         logging.info("=====  SELECT points from smallest 2 clusters (of STEP-A)")
@@ -675,14 +705,14 @@ class controlJob(macrothread):
 
         MAX_SAMPLE_SIZE   = 250   # Max # of cov "pts" to back project
         COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
-        MAX_PT_PER_MATRIX =  50   # 10% of points from Source Covariance matrix
+        MAX_PT_PER_MATRIX =  20   # 10% of points from Source Covariance matrix
 
         # FOR EXPERIMENT # 7 -->  We are using approximiation here. Will need to 
         #  Save approx amt.
         #   After analysis ~ 250 max pull pts should be small enough per (500 total)
         # Select smaller clusters from A
         size_order = np.argsort(cluster_sizes)
-        Klist = size_order[0:2]  # [, 0:2]
+        Klist = size_order[0:5]  # [, 0:2]
         cov_select = [[] for k in range(NUM_K)]
         cov_weights = [[] for k in range(NUM_K)]
         for L in Klist:
@@ -697,31 +727,64 @@ class controlJob(macrothread):
 
         logging.info("Selection Operation results:")
         approx_factor = {}
+        logging.info('KMeans Cluster Sizes were:   %s', str(cluster_sizes))
         for L in Klist:
-          logging.info("Selected %d points for cluster # %d  (from KMeans on Covariance matrices)", len(cov_select[L]), L)
+          logging.info("  Selected %d points for cluster # %d  (of size %d)  (from KMeans on Covariance matrices)", len(cov_select[L]), L, cluster_sizes[L])
           approx_factor[L] = len(cov_select[L]) / (COVAR_SIZE * len(groupby_label[L]))
           logging.info("##APPOX: %d  %f", L, approx_factor[L])
         bench.mark('SampleKMCluster')
+
+
+        back_proj_cov_traj = []
+        for k in range(len(cov_select)):
+          logging.info('Collecting covariance points from KMeans Cluster %d', k)
+          if len(cov_select[k]) == 0:
+            logging.info("NOT selecting cluster # %d from covariance KMeans clusters (none or filtered data)", k)
+          else:
+            logging.info("Projecting cluster # %d from covariance KMeans clusters (%d point)", k, len(cov_select[k]))
+            source_cov = self.backProjection(cov_select[k])
+            # TODO: Weight Preservation when back-projecting
+            alpha = datareduce.filter_alpha(source_cov)
+            logging.debug('Back Projected %d points to HD space: %s', len(cov_select[k]), str(alpha))
+            bench.mark('BackProject:COV_To_HD_%d' % k)
+            back_proj_cov_traj.append(alpha)
+
+
+        ####  BARRIER 
+        self.wait_catalog()
+
 
         # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
         reservoir = ReservoirSample('rms', self.catalog)
 
         logging.info("=====  BUILD HCube Tree(s) Using Smallest State(s) (FROM RMSD Obsevations) ")
+        hcube_A = {}
         hcube_B = {}
         hcube_B_wgt = {}
+        wgt_A = {}
+        wgt_B = {}
+
+        hcube_list = {}
 
 
 
         state_order = deque(np.argsort(obs_by_state))
         state_list = deque()
         logging.info("Scanning current set of observed states and finding the smallest with data (TODO: multiple states)")
+
+        #  Use a rarty factor to determine what is/is not a rare event
+        rarity_factor = sum(obs_by_state) / len(obs_by_state)
         while len(state_order) > 0:
           A = state_order.popleft()
-          if obs_by_state[A] > 0:
+          if obs_by_state[A] > 0 and obs_by_state[A] < rarity_factor:
             state_list.append(A)
 
         logging.info("=====  PROJECT KMeans clustered data into HCube KD Tree(s)")
+        projected_state = []
         for state in state_list:
+          hcube_B[state] = {}
+          hcube_B_wgt[state] = {}
+
           # Load Vectors
           logging.info('Loading subspace and kernel for state %d', state)
 
@@ -734,59 +797,46 @@ class controlJob(macrothread):
           if len(data) == 0:
             logging.error('Raw PCA data points should exist for state %d.. Try another state', state)
             continue
+          projected_state.append(state)
           logging.info('Building KDtree from data of size: %s', str(data.shape))
           kdtree = KDTree(100, maxdepth=8, data=data)
           bench.mark('KDTreeBuild_%d' % state)
 
           # Back-project all points to higher dimension <- as consolidatd trajectory
-          for k in range(len(cov_select)):
-            logging.info('Collecting covariance points from KMeans Cluster %d', k)
-            if len(cov_select[k]) == 0:
-              logging.info("NOT selecting cluster # %d from covariance KMeans clusters (none or filtered data)", k)
-            else:
-              logging.info("Projecting cluster # %d from covariance KMeans clusters (%d point)", k, len(cov_select[k]))
-              source_cov = self.backProjection(cov_select[k])
-              # TODO: Weight Preservation when back-projecting
-              alpha = datareduce.filter_alpha(source_cov)
-              logging.debug('Back Projected %d points to HD space: %s', len(cov_select[k]), str(alpha))
-              bench.mark('BackProject:COV_To_HD_%d' % k)
+          for alpha in back_proj_cov_traj:
+            # project down into PCA space for this state
+            cov_proj_pca = kpca.project(alpha.xyz)
+            logging.debug('Project to PCA:  %s', str(cov_proj_pca.shape))
+            bench.mark('Project:HD_To_PCA_%d' % k)
 
-              # 2. project into PCA space for this state
-              # cov_proj_pca = project_pca(alpha.xyz, pca_vect, settings.PCA_NUMPC)
-              
-              cov_proj_pca = kpca.project(alpha.xyz)
-              logging.debug('Project to PCA:  %s', str(cov_proj_pca.shape))
-              bench.mark('Project:HD_To_PCA_%d' % k)
-
-              # 3. Map into existing hcubes 
-              #  A -> PCA  and B -> COV
-              #   TODO:  Insert here and deal with collapsing geometric hcubes in KDTree
-              # Initiaze the set of "projected" hcubes in B
-              # Project every selected point into PCA and then group by hcube
-              for i in range(len(cov_proj_pca)):
-                hcube = kdtree.project(cov_proj_pca[i], probedepth=8)
-                if hcube not in hcube_B:
-                  hcube_B[hcube] = []
-                  hcube_B_wgt[hcube] = []
-                # TODO: Preserve per-point weight and use that here
-                hcube_B[hcube].append(i)
-                hcube_B_wgt[hcube].append(cov_clust_wgts[k])
-              logging.debug('Projected %d points into PCA.', len(cov_proj_pca))
+            # Map each projected point into existing hcubes for this State
+            #  A -> PCA  and B -> COV
+            #   TODO:  Insert here and deal with collapsing geometric hcubes in KDTree
+            # Initiaze the set of "projected" hcubes in B
+            # Project every selected point into PCA and then group by hcube
+            for i in range(len(cov_proj_pca)):
+              hcube = kdtree.project(cov_proj_pca[i], probedepth=8)
+              if hcube not in hcube_B[state]:
+                hcube_B[state][hcube] = []
+                hcube_B_wgt[state][hcube] = []
+              # TODO: Preserve per-point weight and use that here
+              hcube_B[state][hcube].append(i)
+              hcube_B_wgt[state][hcube].append(cov_clust_wgts[k])
+            logging.debug('Projected %d points into PCA.', len(cov_proj_pca))
 
           # FOR NOW: calc aggegrate average Wght for newly projected HCubes
-          wgt_B = {k: (1-np.mean(v)) for k, v in hcube_B_wgt.items()}
-          break  # hence only 1 state for now
+          wgt_B[state] = {k: (1-np.mean(v)) for k, v in hcube_B_wgt[state].items()}
 
-        bench.mark('ProjComplete')
+          bench.mark('ProjComplete')
 
-        logging.info("=====  REWEIGHT with Overlappig HCubes  (TODO: fine grained geometric overlap (is it necessary)")
-        hcube_list = sorted(hcube_B.keys())
-        # Get all original HCubes from A for "overlapping" hcubes
-        hcube_A = {}
-        for k in hcube_list:
-          hcube_A[k] = kdtree.retrieve(k)
-        total = sum([len(v) for k,v in hcube_A.items()])
-        wgt_A = {k: len(v)/total for k, v in hcube_A.items()}
+          logging.info("=====  REWEIGHT with Overlappig HCubes  (TODO: fine grained geometric overlap (is it necessary)")
+          hcube_list[state] = sorted(hcube_B.keys())
+          # Get all original HCubes from A for "overlapping" hcubes
+          hcube_A[state] = {}
+          for k in hcube_list[state]:
+            hcube_A[state][k] = kdtree.retrieve(k)
+          total = sum([len(v) for k,v in hcube_A[state].items()])
+          wgt_A[state] = {k: len(v)/total for k, v in hcube_A[state].items()}
 
         #  GAMMA FUNCTION EXPR # 1 & 2
         # gamma = lambda a, b : a * b
@@ -795,104 +845,119 @@ class controlJob(macrothread):
         # gamma = lambda a, b : (a + b) / 2
 
         #  GAMMA FUNCTION EXPR # 6
-        gamma = lambda a, b : (a + b) / 2
+        # gamma = lambda a, b : (a + b) / 2
+
+        #  GAMMA FUNCTION EXPR # 7
+        gamma = lambda a, b : (a + b)
 
         # TODO: Factor in RMS weight
-        comb_wgt = {k: gamma(wgt_A[k], wgt_B[k]) for k in hcube_list}
+        comb_wgt = {(state, k): gamma(wgt_A[state][k], wgt_B[state][k]) for k in hcube_list for state in projected_state}
         total = sum(comb_wgt.values())
         bench.mark('GammaFunc')
 
 
         ####  User Query Convergence
+
+        ##### BARRIER
+        self.wait_catalog()
+
         logging.info("=====  CALCULATE User Query Convergence")
         logging.info('Resultant HCube Data (for bootstrap)')
         # Get current iteration number
         iteration = int(self.catalog.incr('boot:qry1:count'))
 
-        # Ensure all currently projected HCubes have same # of observations
-        hc_conv_keys = self.catalog.keys('boot:qry1:conv:*')
-        offset = len('boot:qry1:conv:')
-        all_hc = [k[offset:] for k in hc_conv_keys]
+        for state in projected_state:
+          # Ensure all currently projected HCubes have same # of observations
+          hc_conv_keys = self.catalog.keys('boot:qry1:conv:%d:*' % state)
+          offset = len('boot:qry1:conv:%d' % state)
+          all_hc = [k[offset:] for k in hc_conv_keys]
 
-        # Get ALL convergence data for all HCubes
-        pipe = self.catalog.pipeline()
-        for k in hc_conv_keys:
-          pipe.lrange(k, 0, -1)
-        hc_conv_vals_aslist = pipe.execute()
-        hc_conv_vals = {}
-        for i, k in enumerate(hc_conv_keys):
-          if hc_conv_vals_aslist[i] is None or len(hc_conv_vals_aslist[i]) == 0:
-            hc_conv_vals[k[offset:]] = []
-          else:
-            hc_conv_vals[k[offset:]] = [float(val) for val in hc_conv_vals_aslist[i]]
+          # Get ALL convergence data for all HCubes
+          pipe = self.catalog.pipeline()
+          for k in hc_conv_keys:
+            pipe.lrange(k, 0, -1)
+          hc_conv_vals_aslist = pipe.execute()
+          hc_conv_vals = {}
+          for i, k in enumerate(hc_conv_keys):
+            if hc_conv_vals_aslist[i] is None or len(hc_conv_vals_aslist[i]) == 0:
+              hc_conv_vals[k[offset:]] = []
+            else:
+              hc_conv_vals[k[offset:]] = [float(val) for val in hc_conv_vals_aslist[i]]
 
-        pipe = self.catalog.pipeline()
-        # Ensure convergence is consitently calculated for all HCubes overlapping
-        # in this interation. 
-        #  If it's a child HCube, pad with the convergence of the parent
-        #  If it's a newly disovered HCube (or one which was not recently discovered) pad with zeros
-        for hc in hcube_list:
-          if hc in hc_conv_vals and (len(hc_conv_vals[hc]) == iteration - 1):
-            logging.debug('HC, `%s` is up to date with %d values', hc, len(hc_conv_vals[hc]))
-            continue
-          if hc not in hc_conv_vals:
-            hc_conv_vals[hc] = []
-          logging.debug('HC, `%s` is missing data.  LEN=%d  Iter=%d', hc, len(hc_conv_vals[hc]), (iteration-1))
-          # Newly discovered HCube: First Check if parent was discovered and use those stats
-          if hc not in all_hc:
-            for j in range(1, len(hc)-1):
-              # Find the parent HCube
-              if hc[:-j] in all_hc:
-                for val in hc_conv_vals[hc[:-j]]:
-                  hc_conv_vals[hc].append(val)
-                  pipe.rpush('boot:qry1:conv:%s' % k, val)
-                break
+          pipe = self.catalog.pipeline()
+          # Ensure convergence is consistently calculated for all HCubes overlapping
+          # in this interation. 
+          #  If it's a child HCube, pad with the convergence of the parent
+          #  If it's a newly disovered HCube (or one which was not recently discovered) pad with zeros
+          for hc in hcube_list[state]:
+            if hc in hc_conv_vals and (len(hc_conv_vals[hc]) == iteration - 1):
+              logging.debug('HC, `%s` is up to date with %d values', hc, len(hc_conv_vals[hc]))
+              continue
+            if hc not in hc_conv_vals:
+              hc_conv_vals[hc] = []
+            logging.debug('HC, `%s` is missing data.  LEN=%d  Iter=%d', hc, len(hc_conv_vals[hc]), (iteration-1))
+            # Newly discovered HCube: First Check if parent was discovered and use those stats
+            if hc not in all_hc:
+              for j in range(1, len(hc)-1):
+                # Find the parent HCube
+                if hc[:-j] in all_hc:
+                  for val in hc_conv_vals[hc[:-j]]:
+                    hc_conv_vals[hc].append(val)
+                    pipe.rpush('boot:qry1:conv:%s' % k, val)
+                  break
 
-          # Pad with zeroes (for previous non-projected points) as needed
-          for j in range(len(hc_conv_vals[hc]), iteration-1):
-            pipe.rpush('boot:qry1:conv:%s' % k, 0)
+            # Pad with zeroes (for previous non-projected points) as needed
+            for j in range(len(hc_conv_vals[hc]), iteration-1):
+              pipe.rpush('boot:qry1:conv:%s' % k, 0)
 
         # Then push new data:
         for k, v in comb_wgt.items():
+          state, hc = k
           norm_wgt = (v/total) 
           logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)', 
-            k, len(hcube_A[k]), wgt_A[k], len(hcube_B[k]), wgt_B[k], comb_wgt[k])
-          pipe.rpush('boot:qry1:conv:%s' % k, iteration, norm_wgt)
+            k, len(hcube_A[state][hc]), wgt_A[state][hc], len(hcube_B[state][hc]), wgt_B[state][hc], comb_wgt[k])
+          pipe.rpush('boot:qry1:conv:%d:%s' % k, iteration, norm_wgt)
           # pipe.hset('boot:qry1:conv:%s' % k, iteration, norm_wgt)
         pipe.execute()
 
+        state_conv = {}
         convergence = {}
-        logging.info('Calculating Convergence for %d keys ', len(hcube_B.keys()))
-        for k in hcube_list:
-          convdata = self.catalog.lrange('boot:qry1:conv:%s' % k, 0, -1)
-          bootstrap = [float(i) for i in convdata]
-          if iteration > 1:
-            mean, CI, stddev, err = datacalc.bootstrap_std(bootstrap)
-            convergence[k] = CI / mean  # Total Convergence calculation per key
-          else:
-            convergence[k] = 1.0
-          logging.info('##CONV %0d %10s %.4f', iteration, k, convergence[k])
+        for state in projected_state:
+          convergence[state] = {}
+          logging.info('Calculating Convergence for %d keys ', len(hcube_B[state].keys()))
+          for k in hcube_list[state]:
+            convdata = self.catalog.lrange('boot:qry1:conv:%d:%s' % (state, k), 0, -1)
+            bootstrap = [float(i) for i in convdata]
+            if iteration > 1:
+              mean, CI, stddev, err = datacalc.bootstrap_std(bootstrap)
+              convergence[state][k] = CI / mean  # Total Convergence calculation per key
+            else:
+              convergence[state][k] = 1.0
+            logging.info('##CONV %0d %d %10s %.4f', iteration, state, k, convergence[state][k])
 
-        if len(convergence.values()) == 0:
-          logging.info('Not enough data collected yet.')
-          total_convergence = 1.
-        else:  
-          tot_conv_data = np.array(list(convergence.values()))
-          conv_max = np.max(tot_conv_data)
-          conv_min = np.min(tot_conv_data)
-          conv_mean = np.mean(tot_conv_data)
-          total_convergence = min(1.0, conv_mean)
-          logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
+          if len(convergence[state].values()) == 0:
+            logging.info('Not enough data collected yet.')
+            state_conv[state] = 1.
+          else:  
+            tot_conv_data = np.array(list(convergence[state].values()))
+            conv_max = np.max(tot_conv_data)
+            conv_min = np.min(tot_conv_data)
+            conv_mean = np.mean(tot_conv_data)
+            state_conv[state] = min(1.0, conv_mean)
+            logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
 
-        logging.info('##TOTAL_CONV QRY1 = %.4f', total_convergence)
-        stat.collect('qry1conv', total_convergence)
+          logging.info('##TOTAL_CONV,%d,%.4f', state,state_conv[state])
+          stat.collect('qry1conv:%d'%state, state_conv[state])
 
         # PUSH User's Total Convergence here
-        self.catalog.rpush('boot:qry1:TOTAL', total_convergence)
-        bench.mark('Bootstrap')
+          self.catalog.rpush('boot:qry1:TOTAL:%d'%state, state_conv[state])
+          bench.mark('Bootstrap')
 
     # EXECUTE SAMPLER
         logging.debug("=======================  <DATA SAMPLER>  =========================")
+
+        ##### BARRIER
+        self.wait_catalog()
 
         #  Exploration vs Exploitation SamplingUmbrella Sampling  (For exploration)
         #   or use weights as exploitation
@@ -902,19 +967,21 @@ class controlJob(macrothread):
         #  Smaller bins will also be preferred in the sampling
         #  TODO: Add linear regression and pick 'trending' convergence bins
         hcube_pdf = []
-        for k in hcube_list:
-          if convergence[k] <= 0:
-            logging.info('Detected that %s has totally converged (not sure if this is even possible)', k)
-          else:
-            prob = (1 - comb_wgt[k]) / convergence[k]
-            hcube_pdf.append(prob)
-            logging.info('### PROB %s  %.4f', k, prob)
+        hcube_selections = []
+        for state in projected_state:
+          for k in hcube_list[state]:
+            if convergence[state][k] <= 0:
+              logging.info('Detected that %s has totally converged (not sure if this is even possible)', k)
+            else:
+              prob = (1 - comb_wgt[(state,k)]) / convergence[state][k]
+              hcube_pdf.append(prob)
+              hcube_selection.append((state,k))
+              logging.info('### PROB %s  %.4f', k, prob)
         hcube_pdf = np.array(hcube_pdf)
         hcube_pdf /= np.sum(hcube_pdf)
 
        # TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
         numresources = self.data['numresources']
-        sampled_distro_perbin = {k: 0 for k in hcube_list}
         selected_index_list = []
         coord_origin = []
         if len(hcube_list) == 0:
@@ -939,10 +1006,13 @@ class controlJob(macrothread):
 
         while numresources > 0:
           # First selection is biased using PDF from above
-          selected_hcube = np.random.choice(hcube_list, p=hcube_pdf)
-          sampled_distro_perbin[selected_hcube] += 1
+          selected_state, selected_hcube = np.random.choice(hcube_selection, p=hcube_pdf)
+
           # Secondary Sampling is Uniform (OR Could Be Weighted again (see write up))
-          selected_index = np.random.choice(list(hcube_A[selected_hcube]) + list(hcube_B[selected_hcube]))
+          # selected_index = np.random.choice(list(hcube_A[selected_hcube]) + list(hcube_B[selected_hcube]))
+
+          #  ONLY Sample from data points of HCube A
+          selected_index = np.random.choice(list(hcube_A[selected_state][selected_hcube]))
           logging.debug('SAMPLER: selected sample #%d from hcube %s', selected_index, selected_hcube)
           selected_index_list.append(selected_index)
           coord_origin.append(('sim', selected_index, selected_hcube))
@@ -991,6 +1061,8 @@ class controlJob(macrothread):
     #  POST-PROCESSING  -------------------------------------
       logging.debug("============================  <POST-PROCESSING & OUTPUT>  =============================")
           
+      self.wait_catalog()
+
       # Clear current queue, mark previously queues jobs for GC, push new queue
       qlen = self.catalog.llen('jcqueue')
       logging.debug('Current queue len;   %s', str(qlen))
@@ -1004,6 +1076,13 @@ class controlJob(macrothread):
           # Add gc jobs it to the state to write back to catalog (flags it for gc)
           self.addMut(key, config)
         self.catalog.delete('jcqueue')
+
+      #  CATALOG UPDATES
+      self.catalog.rpush('datacount', len(labeled_pts_rms))
+
+      #  EXPR 7 Update:
+      self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
+      self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
 
       # Update cache hit/miss
       hit = self.cache_hit

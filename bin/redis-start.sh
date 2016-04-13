@@ -2,9 +2,9 @@
 
 #SBATCH
 #SBATCH --job-name=osvc-red
-#SBATCH --time=0:5:0
+#SBATCH --time=4:0:0
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=12
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/osvc-redis-%j.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
 #SBATCH --partition=debug,shared

@@ -3,6 +3,17 @@ import numpy.linalg as LA
 from sklearn.cluster import KMeans
 import datetime as dt
 import random
+import logging
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
+logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
+
+
 
 def KM_std(data, N):
   kmeans = KMeans(8, )
@@ -37,7 +48,7 @@ def find_centers(X, K):
     oldmu = random.sample(X.tolist(), K)
     mu = random.sample(X.tolist(), K)
     clusters = None
-    print('Finding Centers... k=', K)
+    logging.info('Finding Centers... k= %d', K)
     while not has_converged(mu, oldmu):
         oldmu = mu
         # Assign all points in X to clusters
@@ -45,7 +56,7 @@ def find_centers(X, K):
         # Reevaluate centers
         mu = reevaluate_centers(oldmu, clusters)
     ed = dt.datetime.now()
-    print('KMeans time = %5.1f' % (ed-st).total_seconds())
+    logging.info('KMeans_time,%5.1f', (ed-st).total_seconds())
     return(mu, clusters)
 
 def classify(data, centroids):

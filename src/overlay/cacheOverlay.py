@@ -69,7 +69,7 @@ class CacheService(RedisService):
     logging.info('[Cache-Fet] Fetcher is starting. Preparing capacity of %d GB', config.CACHE_CAPACITY)
 
     # Wait until service is up (and not terminating on launch)
-    timeout = 120
+    timeout = 240
     while not self.ping():
       logging.info('[Cache-Fet] Fetcher is waiting for the service to start... MissingConn=%s', (self.connection is None))
       time.sleep(1)
@@ -91,7 +91,7 @@ class CacheService(RedisService):
         host='localhost', port=self._port, decode_responses=True)
     conn.client_setname("fetcher")
 
-    block_timeout = 10   #needed to check for service termination (MV-> setting)
+    block_timeout = 60   #needed to check for service termination (MV-> setting)
     while True:
       if self.terminationFlag.is_set():
         break

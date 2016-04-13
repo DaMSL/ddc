@@ -140,7 +140,8 @@ def labelDEShaw_rmsd():
   logging.info('Labeling All DEShaw Points.')
   rmslabel = []
   # Only use N-% of all points
-  for i in range(0, len(rms), 100):
+  # for i in range(0, len(rms), 100):
+  for i in range(len(rms)):
     A = prox[i][0]
     proximity = abs(rms[i][prox[i][1]] - rms[i][A])    #abs
     B = prox[i][1] if proximity < theta else A

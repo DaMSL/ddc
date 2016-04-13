@@ -45,11 +45,11 @@ __status__ = "Development"
 
 logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
-PARALLELISM = 12
+PARALLELISM = 24
 SIM_STEP_SIZE = 2
 
 # Factor used to "simulate" long running jobs using shorter sims
-SIMULATE_RATIO = 50
+SIMULATE_RATIO = 10
 
 class simulationJob(macrothread):
   """Macrothread to run MD simuation. Each worker runs one simulation
@@ -139,8 +139,8 @@ class simulationJob(macrothread):
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
     USE_SHM = True
 
-    frame_size = (SIMULATE_RATIO * int(job['interval'])) // (1000)
-    logging.info('Frame Size is %d  Using Sim Ratio of 1:%d', frame_size, SIMULATE_RATIO)
+    frame_size = (SIMULATE_RATIO * int(job['interval'])) / (1000)
+    logging.info('Frame Size is %f  Using Sim Ratio of 1:%d', frame_size, SIMULATE_RATIO)
 
   # EXECUTE SIMULATION ---------------------------------------------------------
     if self.skip_simulation:
@@ -381,17 +381,11 @@ class simulationJob(macrothread):
 
 
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
-    while True:
-      try:
-        if self.catalog is None:
-          self.catalog = RedisClient(settings.name)
-        self.catalog.ping()
-        break
-      except OverlayNotAvailable as e:
-        self.start_local_catalog()
-        self.catalog = None
-      except redis.RedisError as e:
-        self.catalog = None      
+    # try:
+    self.wait_catalog()
+    # except OverlayNotAvailable as e:
+    #   logging.warning("Catalog Overlay Service is not available. Scheduling ASYNC Analysis")
+
 
   # Update Catalog with 1 Long Atomic Transaction  
     global_index = []

@@ -15,6 +15,7 @@ import copy
 import re
 from collections import namedtuple
 import copy
+import datetime as dt
 
 import redis
 
@@ -24,6 +25,7 @@ from overlay.redisOverlay import RedisService, RedisClient
 from overlay.overlayException import OverlayNotAvailable
 
 from bench.timer import microbench
+
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -78,7 +80,7 @@ class macrothread(object):
     # Default Runtime parameters to pass to slurm manager
     #  These vary from mt to mt (and among workers) and can be updated
     #  through the prepare method
-    self.slurmParams = {'time':'0:30:0', 
+    self.slurmParams = {'time':'2:00:0', 
               'nodes':1, 
               'cpus-per-task':1, 
               'partition':settings.PARTITION, 
@@ -461,6 +463,29 @@ class macrothread(object):
         timeout -= 1
       self.localcatalogserver = None
       return False
+
+
+  def wait_catalog(self):
+    """Blocks current execution until the catalog service is available. If it
+    is not available remotely, start up a local service.
+    """
+    start = dt.datetime.now()
+    settings = systemsettings()
+    while True:
+      try:
+        if self.catalog is None:
+          self.catalog = RedisClient(settings.name)
+        self.catalog.ping()
+        break
+      except OverlayNotAvailable as e:
+        self.start_local_catalog()
+        self.catalog = None
+      except redis.RedisError as e:
+        self.catalog = None        
+
+    delta = (dt.datetime.now() - start).total_seconds()
+    if delta > 1:
+      logging.info('CLIENT_DELAY,%f', delta)
 
   def run(self):
     args = self.parser.parse_args()

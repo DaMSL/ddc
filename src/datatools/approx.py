@@ -14,7 +14,7 @@ class ReservoirSample(object):
   For now: support redis as storage and hold numpy arrays
   All data items in the sample are consistent (same type/shape)
   """
-  def __init__(self, name, datastore, maxsize=10000, ):
+  def __init__(self, name, datastore, maxsize=5000, ):
     #  For now: shape is required with NP array. Eventually this should
     #  be able to support different data types
     self.name = name
