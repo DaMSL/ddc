@@ -49,7 +49,7 @@ PARALLELISM = 24
 SIM_STEP_SIZE = 2
 
 # Factor used to "simulate" long running jobs using shorter sims
-SIMULATE_RATIO = 10
+SIMULATE_RATIO = 1
 
 class simulationJob(macrothread):
   """Macrothread to run MD simuation. Each worker runs one simulation
@@ -480,6 +480,13 @@ class simulationJob(macrothread):
 
         #  Should we only use a sample here??? (not now -- perhaps with larger rervoirs or if KPCA is slow
         traindata = reservoir.get(A)
+        if newkpca:
+          num_hd_pts = len(groupbystate[A])
+          logging.info('Projecting %d points on Kernel PCA for state %d', num_hd_pts, A)
+          traindata = np.zeros(shape=((num_hd_pts,)+alpha.xyz.shape[1:]), dtype=np.float32)
+          for i, index in enumerate(groupbystate[A]):
+            np.copyto(traindata[i], alpha.xyz[index])
+
         if len(traindata) < 2:
           logging.info("Not enough data to update PC's. Skipping-PCA-%d", A)
           continue
@@ -506,13 +513,14 @@ class simulationJob(macrothread):
         # Project Reservoir Sample to the Kernel and overwrite current set of points
         #  This should only happen up until the reservior is filled
         # If we are approx above to train, be sure to project all reservor points
-        logging.info('Clearing and Re-Projecting the entire reservoir of %d points for State %d.', rsize, A)
-        rsamp_lowdim = kpca.project(traindata)
-        pipe = self.catalog.pipeline()
-        pipe.delete('subspace:pca:%d'%A)
-        for si in rsamp_lowdim:
-          pipe.rpush('subspace:pca:%d'%A, bytes(si))
-        pipe.execute()
+        if not newkpca:
+          logging.info('Clearing and Re-Projecting the entire reservoir of %d points for State %d.', rsize, A)
+          rsamp_lowdim = kpca.project(traindata)
+          pipe = self.catalog.pipeline()
+          pipe.delete('subspace:pca:%d'%A)
+          for si in rsamp_lowdim:
+            pipe.rpush('subspace:pca:%d'%A, bytes(si))
+          pipe.execute()
 
 
       else:
@@ -532,7 +540,6 @@ class simulationJob(macrothread):
       for si in pc_proj:
         pipe.rpush('subspace:pca:%d' % A, bytes(si))
       pipe.execute()
-      logging.info('Stored NEW lower dim points %s', len(idxlist))
 
       logging.debug('Updating reservoir Sample')
       num_inserted[A] = reservoir.insert(A, hd_pts)

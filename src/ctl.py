@@ -363,7 +363,7 @@ class controlJob(macrothread):
       logging.debug('##NUM_RMS_THIS_ROUND: %d', num_pts)
       stat.collect('numpts', len(labeled_pts_rms))
 
-      # Load count by bin
+      # Load Previous count by bin
       pipe = self.catalog.pipeline()
       for v_i in binlist:
         A, B = v_i
@@ -380,16 +380,16 @@ class controlJob(macrothread):
       logging.info("RMS Labels for %d points loaded. Calculating PDF.....", len(labeled_pts_rms))
 
       logging.info("Posterer PDF: This Sample ONLY")
-      pdf_rms_iter = datacalc.posterior_prob(labeled_pts_rms)
+      pdf_rms_local = datacalc.posterior_prob(labeled_pts_rms)
 
       vals_iter = {}
+      counts_local = {}
       # pipe = self.catalog.pipeline()
       for v_i in binlist:
         A, B = v_i
-        val = 0 if v_i not in pdf_rms_iter.keys() else pdf_rms_iter[v_i]
-        vals_iter[v_i] = val
-      #   pipe.rpush('pdf:local:%d_%d' % (A, B), val)
-      # pipe.execute()
+        if v_i not in pdf_rms_local.keys():
+          pdf_rms_local[v_i] = 0.
+        counts_local[v_i] = round(pdf_rms_local[v_i] * num_pts)
       bench.mark('PostPDF:This')
 
       #  LOAD ALL POINTS TO COMPARE CUMULTIVE vs ITERATIVE:
@@ -402,39 +402,33 @@ class controlJob(macrothread):
 
       # Retrieve Previous Cuml stats
       vals_cuml = {}
+      counts_global = {}
       for i, elm in enumerate(bincounts):
         val = int(elm) if elm is not None else 0
-        vals_cuml[binlist[i]] = val
+        counts_global[binlist[i]] = val
 
       # Calculate incremental PDF
-      pdf_rms_cuml = datacalc.incremental_posterior_prob(vals_cuml, labeled_pts_rms)
+      pdf_rms_global = datacalc.incremental_posterior_prob(counts_global, labeled_pts_rms)
+      bench.mark('PostPDF:All')
 
-      # pipe = self.catalog.pipeline()
       # for v_i in binlist:
       #   A, B = v_i
       #   pipe.rpush('pdf:global:%d_%d' % (A, B), pdf_rms_cuml[v_i])
-      # pipe.execute()
-      bench.mark('PostPDF:All')
-
-
-
-      for v_i in binlist:
-        A, B = v_i
-        pipe.rpush('pdf:global:%d_%d' % (A, B), pdf_rms_cuml[v_i])
-        pipe.rpush('pdf:local:%d_%d' % (A, B), vals_iter[v_i])
-
-
+      #   pipe.rpush('pdf:local:%d_%d' % (A, B), vals_iter[v_i])
 
       logging.info("PDF Comparison for all RMSD Bins")
       logging.info('##VAL TS   BIN:  Local  Global') 
       obs_by_state = [0 for i in range(numLabels)]
+      obs_by_state_local = [0 for i in range(numLabels)]
       for key in sorted(binlist):
         A, B = key
-        obs_by_state[A] += int(vals_cuml[key])
+        obs_by_state_local[A] += counts_local[key]
+        obs_by_state[A] += counts_global[key] + counts_local[key]
         logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
-          (self.data['timestep'], str(key), vals_iter[key], vals_cuml[key]))
+          (self.data['timestep'], str(key), pdf_rms_local[key], pdf_rms_global[key]))
 
-      logging.info("Total Observations by state: %s", str(obs_by_state))
+      logging.info("OBS_LOCAL,%s", str(obs_by_state_local))
+      logging.info("OBS_GLOBAL,%s", str(obs_by_state))
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
@@ -619,7 +613,7 @@ class controlJob(macrothread):
           sampled_set.append(traj)
         bench.mark('Sampler')
 
-      ###### EXPERIMENT #6:  REWEIGHT OPERATOR, et al
+      ###### EXPERIMENT #6, 7:  REWEIGHT OPERATOR, et al
       if EXPERIMENT_NUMBER in [6, 7]:
         #  1. RUN PCA on Covariance Matrices and project using PCA
         #  2. Calculate KMeans using varying K-clusters
@@ -696,7 +690,7 @@ class controlJob(macrothread):
         # self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
         bench.mark('KmeansComplete')
 
-        logging.info("=====  SELECT points from smallest 2 clusters (of STEP-A)")
+        logging.info("=====  SELECT points from smallest 4 clusters (of STEP-A)")
 
         # TODO:  Here is the update for newly labeled data
         groupby_label = {k: [] for k in range(NUM_K)}
@@ -766,18 +760,20 @@ class controlJob(macrothread):
 
         hcube_list = {}
 
-
-
         state_order = deque(np.argsort(obs_by_state))
         state_list = deque()
-        logging.info("Scanning current set of observed states and finding the smallest with data (TODO: multiple states)")
+        logging.info("Scanning current set of observed states and finding the smallest with data")
 
         #  Use a rarty factor to determine what is/is not a rare event
         rarity_factor = sum(obs_by_state) / len(obs_by_state)
+        logging.info('Targeting states with fewer than %d observations (these could be considered "rare")', rarity_factor)
         while len(state_order) > 0:
           A = state_order.popleft()
+          logging.debug('Checking state %d with %s observations.', A, obs_by_state[A])
           if obs_by_state[A] > 0 and obs_by_state[A] < rarity_factor:
             state_list.append(A)
+        logging.info('Selected the following: %s', str(list(state_list)))
+
 
         logging.info("=====  PROJECT KMeans clustered data into HCube KD Tree(s)")
         projected_state = []
@@ -803,11 +799,11 @@ class controlJob(macrothread):
           bench.mark('KDTreeBuild_%d' % state)
 
           # Back-project all points to higher dimension <- as consolidatd trajectory
+          n_total = 0
           for alpha in back_proj_cov_traj:
             # project down into PCA space for this state
             cov_proj_pca = kpca.project(alpha.xyz)
             logging.debug('Project to PCA:  %s', str(cov_proj_pca.shape))
-            bench.mark('Project:HD_To_PCA_%d' % k)
 
             # Map each projected point into existing hcubes for this State
             #  A -> PCA  and B -> COV
@@ -818,22 +814,26 @@ class controlJob(macrothread):
               hcube = kdtree.project(cov_proj_pca[i], probedepth=8)
               if hcube not in hcube_B[state]:
                 hcube_B[state][hcube] = []
-                hcube_B_wgt[state][hcube] = []
+                hcube_B_wgt[state][hcube] = 0
               # TODO: Preserve per-point weight and use that here
               hcube_B[state][hcube].append(i)
-              hcube_B_wgt[state][hcube].append(cov_clust_wgts[k])
+              hcube_B_wgt[state][hcube] += 1
+              n_total += 1
             logging.debug('Projected %d points into PCA.', len(cov_proj_pca))
+          bench.mark('Project:HD_To_PCA_%d' % state)
 
           # FOR NOW: calc aggegrate average Wght for newly projected HCubes
-          wgt_B[state] = {k: (1-np.mean(v)) for k, v in hcube_B_wgt[state].items()}
+          wgt_B[state] = {k: v/n_total for k, v in hcube_B_wgt[state].items()}
 
           bench.mark('ProjComplete')
 
           logging.info("=====  REWEIGHT with Overlappig HCubes  (TODO: fine grained geometric overlap (is it necessary)")
-          hcube_list[state] = sorted(hcube_B.keys())
+          hcube_list[state] = sorted(hcube_B[state].keys())
           # Get all original HCubes from A for "overlapping" hcubes
           hcube_A[state] = {}
+          logging.debug('HCUBELIST:   %s', str(hcube_list[state]))
           for k in hcube_list[state]:
+            logging.debug('Retrieving:  %s', str(k))
             hcube_A[state][k] = kdtree.retrieve(k)
           total = sum([len(v) for k,v in hcube_A[state].items()])
           wgt_A[state] = {k: len(v)/total for k, v in hcube_A[state].items()}
@@ -851,8 +851,15 @@ class controlJob(macrothread):
         gamma = lambda a, b : (a + b)
 
         # TODO: Factor in RMS weight
-        comb_wgt = {(state, k): gamma(wgt_A[state][k], wgt_B[state][k]) for k in hcube_list for state in projected_state}
+        comb_wgt = {}
+        for state in projected_state:
+          for hc in hcube_list[state]:
+            comb_wgt[(state, hc)] =  gamma(wgt_A[state][hc], wgt_B[state][hc])
         total = sum(comb_wgt.values())
+
+        # Normalize
+        for k, v in comb_wgt.items():
+          comb_wgt[k] = v / total
         bench.mark('GammaFunc')
 
 
@@ -967,16 +974,18 @@ class controlJob(macrothread):
         #  Smaller bins will also be preferred in the sampling
         #  TODO: Add linear regression and pick 'trending' convergence bins
         hcube_pdf = []
-        hcube_selections = []
+        hcube_selection = []
         for state in projected_state:
           for k in hcube_list[state]:
             if convergence[state][k] <= 0:
               logging.info('Detected that %s has totally converged (not sure if this is even possible)', k)
             else:
-              prob = (1 - comb_wgt[(state,k)]) / convergence[state][k]
-              hcube_pdf.append(prob)
+
+              # Apply Convergence Factor:  More converged will increase Prob.
+              select_weight = (1 - comb_wgt[(state,k)]) / convergence[state][k]
+              hcube_pdf.append(select_weight)
               hcube_selection.append((state,k))
-              logging.info('### PROB %s  %.4f', k, prob)
+              logging.info('### TOTAL_WGT %d-%s  %.4f', state, k, select_weight)
         hcube_pdf = np.array(hcube_pdf)
         hcube_pdf /= np.sum(hcube_pdf)
 
@@ -1003,11 +1012,12 @@ class controlJob(macrothread):
             selected_index_list.append(-index)
             coord_origin.append(('deshaw', index, binlist[sample_bin]))
             numresources -= 1
+            itr += 1
 
         while numresources > 0:
           # First selection is biased using PDF from above
-          selected_state, selected_hcube = np.random.choice(hcube_selection, p=hcube_pdf)
-
+          hcube = np.random.choice(np.arange(len(hcube_selection)), p=hcube_pdf)
+          selected_state, selected_hcube = hcube_selection[hcube]
           # Secondary Sampling is Uniform (OR Could Be Weighted again (see write up))
           # selected_index = np.random.choice(list(hcube_A[selected_hcube]) + list(hcube_B[selected_hcube]))
 

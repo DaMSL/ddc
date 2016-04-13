@@ -109,14 +109,18 @@ class CacheService(RedisService):
       logging.info('[Cache-Fet] Fetcher Got a request...')
       if request[0] == 'request:deshaw':
         fileno = int(request[1])
+        key = 'deshaw:%02d' % fileno 
         dcd = deshaw.getDEShawfilename_prot(fileno, fullpath=True)
         pdb = deshaw.PDB_PROT   
-        key = 'deshaw:%02d' % fileno 
 
-      else:        
+      else:
+        key = 'sim:%s' % request[1]
         dcd  = os.path.join(config.JOBDIR, request[1], request[1] + '.dcd')
         pdb  = dcd.replace('dcd', 'pdb')
-        key = 'sim:%s' % request[1]
+
+      if conn.exists(key):
+        logging.info('File Load request for existing key: %s', key)
+        continue
 
       logging.info('File Request!\n%-20s\n%-20s\n%-20s\n%-20s\n%-20s', 
         request[0], request[1], dcd, pdb, key)
@@ -131,7 +135,7 @@ class CacheService(RedisService):
       used_mem = int(conn.info('memory')['used_memory'])
       available = capacity - used_mem
       logging.debug('Cache Capacity check:  Used= %6dMB    Capacity= %6dMB   Avail=%d bytes  Data=%d', \
-        (used_mem*(2**20)), (capacity*(2**20)), available, traj.xyz.nbytes)
+        (used_mem/(2**20)), (capacity/(2**20)), available, traj.xyz.nbytes)
 
       if available >= traj.xyz.nbytes:
         logging.info('Cache has available capacity')
