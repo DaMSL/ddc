@@ -45,6 +45,8 @@ s = redis.StrictRedis(port=6381, decode_responses=True)
 p = redis.StrictRedis(port=6382, decode_responses=True)
 u = redis.StrictRedis(port=6383, decode_responses=True)
 b = redis.StrictRedis(port=6384, decode_responses=True)
+r = redis.StrictRedis(host=HOST, decode_responses=True)
+
 r = redis.StrictRedis(port=6385, decode_responses=True)
 
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
@@ -305,54 +307,54 @@ def bystate(slist=None, cumulative=False, STEPSIZE=50):
   data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
   data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
   data['naive']['obs'] = p.lrange('label:rms', 0, -1)
-for e in ['parallel']:
-  data[e]['conv'] = [[] for i in range(5)]
-  bootstrap = GP.postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
-  data[e]['boot'] = GP.postcalc_bootstraps(bootstrap)
-  for A in range(5):
-    agg = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-    for B in range(5):
-      for k in range(len(data[e]['boot']['ci'][(A, B)])):
-        agg[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-    data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
-maxlim = min([len(data[e]['conv'][A]) for e in data.keys() for A in range(5)])
-statelist = [0, 1, 2, 3, 4] if slist is None else slist
-for A in [0, 1, 2, 3, 4]:
-  # maxlen = min([len(data[e]['conv'][A]) for e in data.keys()])
-  for e in data.keys():
-    X = data[e]['conv'][A]
-    print(len(X))
-    plt.plot(np.arange(min(40,len(X)))*(STEPSIZE), X[:min(40,len(X))], color=colormap[e], label=e)
-  # plt.title('Convergence for State %d', A)
-  plt.xlabel('Total Convergence (total time in ns)')
-  plt.legend()
-  plt.savefig(SAVELOC + 'TotConv_%s.png' % (A))
-  plt.close()
-return data
+  for e in ['parallel']:
+    data[e]['conv'] = [[] for i in range(5)]
+    bootstrap = GP.postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
+    data[e]['boot'] = GP.postcalc_bootstraps(bootstrap)
+    for A in range(5):
+      agg = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      for B in range(5):
+        for k in range(len(data[e]['boot']['ci'][(A, B)])):
+          agg[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+      data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
+  maxlim = min([len(data[e]['conv'][A]) for e in data.keys() for A in range(5)])
+  statelist = [0, 1, 2, 3, 4] if slist is None else slist
+  for A in [0, 1, 2, 3, 4]:
+    # maxlen = min([len(data[e]['conv'][A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['conv'][A]
+      print(len(X))
+      plt.plot(np.arange(min(40,len(X)))*(STEPSIZE), X[:min(40,len(X))], color=colormap[e], label=e)
+    # plt.title('Convergence for State %d', A)
+    plt.xlabel('Total Convergence (total time in ns)')
+    plt.legend()
+    plt.savefig(SAVELOC + 'TotConv_%s.png' % (A))
+    plt.close()
+  return data
 
 def histogram(slist=None, cumulative=False, STEPSIZE=50):
-data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
-data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
-data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
-data['serial']['obs'] = s.lrange('label:rms', 0, -1)
-data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
-data['reweight']['obs'] = r.lrange('label:rms', 0, -1)
-for e in ['parallel']:
+  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
+  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
+  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
+  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
+  data['reweight']['obs'] = r.lrange('label:rms', 0, -1)
+  for e in ['parallel']:
+    for b in ab:
+      data[e][b] = 0
+    for i in range(5):
+      data[e]['%dt'%i] = 0
+      data[e]['%dw'%i] = 0
+    maxlen = min(1999000, len(data[e]['obs']))
+    for o in data[e]['obs'][:maxlen]:
+      A, B = eval(o)
+      data[e][(A,B)] += 1
+      if A == B:
+        data[e]['%dw'%A] +=1
+      else:
+        data[e]['%dt'%A] +=1
   for b in ab:
-    data[e][b] = 0
-  for i in range(5):
-    data[e]['%dt'%i] = 0
-    data[e]['%dw'%i] = 0
-  maxlen = min(1999000, len(data[e]['obs']))
-  for o in data[e]['obs'][:maxlen]:
-    A, B = eval(o)
-    data[e][(A,B)] += 1
-    if A == B:
-      data[e]['%dw'%A] +=1
-    else:
-      data[e]['%dt'%A] +=1
-for b in ab:
-  print('%s|%d|%d|%d|%d|%d' % (b,data['serial'][b],data['parallel'][b],data['uniform'][b],data['biased'][b],data['reweight'][b]))
+    print('%s|%d|%d|%d|%d|%d' % (b,data['serial'][b],data['parallel'][b],data['uniform'][b],data['biased'][b],data['reweight'][b]))
 
 
 
@@ -365,50 +367,50 @@ def convtw(slist=None, cumulative=False, STEPSIZE=50):
   data['serial']['obs'] = s.lrange('label:rms', 0, -1)
   data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
   data['reweight']['obs'] = r.lrange('label:rms', 0, -1)
-for e in data.keys():
-  # data[e]['conv'] = [[] for i in range(5)]
-  data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
-  data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
-  bootstrap = GP.postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
-  data[e]['boot'] = GP.postcalc_bootstraps(bootstrap)
-  for A in range(5):
-    aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-    aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-    for B in range(5):
-      for k in range(len(data[e]['boot']['ci'][(A, B)])):
-        if A == B:
-          aggW[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-        else:
-          aggT[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-    # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
-    data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
-    data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
-  statelist = [0, 1, 2, 3, 4] if slist is None else slist
+  for e in data.keys():
+    # data[e]['conv'] = [[] for i in range(5)]
+    data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
+    data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
+    bootstrap = GP.postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
+    data[e]['boot'] = GP.postcalc_bootstraps(bootstrap)
+    for A in range(5):
+      aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      for B in range(5):
+        for k in range(len(data[e]['boot']['ci'][(A, B)])):
+          if A == B:
+            aggW[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+          else:
+            aggT[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+      # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
+      data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
+      data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
+    statelist = [0, 1, 2, 3, 4] if slist is None else slist
 
-  for A in [0, 1, 2, 3, 4]:
-    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
-    for e in data.keys():
-      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-      print(len(X))
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    # plt.title('Convergence for State %d', A)
-    plt.xlabel('Total Convergence WELLS (total time in ns)')
-    plt.xlim=(0, 1500)
-    plt.legend()
-    plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
-    plt.close()
-    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
-    for e in data.keys():
-      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-      print(len(X))
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    # plt.title('Convergence for State %d', A)
-    plt.xlabel('Total Convergence TRANSITIONS (total time in ns)')
-    plt.xlim=(0, 1500)
-    plt.legend()
-    plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
-    plt.close()
-  return data
+    for A in [0, 1, 2, 3, 4]:
+      maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
+      for e in data.keys():
+        X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
+        print(len(X))
+        plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+      # plt.title('Convergence for State %d', A)
+      plt.xlabel('Total Convergence WELLS (total time in ns)')
+      plt.xlim=(0, 1500)
+      plt.legend()
+      plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
+      plt.close()
+      maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
+      for e in data.keys():
+        X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
+        print(len(X))
+        plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+      # plt.title('Convergence for State %d', A)
+      plt.xlabel('Total Convergence TRANSITIONS (total time in ns)')
+      plt.xlim=(0, 1500)
+      plt.legend()
+      plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
+      plt.close()
+    return data
 
 
 

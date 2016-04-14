@@ -111,3 +111,26 @@ for i in obs_w:
 
 for b in sorted(ab):
   print(b, '%8d'%cnt_raw[b], '%8d'%cnt_w[b])
+
+
+
+filteredxyz = np.array([noisefilt(alphas.xyz, i) for i in range(len(alphas.xyz))])
+# ds = [pdist(i) for i in filteredxyz]
+rms = np.array([np.array([cw[i]*LA.norm(dcent[i]-p) for i in range(5)]) for p in filteredxyz])
+prox = [np.argsort(i) for i in rms]
+raw_obs = {'sm':[], 'md':[], 'lg':[]}
+pipe = s.pipeline()
+for i, rm in enumerate(rms):
+  A = prox[i][0]
+  B = prox[i][1]
+  C = A if (rm[B] - rm[A]) > .33 else B
+  pipe.rpush('label:rms', (A, C))   
+  for size in ['sm', 'md', 'lg']:
+    if (rm[B] - rm[A]) > theta[size]:
+      raw_obs[size].append((A, A))
+      pipe.rpush('label:raw:%s'%size, (A, A))
+    else:
+      raw_obs[size].append((A, B))
+      pipe.rpush('label:raw:%s'%size, (A, B))
+
+s.execute()

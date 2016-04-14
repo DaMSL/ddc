@@ -10,7 +10,7 @@ from datatools.datareduce import *
 from datatools.rmsd import *
 from mdtools.deshaw import *
 
-HOST = 'compute0038'
+HOST = 'compute0672'
 PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
 topo = md.load(PDB_PROT)
 filt = topo.top.select_atom_indices('alpha')
@@ -21,6 +21,16 @@ r = redis.StrictRedis(host=HOST, decode_responses=True)
 filelist = r.lrange('xid:filelist', 0, -1)
 
 takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
+
+
+def loadNP(r, key):
+  elm = r.hgetall(key)
+  if elm == {}:
+    return None
+  header = json.loads(elm['header'])
+  arr = np.fromstring(elm['data'], dtype=header['dtype'])
+  return arr.reshape(header['shape'])
+
 
 def projgraph(data, stride, title, L=None):
   samp = np.array([data[i] for i in range(0, len(data), stride)])
@@ -133,6 +143,188 @@ covar = np.array(covar)
 
 
 
+def label(data, NUM_K):
+  centroid, clusters = KM.find_centers(data, NUM_K)
+  label, wght = KM.classify_score(data, centroid)
+  return label
+
+def getPts(db, N):
+  numfiles = 1.25 * (N/1000)
+  dcdlist = r.lrange('xid:filelist', 0, round(numfiles))
+  ptlist = []
+  for i, d in enumerate(dcdlist):
+    if i % 100 == 0:
+      print('Loading file #', i)
+    traj = md.load(d, top=d.replace('dcd', 'pdb'))
+    traj.atom_slice(filt, inplace=True)
+    ptlist.extend(traj.xyz)
+    if len(ptlist) > N:
+      break
+  return np.array(ptlist)
+
+def getIndexByState(db, S=0, N=None, raw=False):
+  key = 'label:raw:lg'
+  if raw or not db.exists(key):
+    key = 'label:rms'
+  lim = -1 if N is None else S+N
+  obs = db.lrange(key, S, lim)
+  grp = [[] for i in range(5)]
+  for i, o in enumerate(obs):
+    A, B = eval(o)
+    grp[A].append(i)
+  return grp
+
+def getIndexByBin(db, S=0, N=None, raw=False):
+  key = 'label:raw:lg'
+  if raw or not db.exists(key):
+    key = 'label:rms'
+  lim = -1 if N is None else S+N
+  obs = db.lrange(key, S, lim)
+  grp = {b: [] for b in [(A,B) for A in range(5) for B in range(5)]}
+  for i, o in enumerate(obs):
+    grp[eval(o)].append(i)
+  return grp
+
+DB={'UNIFORM':u, 'BIASED':b, 'REWEIGHT':r, 'PARALLEL':p, 'SERIAL':s}
+
+keylist = ['SERIAL', 'PARALLEL', 'UNIFORM', 'BIASED', 'REWEIGHT']
+
+state=4
+indexlist = {}
+indexlist['UNIFORM'] = getIndexByState(DB['UNIFORM'], 150000, 200000)
+indexlist['REWEIGHT'] = getIndexByState(DB['REWEIGHT'], 150000, 200000)
+indexlist['BIASED'] = getIndexByState(DB['BIASED'], 1300000, 200000, True)
+indexlist['PARALLEL'] = getIndexByState(DB['PARALLEL'], 0, 200000)
+indexlist['SERIAL'] = getIndexByState(DB['SERIAL'], 0, 200000, True)
+
+# Get 200K Sample Points
+labellist = {}
+labellist['UNIFORM'] = getIndexByBin(DB['UNIFORM'], 150000, 200000)
+labellist['REWEIGHT'] = getIndexByBin(DB['REWEIGHT'], 500000, 200000)
+labellist['BIASED'] = getIndexByBin(DB['BIASED'], 1300000, 200000, True)
+labellist['PARALLEL'] = getIndexByBin(DB['PARALLEL'], 0, 200000)
+labellist['SERIAL'] = getIndexByBin(DB['SERIAL'], 0, 200000, True)
+
+# BackProject HD Data
+data = {}
+for key in keylist:
+  data[key] = {}
+  for b in ab:
+    print('PROCESSING: ', key, b)
+    data[key][b] = bpoff.backProjection(DB[key], labellist[key][b])
+
+# Save it
+well = {}
+tran = {}
+for key, bins in data.items():
+  well[key] = []
+  tran[key] = []
+  for A in range(5):
+    for B in range(5):
+      if A == B:
+        well[key].append(bins[(A,A)])
+      else:
+        tran[key].extend(bins[(A,B)])
+
+
+    samp[k].append()
+  for k, v in bins.items():
+    x.extend(i)
+  samp[k] = np.array(x).reshape(len(x), 174)
+  # np.save('sample_%s'%k, np.array(x))
+
+PC={}
+dbL = {}
+pca = {k: [PCA(n_components=20) for i in range(5)] for k in keylist}
+km = {k: [KMeans() for i in range(5)] for k in keylist}
+for key in keylist:
+  for state in range(5):
+    print('PCA for', key, state)
+    # well[key][state] = np.array(well[key][state]).reshape(len(well[key][state]), 174)
+    # pca[key][state].fit(well[key][state])
+    T = pca[key][state].transform(well[key][state])
+    PC = pca[key][state].transform(tran[key])
+    km[key][state].fit(T)
+    L = km[key][state].predict(PC)
+    G.dotgraph(PC[:,0], PC[:,1], 'trangraph_%s_%d'%(key,state), L=L)
+
+for key in keylist:
+  for state in range(5):
+    print(key, state, km[key][state].inertia_/len(well[key][state]))
+
+
+from sklearn.cluster import DBSCAN
+dbL[key] = DBSCAN().fit_predict(PC[key]) 
+    
+
+translist = {}
+welllist = {}
+for key in keylist:
+  translist[key] = [[] for i in range(5)]
+  welllist[key] = [[] for i in range(5)]
+  for k, v in labellist[key].items():
+    A, B = k
+    if A == B:
+      welllist[key][A] = v
+    else:
+      translist[key][A].extend(v)
+      translist[key][B].extend(v)
+  
+
+
+for state in range(5):
+  print('%d,%s' % (state, ','.join([str(x) for x in [len(indexlist[k][state]) for k in keylist]])))
+
+for b in binlist:
+  print('%s,%s' % (b, ','.join([str(x) for x in [len(labellist[k][b]) for k in keylist]])))
+
+for state in range(5):
+  print('%d,%s' % (state, ','.join([str(x) for x in [len(translist[k][state]) for k in keylist]])))
+
+for state in range(5):
+  print('%d,%s' % (state, ','.join([str(x) for x in [len(welllist[k][state]) for k in keylist]])))
+
+
+
+for key in DB.keys():
+  print('Processing: ', key)
+  indexlist = getIndexByState(DB[key], 50000)
+
+state=4
+for state in range(5):
+  print('State, ', state)
+  idxlist = np.random.choice(welllist['UNIFORM'][state], 1000)
+  raw = bpoff.backProjection(DB['PARALLEL'], idxlist)
+  kp[state].fit(raw.reshape(1000, 174))
+
+wght = {k: [None for i in range(5)] for k in keylist}
+for state in range(5):
+state=4 
+for key in DB.keys():
+    print('Processing: ', key, ' STATE', state)
+    N = len(translist[key][state])
+    if N < 1000:
+      idxlist = translist[key][state]
+    else:
+      idxlist = np.random.choice(translist[key][state], 1000)
+    raw = bpoff.backProjection(DB[key], idxlist)
+    # X = KPCA[state].project(raw)
+    X = kp[state].transform(raw.reshape(len(raw), 174))
+    centroid, clusters = KM.find_centers(X, 6)
+    L, wght[key][state] = KM.classify_score(X, centroid)
+    G.dotgraph(X[:,0], X[:,1], 'Trans_%d_%s' % (state, key), L)
+    G.dotgraph3D(X[:,0], X[:,1], X[:,2], 'Trans_%d_%s' % (state, key), L)
+
+
+
+
+bpoff.backProjection(r, )
+
+dotgraph3D(P4[:,0], P4[:,1], P4[:,2], 'testkpca4', L=rlabel)
+dotgraph3D(X[:,0], X[:,1], X[:,2], 'testunif4', L=U4L)
+dotgraph3D(Y[:,0], Y[:,1], Y[:,2], 'testbias4', L=B4L)
+
+
 
 #### =============   PCA/KMeans for discovery Learning
 takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
@@ -156,6 +348,10 @@ for i, d in enumerate(dcdlist):
   for k in range(len(cov)):
     fmap.append(d)
   covmat.extend(cov)
+
+
+
+
 
 
 allpts = []

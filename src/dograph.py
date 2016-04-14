@@ -53,24 +53,28 @@ def printconvergence(data):
  
 
 def dotgraph(X, Y, title, L=None):
+  plt.cla()
+  plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   if L is None:
-    plt.scatter(X, Y)
+    plt.scatter(X, Y, s=1, lw=0)
   else:
-    plt.scatter(X, Y, c=L)
+    plt.scatter(X, Y, c=L, s=1, lw=0)
   plt.ylabel(title)
   # plt.legend()
   plt.savefig(loc + '/' + title + '.png')
   plt.close()
 
 def dotgraph3D(X, Y, Z, title, L=None):
+  plt.cla()
+  plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   fig = plt.figure()
   ax = Axes3D(fig)
   if L is None:
-    ax.scatter(X, Y, Z)
+    ax.scatter(X, Y, Z, lw=0)
   else:
-    ax.scatter(X, Y, Z, c=L)
+    ax.scatter(X, Y, Z, c=L, lw=0)
   plt.ylabel(title)
   # plt.legend()
   plt.savefig(loc + '/' + title + '_3d.png')
