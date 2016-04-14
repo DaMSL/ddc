@@ -45,9 +45,9 @@ s = redis.StrictRedis(port=6381, decode_responses=True)
 p = redis.StrictRedis(port=6382, decode_responses=True)
 u = redis.StrictRedis(port=6383, decode_responses=True)
 b = redis.StrictRedis(port=6384, decode_responses=True)
-r = redis.StrictRedis(host=HOST, decode_responses=True)
-
 r = redis.StrictRedis(port=6385, decode_responses=True)
+# r = redis.StrictRedis(host=HOST, decode_responses=True)
+
 
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
 
@@ -361,18 +361,19 @@ def histogram(slist=None, cumulative=False, STEPSIZE=50):
 
 
 def convtw(slist=None, cumulative=False, STEPSIZE=50):
-  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  # data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  data = {'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
   data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
   data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
-  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
+  # data['serial']['obs'] = s.lrange('label:rms', 0, -1)
   data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
-  data['reweight']['obs'] = r.lrange('label:rms', 0, -1)
+  data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
   for e in data.keys():
     # data[e]['conv'] = [[] for i in range(5)]
     data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
     data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
-    bootstrap = GP.postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
-    data[e]['boot'] = GP.postcalc_bootstraps(bootstrap)
+    bootstrap = postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
+    data[e]['boot'] = postcalc_bootstraps(bootstrap)
     for A in range(5):
       aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
       aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
@@ -385,32 +386,30 @@ def convtw(slist=None, cumulative=False, STEPSIZE=50):
       # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
       data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
       data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
-    statelist = [0, 1, 2, 3, 4] if slist is None else slist
+  statelist = [0, 1, 2, 3, 4] if slist is None else slist
 
-    for A in [0, 1, 2, 3, 4]:
-      maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
-      for e in data.keys():
-        X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-        print(len(X))
-        plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-      # plt.title('Convergence for State %d', A)
-      plt.xlabel('Total Convergence WELLS (total time in ns)')
-      plt.xlim=(0, 1500)
-      plt.legend()
-      plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
-      plt.close()
-      maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
-      for e in data.keys():
-        X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-        print(len(X))
-        plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-      # plt.title('Convergence for State %d', A)
-      plt.xlabel('Total Convergence TRANSITIONS (total time in ns)')
-      plt.xlim=(0, 1500)
-      plt.legend()
-      plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
-      plt.close()
-    return data
+  for A in [0, 1, 2, 3, 4]:
+    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
+      print(len(X))
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+    # plt.title('Convergence for State %d', A)
+    plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
+    plt.legend()
+    plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
+    plt.close()
+    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
+      print(len(X))
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+    # plt.title('Convergence for State %d', A)
+    plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
+    plt.legend()
+    plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
+    plt.close()
+  return data
 
 
 

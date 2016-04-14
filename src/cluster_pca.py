@@ -216,39 +216,61 @@ for key in keylist:
 # Save it
 well = {}
 tran = {}
+both = {}
 for key, bins in data.items():
   well[key] = []
-  tran[key] = []
+  tran[key] = [[] for i in range(5)]
+  both[key] = [[] for i in range(5)]
   for A in range(5):
+    both[key][A].extend(bins[(A,B)])
     for B in range(5):
       if A == B:
         well[key].append(bins[(A,A)])
       else:
-        tran[key].extend(bins[(A,B)])
+        tran[key][A].extend(bins[(A,B)])
+  for state in range(5):
+    well[key][state] = np.array(well[key][state]).reshape(len(well[key][state]), 174)
+    tran[key][state] = np.array(tran[key][state]).reshape(len(tran[key][state]), 174)
+    both[key][state] = np.array(tran[key][state]).reshape(len(tran[key][state]), 174)
 
-
-    samp[k].append()
-  for k, v in bins.items():
-    x.extend(i)
-  samp[k] = np.array(x).reshape(len(x), 174)
+  #   samp[k].append()
+  # for k, v in bins.items():
+  #   x.extend(i)
+  # samp[k] = np.array(x).reshape(len(x), 174)
   # np.save('sample_%s'%k, np.array(x))
+
+from sklearn.decomposition import KernelPCA
+from sklearn.cluster import KMeans
+
+import dograph as G
+
+pca = {k: [PCA(n_components=20) for i in range(5)] for k in keylist}
 
 PC={}
 dbL = {}
-pca = {k: [PCA(n_components=20) for i in range(5)] for k in keylist}
-km = {k: [KMeans() for i in range(5)] for k in keylist}
-for key in keylist:
-  for state in range(5):
-    print('PCA for', key, state)
-    # well[key][state] = np.array(well[key][state]).reshape(len(well[key][state]), 174)
-    # pca[key][state].fit(well[key][state])
-    T = pca[key][state].transform(well[key][state])
-    PC = pca[key][state].transform(tran[key])
-    km[key][state].fit(T)
-    L = km[key][state].predict(PC)
-    G.dotgraph(PC[:,0], PC[:,1], 'trangraph_%s_%d'%(key,state), L=L)
+ktype = ['linear', 'poly', 'rbf', 'sigmoid']
 
+sw = {}
+st = {}
 for key in keylist:
+  N = len(both[key][4])
+  sw[key] = np.array([both[key][4][i] for i in np.random.choice(range(N), min(1000, N//10))])
+  st[key] = np.array([both[key][4][i] for i in np.random.choice(range(N), min(10000, N))])
+
+kpca = {kt: {k: [KernelPCA(n_components=20, kernel=kt) for i in range(5)] for k in keylist} for kt in ktype}
+km = {kt: {k: [KMeans() for i in range(5)] for k in keylist} for kt in ktype}
+for kt in ['linear', 'rbf', 'sigmoid']:
+  for key in ['PARALLEL', 'BIASED', 'REWEIGHT']:
+      state = 4
+      print('KPCAL:', kt, key, state)
+      kpca[kt][key][state].fit(sw[key])
+      T = kpca[kt][key][state].transform(sw[key])
+      PC = kpca[kt][key][state].transform(st[key])
+      km[kt][key][state].fit(T)
+      L = km[kt][key][state].predict(PC)
+      G.dotgraph3D(PC[:,0], PC[:,1], PC[:,2],'KPCA-%s_%s_%d'%(kt,key,state), L=L)
+
+for key in ['PARALLEL', 'BIASED', 'REWEIGHT']:
   for state in range(5):
     print(key, state, km[key][state].inertia_/len(well[key][state]))
 
@@ -269,8 +291,9 @@ for key in keylist:
     else:
       translist[key][A].extend(v)
       translist[key][B].extend(v)
-  
-
+  for state in range(5):
+    welllist[key][state] = np.array(welllist[key][state]).reshape(len(welllist[key][state]), 174)
+    translist[key][state] = np.array(translist[key][state]).reshape(len(translist[key][state]), 174)
 
 for state in range(5):
   print('%d,%s' % (state, ','.join([str(x) for x in [len(indexlist[k][state]) for k in keylist]])))
