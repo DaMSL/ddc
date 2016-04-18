@@ -299,13 +299,17 @@ def resetAnalysis(catalog):
   orderedjobs = sorted(jobs.items(), key=lambda x: x[1])
   seqnum = 1
   fileseq = 0
+  jobfile = open('joblist.txt', 'w')
   for k, v in orderedjobs:
     if seqnum == 100:
       fileseq += 1
       seqnum = 1
-    print('src/simanl.py -a --useid="sw-%04d.%02d" -c %s -w %s' % 
-      (fileseq,seqnum,settings.name, k))
+    outline = 'src/simanl.py -a --useid="sw-%04d.%02d" -c %s -w %s' % \
+      (fileseq,seqnum,settings.name, k)
+    print(outline)
+    jobfile.write(outline + '\n')
     seqnum += 1
+  jobfile.close()
 
     
 

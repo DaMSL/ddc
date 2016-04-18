@@ -66,30 +66,52 @@ class CacheService(RedisService):
 
     # Capacity should be set in GB (in settings)
     capacity  = config.CACHE_CAPACITY * (2**30)
-    logging.info('[Cache-Fet] Fetcher is starting. Preparing capacity of %d GB', config.CACHE_CAPACITY)
+    logging.info('[Fetcher] Fetcher is starting. Preparing capacity of %d GB', config.CACHE_CAPACITY)
+
+    # Create client
+    conn = redis.StrictRedis(host='localhost', port=self._port, decode_responses=True)
 
     # Wait until service is up (and not terminating on launch)
-    timeout = 240
-    while not self.ping():
-      logging.info('[Cache-Fet] Fetcher is waiting for the service to start... MissingConn=%s', (self.connection is None))
-      time.sleep(1)
-      timeout -= 1
-      if timeout == 0:
-        logging.error('[Cache-Fet] Fetch never connected to the cache. Shutting down...')
-        self.terminationFlag.set()
-        break
+    timeout = 60
+    while True:
+      try:
+        logging.info('[Fetcher] Fetcher is waiting for the service to start... Conn=%s', (self.connection is not None))
+        info = conn.info()
+        if info is None:
+          logging.info('[Fetcher] No commo with the local service. Wait and retry')
+          time.sleep(1)
+          timeout -= 1
+          if timeout == 0:
+            logging.error('[Fetcher] Fetch never connected to the cache. Shutting down...')
+            self.terminationFlag.set()
+            break
+        elif info['loading']:
+          logging.info('[Fetcher] Service is loading')
+          time.sleep(10)
+        else:
+          conn.client_setname("fetcher")
+          break
+      except redis.BusyLoadingError as e:
+        logging.info('[Fetcher] Service is loading')
+        time.sleep(10)
+        continue
+      except redis.RedisError as e:
+        if timeout == 0:
+          logging.error('[Fetcher] Fetch never connected to the cache. Shutting down...')
+          self.terminationFlag.set()
+          break        
+        logging.info('[Fetcher] Cannot connect to serice. Will keep trying for %s seconds', timeout)
+        time.sleep(1)
+        timeout -= 1
+        continue
 
     # then exit if it cannot connect
     if not self.ping() or self.terminationFlag.is_set():
-      logging.error('[Cache-Fet] Cannot connect to the servier')
+      logging.error('[Fetcher] Cannot connect to the server')
       return
 
-    logging.error('[Cache-Fet] Fetch found the service. Connecting as a client.')
+    logging.error('[Fetcher] Fetch found the service. Connecting as a client.')
 
-    # Create client
-    conn = redis.StrictRedis(
-        host='localhost', port=self._port, decode_responses=True)
-    conn.client_setname("fetcher")
 
     block_timeout = 60   #needed to check for service termination (MV-> setting)
     while True:
@@ -100,13 +122,13 @@ class CacheService(RedisService):
       try:
         request = conn.blpop(['request:deshaw', 'request:sim'], block_timeout)
       except redis.ConnectionError:
-        logging.warning('[Cache-Fet] LOST local connection. Returning')
+        logging.warning('[Fetcher] LOST local connection. Returning')
         return
       if request is None:
-        logging.info('[Cache-Fet] Fetcher heartbeat.... timeout waiting on requests')
+        logging.info('[Fetcher] Fetcher heartbeat.... timeout waiting on requests')
         continue
 
-      logging.info('[Cache-Fet] Fetcher Got a request...')
+      logging.info('[Fetcher] Fetcher Got a request...')
       if request[0] == 'request:deshaw':
         fileno = int(request[1])
         key = 'deshaw:%02d' % fileno 
@@ -126,7 +148,8 @@ class CacheService(RedisService):
         request[0], request[1], dcd, pdb, key)
 
       logging.info('Loading Trajectory')
-      traj = md.load(dcd, top=pdb)
+      if os.path.exists(dcd) and os.path.exists(pdb):
+        traj = md.load(dcd, top=pdb)
 
       # TODO: Check Memory reporting:
         #  'used_memory' -> actual memory used by REDIS
@@ -230,6 +253,10 @@ class CacheClient(object):
     except FileNotFoundError as ex:
       logging.error('[CacheClient] ERROR. Service is not running. No lockfile found: %s  (Returning False)', self.lockfile)
       return False
+    except redis.BusyLoadingError as ex:
+      logging.error('[CacheClient] Service is loading.')
+      self.isconnected = True
+      return True
 
   def get(self, filename, frame, file_type):
     if not self.connect():

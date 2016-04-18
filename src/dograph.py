@@ -133,6 +133,8 @@ def linegraphcsv(X, title, nolabel=False):
 
 
 
+
+
 def plotconvergence(appl_name, data):
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   for a in range(5):
@@ -148,18 +150,18 @@ def plotconvergence(appl_name, data):
     plt.savefig(loc + '/' + appl_name + '_conv_%d.png' % a)
     plt.close()
 
-markpts=['START',
-'LD:hcubes',
-'LD:pcasubsp',
-'KDTreee_build',
-'Bootstrap:RMS',
-'Select:RMS_bin',
-'BackProject:RMS_To_HD',
-'Project:RMS_To_PCA',
-'GammaFunc',
-'Sampler',
-'GenInputParams',
-'PostProcessing']
+# markpts=['START',
+# 'LD:hcubes',
+# 'LD:pcasubsp',
+# 'KDTreee_build',
+# 'Bootstrap:RMS',
+# 'Select:RMS_bin',
+# 'BackProject:RMS_To_HD',
+# 'Project:RMS_To_PCA',
+# 'GammaFunc',
+# 'Sampler',
+# 'GenInputParams',
+# 'PostProcessing']
 
 def checkkey(key):
     if key.startswith('LD:pca'):
@@ -195,6 +197,68 @@ def printtiming(bench):
     if len(totals[k]) > 0:
       print ('%-22s  %6.2f' % (k, np.mean(totals[k])))
 
-data, bench, state = scrape_cw('lc_avg')
-printconvergence(data)
-printtiming(bench)
+# data, bench, state = scrape_cw('lc_avg')
+# printconvergence(data)
+# printtiming(bench)
+
+
+
+#### BIPARTITE GRAPH
+
+def addconnection(i,j,c):
+  return [((-1,1),(i-1,j-1),c)]
+
+def drawnodes(ax, s, left=True):
+  if left:
+    color='b'
+    posx=-1
+  else:
+    color='r'
+    posx=1
+  posy=0
+  for n in s:
+    plt.gca().add_patch( plt.Circle((posx,posy),radius=0.05,fc=color))
+    if posx==1:
+      ax.annotate(n,xy=(posx,posy+0.1))
+    else:
+      ax.annotate(n,xy=(posx-len(n)*0.1,posy+0.1))
+    posy+=1
+
+def bipartite(nodeA, nodeB, edges, title='bipartite'):
+  ax=plt.figure().add_subplot(111)
+  H = max(len(nodeA),len(nodeB))
+  plt.axis([-1,H+1,-1,H+1])
+  frame=plt.gca()
+  frame.axes.get_xaxis().set_ticks([])
+  frame.axes.get_yaxis().set_ticks([])
+
+  padding = 3
+  posx = padding
+  posy = 1
+  stepA = H / len(nodeA)
+  for n in nodeA:
+    plt.gca().add_patch(plt.Circle((posx,posy),radius=0.5,fc='red'))
+    ax.annotate(n,xy=(posx-1,posy-.5), horizontalalignment='right')
+    posy+=stepA
+
+  posx = H-padding
+  posy = 1
+  stepB = H / len(nodeB)
+  for n in nodeB:
+    plt.gca().add_patch(plt.Circle((posx,posy),radius=0.5,fc='red'))
+    ax.annotate(n,xy=(posx+1,posy-.5), horizontalalignment='left')
+    posy+=stepB
+
+  for a, b, W in edges:
+    plt.plot((padding,H-padding),(a*stepA+1, b*stepB+1),'k', linewidth=(W//30))
+
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.savefig(loc + '/' + title + '.png')
+  plt.close()
+ 
+# elist = []
+# for i in range(30):
+#   a = np.random.randint(len(A))
+#   b = np.random.randint(3)
+#   c = np.random.randint(200)
+#   elist.append((a, b, c))

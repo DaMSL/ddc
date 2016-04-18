@@ -24,13 +24,15 @@ import datatools.datacalc as datacalc
 import mdtools.deshaw as deshaw
 import datatools.kmeans as KM
 # from datatools.pca import calc_kpca, calc_pca, project_pca
-from datatools.pca import PCAnalyzer, PCAKernel
+from datatools.pca import PCAnalyzer, PCAKernel, PCAIncremental
 from datatools.approx import ReservoirSample
 from mdtools.simtool import generateNewJC
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
 from bench.stats import StatCollector
+
+import dograph as G
 
 
 __author__ = "Benjamin Ring"
@@ -417,15 +419,15 @@ class controlJob(macrothread):
       #   pipe.rpush('pdf:local:%d_%d' % (A, B), vals_iter[v_i])
 
       logging.info("PDF Comparison for all RMSD Bins")
-      logging.info('##VAL TS   BIN:  Local  Global') 
+      logging.info('##VAL TS   BIN:       Local     Global') 
       obs_by_state = [0 for i in range(numLabels)]
       obs_by_state_local = [0 for i in range(numLabels)]
       for key in sorted(binlist):
         A, B = key
         obs_by_state_local[A] += counts_local[key]
         obs_by_state[A] += counts_global[key] + counts_local[key]
-        logging.info('##VAL %03d %s:    %0.4f    %0.4f' % 
-          (self.data['timestep'], str(key), pdf_rms_local[key], pdf_rms_global[key]))
+        logging.info('##VAL %03d %s:    %5.2f    %5.2f' % 
+          (self.data['timestep'], str(key), pdf_rms_local[key]*100, pdf_rms_global[key]))
 
       logging.info("OBS_LOCAL,%s", str(obs_by_state_local))
       logging.info("OBS_GLOBAL,%s", str(obs_by_state))
@@ -438,7 +440,11 @@ class controlJob(macrothread):
       ##### BARRIER
       self.wait_catalog()
 
-      EXPERIMENT_NUMBER = 7
+      selected_index_list = []
+
+      # QUERY PROCESSING & SAMPLING BELOW to select indices. 
+
+      EXPERIMENT_NUMBER = 8
 
       logging.info("RUNNING EXPER CONFIGURATION #%d", EXPERIMENT_NUMBER)
       # 1. get all points in some state
@@ -513,7 +519,6 @@ class controlJob(macrothread):
         for i, b in enumerate(rmslabel):
           deshaw_samples[b].append(i)
 
-        selected_indices = []
         coord_origin = []
         while numresources > 0:
           i = sel%25
@@ -521,27 +526,20 @@ class controlJob(macrothread):
             sample_num = np.random.randint(length[i])
             logging.debug('SAMPLER: selecting sample #%d from bin %s', sample_num, str(binlist[i]))
             index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[i], sample_num)
-            selected_indices.append(index)
+            selected_index_list.append(index)
             coord_origin.append(('sim', index, binlist[i]))
             numresources -= 1
           elif len(deshaw_samples[binlist[i]]) > 0:
             index = np.random.choice(deshaw_samples[binlist[i]])
             logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', index, str(binlist[i]))
             # Negation indicates an historical index number
-            selected_indices.append(-index)
+            selected_index_list.append(-index)
             coord_origin.append(('deshaw', index, binlist[i]))
             numresources -= 1
           else:
             logging.info("NO Candidates for bin: %s", binlist[i])
           sel += 1
 
-        
-        sampled_set = []
-        for i in selected_indices:
-          traj = self.backProjection([i])
-          sampled_set.append(traj)
-        bench.mark('Sampler')
-     
       ###### EXPERIMENT #5:  BIASED (Umbrella) SAMPLER
       if EXPERIMENT_NUMBER == 5:
         pipe = self.catalog.pipeline()
@@ -575,14 +573,10 @@ class controlJob(macrothread):
         for i, b in enumerate(rmslabel):
           deshaw_samples[b].append(i)
 
-        sample_distro_iter = []
         coord_origin = []
-
         norm_pdf_iter = convergence_iter / sum(convergence_iter)
         norm_pdf_cuml = convergence_cuml / sum(convergence_cuml)
-
         logging.info("Umbrella Samping PDF (Using Iterative Bootstrapping):")
-
         sampled_distro_perbin = {b: 0 for b in binlist}
 
         while numresources > 0:
@@ -592,26 +586,23 @@ class controlJob(macrothread):
           if num_gen_samples[selected_bin] is not None and num_gen_samples[selected_bin] > 0:
             # Secondary Sampling is Uniform
             sample_num = np.random.randint(num_gen_samples[selected_bin])
-            logging.debug('SAMPLER: selecting sample #%d from bin %s', sample_num, str(binlist[selected_bin]))
-            index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[selected_bin], sample_num)
-            sample_distro_iter.append(index)
+            logging.debug('SAMPLER: selecting sample #%d from bin %s', 
+              sample_num, str(binlist[selected_bin]))
+            index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[selected_bin], 
+              sample_num)
+            selected_index_list.append(index)
             coord_origin.append(('sim', index, binlist[selected_bin]))
             numresources -= 1
           elif len(deshaw_samples[binlist[selected_bin]]) > 0:
             index = np.random.choice(deshaw_samples[binlist[selected_bin]])
-            logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', index, str(binlist[selected_bin]))
+            logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', 
+              index, str(binlist[selected_bin]))
             # Negation indicates an historical index number
-            sample_distro_iter.append(-index)
+            selected_index_list.append(-index)
             coord_origin.append(('deshaw', index, binlist[selected_bin]))
             numresources -= 1
           else:
             logging.info("NO Candidates for bin: %s", binlist[selected_bin])
-
-        sampled_set = []
-        for i in sample_distro_iter:
-          traj = self.backProjection([i])
-          sampled_set.append(traj)
-        bench.mark('Sampler')
 
       ###### EXPERIMENT #6, 7:  REWEIGHT OPERATOR, et al
       if EXPERIMENT_NUMBER in [6, 7]:
@@ -629,10 +620,11 @@ class controlJob(macrothread):
 
         logging.info("=====  Covariance Matrix PCA-KMeans Calculation (STEP-A)")
         logging.info("Retrieving All Covariance Vectors")
+
         covar_raw = self.catalog.lrange('subspace:covar:pts', 0, -1)
         covar_pts = np.array([np.fromstring(x) for x in covar_raw])
-        covar_fidx = self.catalog.lrange('subspace:covar:fidx', 0, -1)
         covar_index = self.catalog.lrange('subspace:covar:xid', 0, -1)
+        covar_fidx = self.catalog.lrange('subspace:covar:fidx', 0, -1)
         logging.info("    Pulled %d Covariance Vectors", len(covar_pts))
         logging.info("Calculating Kernel PCA on Covariance (or Pick your PCA Algorithm here)")
         stat.collect('kpcatrainsize', len(covar_pts))
@@ -643,7 +635,6 @@ class controlJob(macrothread):
         kpca = PCAnalyzer.load(self.catalog, kpca_key)
         update_kcpa = False
         if kpca is None:
-          # kpca = PCAKernel(None, 'rbf')
           kpca = PCAKernel(10, 'sigmoid')
           kpca.solve(covar_pts)
           update_kcpa = True
@@ -660,7 +651,7 @@ class controlJob(macrothread):
 
         bench.mark('CaclKPCA_COV')        
         logging.info("Projecting Covariance to PC")
-        pca_cov_pts = kpca.project(covar_pts)
+        subspace_covar_pts = kpca.project(covar_pts)
         bench.mark('ProjKPCA')
 
         # OW/ PROJECT NEW PTS ONLY -- BUT RETAIN grouped index of all points
@@ -669,11 +660,11 @@ class controlJob(macrothread):
         # TODO:  Using 8 with EXP 7  (AND SAME WITH KMEANS RE-CALC)
         NUM_K = 8
         logging.info('Running KMeans on covariance data for K =  %d  (TODO: vary K)', NUM_K)
-        centroid, clusters = KM.find_centers(pca_cov_pts, NUM_K)
+        centroid, clusters = KM.find_centers(subspace_covar_pts, NUM_K)
         bench.mark('CalcKMeans_COV')
 
         # TODO: Eventually implement per-point weights
-        cov_label, cov_wght = KM.classify_score(pca_cov_pts, centroid)
+        cov_label, cov_wght = KM.classify_score(subspace_covar_pts, centroid)
         cluster_sizes = np.bincount(cov_label)
 
         # For now, use normalized cluster sizes as the weights inverted (1-X)
@@ -960,6 +951,359 @@ class controlJob(macrothread):
           self.catalog.rpush('boot:qry1:TOTAL:%d'%state, state_conv[state])
           bench.mark('Bootstrap')
 
+      ###### EXPERIMENT #8:  REWEIGHT OPERATOR (Improved)
+      if EXPERIMENT_NUMBER == 8:
+
+        #  1. RUN KPCA on <<?????>> (sample set) and project all pts
+        #  2. Calculate K-D Tree on above
+        #  3. Score each point with distance to centroid
+        #  4. B = Select the smallest half of clusters
+        #  5. Build state 3 and 4 KD-Tree using top N-PC for each (from sampled PCA)
+        #  6. Run KMeans on each (???) for label/weight of H-Cubes in KD Tree (????)
+        #       ALT-> use HCUbe size as its weight
+        #  7. A = HCubes for states 3 (and 4)
+        #  8. Reweight A into both state 3 and state 4 (B) HCubes
+        #  9. ID Overlap
+        # 10. Apply Gamme Function
+
+        logging.info("=====  Covariance Matrix PCA-KMeans Calculation (B)")
+        logging.info("Retrieving All Covariance Vectors")
+        home = os.getenv('HOME')
+        cfile = home + '/work/DEBUG_COVAR_PTS'
+        DO_COVAR = False
+        if DO_COVAR: 
+          if os.path.exists(cfile + '.npy'):
+            covar_pts = np.load(cfile + '.npy')
+            logging.debug('Loaded From File')
+          else: 
+            covar_raw = self.catalog.lrange('subspace:covar:pts', 0, -1)
+            covar_pts = np.array([np.fromstring(x) for x in covar_raw])
+            np.save(cfile, covar_pts)
+            logging.debug('Loaded From Catalog & Saved')
+        covar_index = self.catalog.lrange('subspace:covar:xid', 0, -1)
+        logging.debug('Indiced Loaded. Retrieving File Indices')
+        covar_fidx = self.catalog.lrange('subspace:covar:fidx', 0, -1)
+
+        if DO_COVAR: 
+
+          logging.info("    Pulled %d Covariance Vectors", len(covar_pts))
+          logging.info("Calculating Incremental PCA on Covariance (or Pick your PCA Algorithm here)")
+          stat.collect('kpcatrainsize', len(covar_pts))
+
+          # FOR incrementatl PCA:
+          NUM_PC = 6
+          ipca_key = 'subspace:covar:ipca'
+          ipca = PCAnalyzer.load(self.catalog, ipca_key)
+          if ipca is None:
+            logging.info('Creating a NEW IPCA')
+            ipca = PCAIncremental(NUM_PC)
+            lastindex = 0
+          else:
+            lastindex = ipca.trainsize
+            logging.info('IPCA Exists. Trained on %d pts. Will update with incremental batch of %d NEW pts', 
+              ipca.trainsize, len(covar_pts)-ipca.trainsize)
+
+          # For incremental, partial solve using only newer pts (from the last "trainsize")
+          if len(covar_pts)-lastindex > 0:
+            ipca.solve(covar_pts[lastindex:])
+            logging.info("Incrementatl PCA Updated. Storing Now...")
+
+            ####  BARRIER 
+            self.wait_catalog()
+            ipca.store(self.catalog, ipca_key)
+
+          bench.mark('CaclIPCA_COV')        
+          logging.info("IPCA Saved. Projecting Covariance to PC")
+
+        cfile = home + '/work/DEBUG_SUBCOVAR_PTS'
+        if os.path.exists(cfile + '.npy'):
+          subspace_covar_pts = np.load(cfile + '.npy')
+        else: 
+          subspace_covar_pts = ipca.project(covar_pts)
+          np.save(cfile, subspace_covar_pts)
+
+        bench.mark('ProjIPCA')
+
+        # OW/ PROJECT NEW PTS ONLY -- BUT RETAIN grouped index of all points
+        logging.info('Building Global KD Tree over Covar Subspace with %d data pts', len(subspace_covar_pts))
+
+        global_kdtree = KDTree(200, maxdepth=8, data=subspace_covar_pts, method='middle')
+
+        # FOR DEBUGGING -- USE ONLY 3 GLOBAL HCUBES
+        hcube_global_ALL = global_kdtree.getleaves()
+
+        hcube_global = {}
+        num = 0
+        for k, v in hcube_global_ALL.items():
+          hcube_global[k] = v
+          num += 1
+          if num == 3:
+            break
+
+        # hcube_global = global_kdtree.getleaves()
+        logging.info('Global HCubes: Key  Count  Volume  Density  (NOTE DEBUGGING ONLY 3 USED)')
+        for k in sorted(hcube_global.keys()):
+          v = hcube_global[k]
+          logging.info('%-10s        %6d %8.1f %6.1f', k, v['count'], v['volume'], v['density'])
+
+        logging.info("=====  SELECT Sampling of points from each Global HCube  (B)")
+        s = sorted(hcube_global.items(), key=lambda x: x[1]['count'])
+        hcube_global = {x[0]: x[1] for x in s}
+
+        MAX_SAMPLE_SIZE   = 250   # Max # of cov "pts" to back project
+        COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
+        MAX_PT_PER_MATRIX =  5   # 5% of points from Source Covariance matrix
+
+        counter = 0
+        for key in hcube_global.keys():
+          counter += 1
+          if hcube_global[key]['count']  <= MAX_SAMPLE_SIZE:
+            cov_index = hcube_global[key]['elm']
+          else:
+            cov_index = np.random.choice(hcube_global[key]['elm'], MAX_SAMPLE_SIZE)
+          hcube_global[key]['idxlist'] = []
+          for cov in cov_index:
+            selected_hd_idx = np.random.choice(COVAR_SIZE, MAX_PT_PER_MATRIX).tolist()
+            hcube_global[key]['idxlist'].extend([int(covar_index[cov]) + i for i in selected_hd_idx])
+            # cov_weights[L].extend([cov_wght[cov] for i in range(MAX_SAMPLE_SIZE)])
+          logging.info('Back Projecting Global HCube `%s`  (%d out of %d)', key, counter, len(hcube_global.keys()))
+          source_cov = self.backProjection(hcube_global[key]['idxlist'])
+          hcube_global[key]['alpha'] = datareduce.filter_alpha(source_cov)
+          logging.debug('Back Projected %d points to HD space: %s', 
+            len(hcube_global[key]['idxlist']), str(hcube_global[key]['alpha']))
+
+        hcubeB_nodes = hcube_global.keys()
+        hcubeA_nodes = {}
+
+        ####  BARRIER 
+        self.wait_catalog()
+
+        # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
+        reservoir = ReservoirSample('rms', self.catalog)
+
+        logging.info("=====  BUILD HCube Tree(s) Using Smallest State(s) (FROM RMSD Obsevations) ")
+        hcube_list = {}
+
+        logging.info("Scanning current set of observed bins and finding all smallest with data (excluding largest 2)")
+        # bin_order = deque(sorted(counts_global.items(), key=lambda x: x[1]))
+        bin_list = list(counts_global.keys())
+        # for k, v in bin_order()[:-2]:
+        #   if v > 0:
+        #     bin_list.append(k)            
+        logging.info('Selected the following: %s', str(list(bin_list)))
+
+
+        logging.info("=======================================================")
+        logging.info("   PROJECT Global HCubes into Per-Bin HCube KD Tree(s)")
+        logging.info("=======================================================\n")
+        projected_bin = []
+        overlap_hcube = {k: {} for k in hcubeB_nodes}
+        for tbin in [(0,2)]:
+        # for tbin in sorted(bin_list):
+          logging.info("Project Global HCubes into local subspace for %s", str(tbin))
+          # Load Vectors
+          logging.info('Loading subspace and kernel for bin %s', str(tbin))
+
+          # LOAD KPCA Kernel matrix
+          kpca_key = 'subspace:pca:kernel:%d_%d' % tbin
+          kpca = PCAnalyzer.load(self.catalog, kpca_key)
+
+          data_raw = self.catalog.lrange('subspace:pca:%d_%d' % tbin, 0, -1)
+          data = np.array([np.fromstring(x) for x in data_raw])
+          if len(data) == 0:
+            logging.error('No Raw PCA data points for bin %s.... Going to next bin', str(tbin))
+            continue
+          projected_bin.append(tbin)
+          logging.info('Building KDtree from data of size: %s', str(data.shape))
+          kdtree = KDTree(200, maxdepth=8, data=data, method='middle')
+          hcube_local = kdtree.getleaves()
+          hcubeA_nodes[tbin] = hcube_local.keys()
+          logging.info('LOCAL KD-Tree Completed for %s:', str(tbin))
+          for k in sorted(hcube_local.keys()):
+            logging.info('    `%-9s`   #pts=%6d   wgt=%5.1f', 
+              k, len(hcube_local[k]['elm']), hcube_local[k]['density'])
+          bench.mark('KDTreeBuild_%d_%d' % tbin)
+
+          # Back-project all points to higher dimension <- as consolidatd trajectory
+          # NOTE:  Exploration VS Exploitation HERE
+          #   EXPORE:  Project higher dense hcubes
+          #   EXPLOIT: Project lower dense hcubes
+          #  For now, do both
+          n_total = 0
+          logging.debug('Global Hcubes (%d):  %s', len(hcube_global.keys()), str(hcube_global.keys()))
+          for key, hc in hcube_global.items():
+            overlap_hcube[key][tbin] = {}
+            cov_proj_pca = kpca.project(hc['alpha'].xyz)
+            logging.debug('PROJECT: Global HCube `%-9s` (%d pts) ==> Local KDTree %s  ', 
+              key, len(cov_proj_pca), str(tbin))
+            for i, pt in enumerate(cov_proj_pca):
+              hcube = kdtree.probe(pt, probedepth=9)
+              # NOTE: Retaining count of projected pts. Should we track individual pts???
+              if hcube not in overlap_hcube[key][tbin]:
+                overlap_hcube[key][tbin][hcube] = {'idxlist': hcube_local[hcube]['elm'],
+                    'wgt': hcube_local[hcube]['density'], 'num_projected': 0}
+              overlap_hcube[key][tbin][hcube]['num_projected'] += 1
+            for k, v in overlap_hcube[key][tbin].items():
+              logging.debug('          Local HCube `%-9s` ==> %6d points', k, v['num_projected'])
+          
+            
+
+        #  GAMMA FUNCTION EXPR # 1 & 2
+        # gamma = lambda a, b : a * b
+
+        #  GAMMA FUNCTION EXPR # 3
+        # gamma = lambda a, b : (a + b) / 2
+
+        #  GAMMA FUNCTION EXPR # 6
+        # gamma = lambda a, b : (a + b) / 2
+
+        #  GAMMA FUNCTION EXPR # 7
+        # gamma = lambda a, b : (a + b)
+
+        #  GAMMA FUNCTION EXPR # 8
+        gamma1 = lambda a, b : (a * b)
+        gamma2 = lambda a, b : (a + b) / 2
+
+        # TODO: Factor in RMS weight
+        idxB = {key: i for i, key in enumerate(hcubeB_nodes)}
+        for tbin in [(0,2)]:
+        # for tbin in sorted(bin_list):
+          idxA = {key: i for i, key in enumerate(hcubeA_nodes[tbin])}
+          logging.info('')
+          logging.info('BIPARTITE GRAPH for %s', str(tbin))
+          bipart = {}
+          edgelist = []
+          for hcB in hcube_global.keys():
+            wgt1_B = hcube_global[hcB]['density']
+            for hcA, hcA_data in overlap_hcube[hcB][tbin].items():
+              edge = {}
+              if hcA not in bipart:
+                bipart[hcA] = []  
+              num_B  = hcA_data['num_projected']
+              wgt_A  = hcA_data['wgt']
+              wgt2_B = wgt1_B*num_B
+              edge['combW1'] = gamma1(wgt_A, wgt1_B)
+              edge['combW2'] = gamma1(wgt_A, wgt2_B)
+              edge['combW3'] = gamma2(wgt_A, wgt1_B)
+              edge['combW4'] = gamma2(wgt_A, wgt2_B)
+              edge['num_A']  = len(hcA_data['idxlist'])
+              edge['num_B']  = num_B
+              edge['wgt_A']  = wgt_A
+              edge['wgt1_B'] = wgt1_B
+              edge['wgt2_B'] = wgt2_B
+              edge['hcA'] = hcA
+              edge['hcB'] = hcB
+              bipart[hcA].append(edge)
+              edgelist.append((idxA[hcA], idxB[hcB], num_B))
+          logging.info('')
+          logging.info('A (# Pts) H-Cube        <--- B H-Cube (# Pts)      wgt_A  wB1:density wB2:Mass     A*B1     A*B2     AVG(A,B1)     AVG(A,B2)')
+          for k, v in bipart.items():
+            for edge in v:
+              logging.info('A (%(num_A)4d pts) `%(hcA)-8s` <--- `%(hcB)9s`  (%(num_B)4d pts) B %(wgt_A)9.1f %(wgt1_B)9.1f %(wgt2_B)9.1f %(combW1)9.1f %(combW2)9.1f %(combW3)9.1f %(combW3)9.1f' % edge)
+
+          G.bipartite(hcubeA_nodes, hcubeB_nodes, edgelist, 'bipartite_0_2')
+
+        logging.info('STOPPING HERE!!!!')
+        sys.exit(0)
+
+        ####  User Query Convergence
+
+        ##### BARRIER
+        self.wait_catalog()
+
+        logging.info("=====  CALCULATE User Query Convergence")
+        logging.info('Resultant HCube Data (for bootstrap)')
+        # Get current iteration number
+        iteration = int(self.catalog.incr('boot:qry1:count'))
+
+        for state in projected_state:
+          # Ensure all currently projected HCubes have same # of observations
+          hc_conv_keys = self.catalog.keys('boot:qry1:conv:%d:*' % state)
+          offset = len('boot:qry1:conv:%d' % state)
+          all_hc = [k[offset:] for k in hc_conv_keys]
+
+          # Get ALL convergence data for all HCubes
+          pipe = self.catalog.pipeline()
+          for k in hc_conv_keys:
+            pipe.lrange(k, 0, -1)
+          hc_conv_vals_aslist = pipe.execute()
+          hc_conv_vals = {}
+          for i, k in enumerate(hc_conv_keys):
+            if hc_conv_vals_aslist[i] is None or len(hc_conv_vals_aslist[i]) == 0:
+              hc_conv_vals[k[offset:]] = []
+            else:
+              hc_conv_vals[k[offset:]] = [float(val) for val in hc_conv_vals_aslist[i]]
+
+          pipe = self.catalog.pipeline()
+          # Ensure convergence is consistently calculated for all HCubes overlapping
+          # in this interation. 
+          #  If it's a child HCube, pad with the convergence of the parent
+          #  If it's a newly disovered HCube (or one which was not recently discovered) pad with zeros
+          for hc in hcube_list[state]:
+            if hc in hc_conv_vals and (len(hc_conv_vals[hc]) == iteration - 1):
+              logging.debug('HC, `%s` is up to date with %d values', hc, len(hc_conv_vals[hc]))
+              continue
+            if hc not in hc_conv_vals:
+              hc_conv_vals[hc] = []
+            logging.debug('HC, `%s` is missing data.  LEN=%d  Iter=%d', hc, len(hc_conv_vals[hc]), (iteration-1))
+            # Newly discovered HCube: First Check if parent was discovered and use those stats
+            if hc not in all_hc:
+              for j in range(1, len(hc)-1):
+                # Find the parent HCube
+                if hc[:-j] in all_hc:
+                  for val in hc_conv_vals[hc[:-j]]:
+                    hc_conv_vals[hc].append(val)
+                    pipe.rpush('boot:qry1:conv:%s' % k, val)
+                  break
+
+            # Pad with zeroes (for previous non-projected points) as needed
+            for j in range(len(hc_conv_vals[hc]), iteration-1):
+              pipe.rpush('boot:qry1:conv:%s' % k, 0)
+
+        # Then push new data:
+        for k, v in comb_wgt.items():
+          state, hc = k
+          norm_wgt = (v/total) 
+          logging.debug('   %20s ->  %4d A-pts (w=%0.3f)  %4d B-pts (w=%0.3f)     (GAMMAwgt=%0.3f)', 
+            k, len(hcube_A[state][hc]), wgt_A[state][hc], len(hcube_B[state][hc]), wgt_B[state][hc], comb_wgt[k])
+          pipe.rpush('boot:qry1:conv:%d:%s' % k, iteration, norm_wgt)
+          # pipe.hset('boot:qry1:conv:%s' % k, iteration, norm_wgt)
+        pipe.execute()
+
+        state_conv = {}
+        convergence = {}
+        for state in projected_state:
+          convergence[state] = {}
+          logging.info('Calculating Convergence for %d keys ', len(hcube_B[state].keys()))
+          for k in hcube_list[state]:
+            convdata = self.catalog.lrange('boot:qry1:conv:%d:%s' % (state, k), 0, -1)
+            bootstrap = [float(i) for i in convdata]
+            if iteration > 1:
+              mean, CI, stddev, err = datacalc.bootstrap_std(bootstrap)
+              convergence[state][k] = CI / mean  # Total Convergence calculation per key
+            else:
+              convergence[state][k] = 1.0
+            logging.info('##CONV %0d %d %10s %.4f', iteration, state, k, convergence[state][k])
+
+          if len(convergence[state].values()) == 0:
+            logging.info('Not enough data collected yet.')
+            state_conv[state] = 1.
+          else:  
+            tot_conv_data = np.array(list(convergence[state].values()))
+            conv_max = np.max(tot_conv_data)
+            conv_min = np.min(tot_conv_data)
+            conv_mean = np.mean(tot_conv_data)
+            state_conv[state] = min(1.0, conv_mean)
+            logging.info('Other convergence vals: min=%.4f, max=%.4f, mean=%.4f', conv_min, conv_max, conv_mean)
+
+          logging.info('##TOTAL_CONV,%d,%.4f', state,state_conv[state])
+          stat.collect('qry1conv:%d'%state, state_conv[state])
+
+        # PUSH User's Total Convergence here
+          self.catalog.rpush('boot:qry1:TOTAL:%d'%state, state_conv[state])
+          bench.mark('Bootstrap')
+
+
     # EXECUTE SAMPLER
         logging.debug("=======================  <DATA SAMPLER>  =========================")
 
@@ -991,7 +1335,6 @@ class controlJob(macrothread):
 
        # TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
         numresources = self.data['numresources']
-        selected_index_list = []
         coord_origin = []
         if len(hcube_list) == 0:
           logging.info('Incubating: Lacking sufficient Data to sample')
@@ -1006,11 +1349,13 @@ class controlJob(macrothread):
           itr = 0
           while numresources > 0:
             sample_bin = itr % len(binlist)
+            A, B = binlist[sample_bin]
             index = np.random.choice(deshaw_samples[binlist[sample_bin]])
             logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', index, str(binlist[sample_bin]))
             # Negation indicates an historical index number
             selected_index_list.append(-index)
-            coord_origin.append(('deshaw', index, binlist[sample_bin]))
+            hcube_label = '%d-D' % (selected_state)
+            coord_origin.append(('deshaw', index, binlist[sample_bin], hcube_label))
             numresources -= 1
             itr += 1
 
@@ -1025,7 +1370,10 @@ class controlJob(macrothread):
           selected_index = np.random.choice(list(hcube_A[selected_state][selected_hcube]))
           logging.debug('SAMPLER: selected sample #%d from hcube %s', selected_index, selected_hcube)
           selected_index_list.append(selected_index)
-          coord_origin.append(('sim', selected_index, selected_hcube))
+          hcube_label = '%d_%s' % (selected_state, selected_hcube)
+          # TODO: Batch this catalog request or delay it
+          origin_bin = self.catalog.lindex('label:rms', selected_index)
+          coord_origin.append(('sim', selected_index, origin_bin, hcube_label))
           numresources -= 1
 
       logging.info('All Indices sampled. Back projecting to high dim coords')
@@ -1056,6 +1404,7 @@ class controlJob(macrothread):
               origin  = coord_origin[i][0],
               src_index = coord_origin[i][1],
               src_bin  = coord_origin[i][2],
+              src_hcube = coord_origin[i][3],
               application   = settings.APPL_LABEL)
 
         logging.info("New Simulation Job Created: %s", jcID)

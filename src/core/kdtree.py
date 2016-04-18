@@ -11,6 +11,7 @@ from collections import deque
 import sys
 import json
 import logging
+import math
 
 import numpy as np
 
@@ -191,7 +192,7 @@ class KDTree(object):
 
 
 
-  def __init__(self, leafsize, maxdepth=None, data=None):
+  def __init__(self, leafsize, maxdepth=None, data=None, method='mean'):
     """
     Created new KD-Tree. 
     If data (in ND-Array form) is provided, builds the KD-Tree with the data
@@ -199,12 +200,15 @@ class KDTree(object):
 
     If the maxdepth is defined, it will override the leafsize. 
     Note that leafsize or maxdepth must be defined; 
+
+    Split methods are:  'mean', 'median', 'max_gap', 'middle'
     """
 
     self.maxdepth = maxdepth
     self.leafsize = leafsize
     self.data = None
     self.data_new = deque()
+    self.split_method = method  #or max_gap
 
     # New Tree
     if data is not None:
@@ -226,6 +230,17 @@ class KDTree(object):
   def size(self):
     return len(self.data) + len(self.data_new)
 
+  def volume(self, key):
+    """Calculates the hyper-dimensional volume for given node
+    """
+    bucket = self.retrieve(key)
+    if bucket is None:
+      return 0
+
+    vals = np.array([self.deref_pt(i) for i in bucket])
+    maxv = np.max(vals, axis=0)
+    minv = np.min(vals, axis=0)
+    return np.prod(maxv-minv)
 
   def split(self, node, debug='N'):
     """
@@ -233,27 +248,38 @@ class KDTree(object):
     """
     axis = node.depth % self.dim
     vals = [self.deref_pt(i)[axis] for i in node.elm]
+    # print(min(vals), max(vals), (max(vals)+min(vals))/2, np.mean(vals), np.median(vals))
 
     # Apply Split Function Here  (TODO:  inner-class)
     # Mean (could also use median)
-    mid = np.mean(vals)
+    if self.split_method == 'median':
+      mid = np.median(vals)
+
+    elif self.split_method == 'mean':
+      mid = np.mean(vals)
+
+    elif self.split_method == 'middle':
+      mid = (np.max(vals) + np.min(vals)) / 2
 
     # Simple Linear SVM Classifier:
-    mid = np.mean(vals)
-    max_gap = 0
-    sorted_vals = sorted(vals)
-    for i in range(1, len(sorted_vals)):
-      gap = sorted_vals[i] - sorted_vals[i-1]
-      if gap > max_gap:
-        max_gap = gap
-        mid = max_gap/2 + sorted_vals[i-1]    
+    elif self.split_method == 'max_gap':
+      mid = np.mean(vals)
+      max_gap = 0
+      sorted_vals = sorted(vals)
+      for i in range(1, len(sorted_vals)):
+        gap = sorted_vals[i] - sorted_vals[i-1]
+        if gap > max_gap:
+          max_gap = gap
+          mid = max_gap/2 + sorted_vals[i-1]    
+    else:
+      mid = np.mean(vals)
 
     node.mid = mid
     left = deque()
     right = deque()
     while len(node.elm) > 0:
       pt = int(node.elm.popleft())
-      if self.deref_pt(pt)[axis] >= mid:
+      if self.deref_pt(pt)[axis] > mid:
         right.append(pt)
       else:
         left.append(pt)
@@ -336,6 +362,10 @@ class KDTree(object):
       else:
         return '1' + self.project(point, node.right, probedepth)
 
+  def probe(self, point, node=None, probedepth=-1):
+    """Alias for project
+    """
+    return self.project(point, node, probedepth)
 
   def encode(self):
     """
@@ -347,6 +377,36 @@ class KDTree(object):
                  'dim':self.dim}
     encoding.update(self.root.encode(''))
     return encoding
+
+
+  def getleaves(self):
+    """
+    Retrieves all non-empty nodes along with meta-data and weighting traits
+    for each as a packaged dict
+    """
+    enc = self.encode()
+    leaves = {}
+    klist = [k for k in sorted(enc.keys()) if k.startswith('1') or k.startswith('0')]
+    for k in klist: 
+      tot = 0 if enc[k]['elm'] is None else len(enc[k]['elm'])
+      if tot == 0:
+        continue
+      vol = self.volume(k)
+      adj_vol = math.pow(vol, 1/self.dim)
+      if adj_vol == 0:
+        adj_vol = .001
+      density = tot / adj_vol
+      vals = np.array([self.deref_pt(i) for i in enc[k]['elm']])
+      maxv = np.max(vals, axis=0)
+      minv = np.min(vals, axis=0)
+      leaves[k] = {'elm': enc[k]['elm'], 
+                  'volume': adj_vol*adj_vol,
+                  'density': density,
+                  'count': tot,
+                  'maxv': maxv,
+                  'minv': minv}
+    return leaves
+
 
   @classmethod
   def reconstruct(cls, mapping, dataArray):

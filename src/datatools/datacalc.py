@@ -67,7 +67,10 @@ def incremental_posterior_prob (histdata, batch):
   probility_est = {}
   keys = list(groupby.keys())
   for v_i in sorted(keys):
-    mu = groupby[v_i] / len(batch)
+    if len(batch) == 0:
+      mu = 0
+    else:
+      mu = groupby[v_i] / len(batch)
     logging.debug('%10s:  %8d %6.4f', v_i, groupby[v_i], mu)
     probility_est[v_i] = mu
   return probility_est

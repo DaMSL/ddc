@@ -60,9 +60,9 @@ def distance_space(traj, top=None):
     pairs = get_pairlist(traj)
     return md.compute_distances(traj,pairs)
 
-def calc_covar(xyz, size_ns, framestep, slide=None):
+def calc_var(xyz, size_ns, framestep, slide=None):
   """Calculates the variance-covariance for sets of frames over the
-  given trajectory of pts. 
+  given trajectory of pts and RETURN Variance Vectors
   Input xyz is NDarray
   Note that Window size is calculated in picoseconds, which assumes 
   the framestep size is provide in picoseconds
@@ -77,7 +77,6 @@ def calc_covar(xyz, size_ns, framestep, slide=None):
   winsize = int((size_ns * 1000) // framestep)  # conv to ps and divide by frame step
   shift = winsize if slide is None else int(slide * 1000)
   n_windows = math.floor((len(xyz) * framestep) / shift)
-  variance = np.zeros(shape=(n_windows, nDIM), dtype=np.float32)
   variance = []
   # st = dt.datetime.now()
   for i in range(0, len(xyz), shift):
@@ -90,7 +89,31 @@ def calc_covar(xyz, size_ns, framestep, slide=None):
   # np.save(HOME+'/ddc/data/covar_%s'%lab, variance)
   return np.array(variance)
 
-
+def calc_covar(xyz, size_ns, framestep, slide=None):
+  """Calculates the variance-covariance for sets of frames over the
+  given trajectory of pts and return COVARIANCE Matrices
+  Input xyz is NDarray
+  Note that Window size is calculated in picoseconds, which assumes 
+  the framestep size is provide in picoseconds
+  This returns a matrix whose rows are the variable variances for each
+  windows
+  Slide = shift amount for each window. If not provided, the slide will 
+  assume to be the same as the window size (and hence no overlap). Otherwise
+  this should be provided in ns
+  TODO:  do overlapping
+  """
+  nDIM = np.prod(xyz.shape[1:])
+  winsize = int((size_ns * 1000) // framestep)  # conv to ps and divide by frame step
+  shift = winsize if slide is None else int(slide * 1000)
+  n_windows = math.floor((len(xyz) * framestep) / shift)
+  covariance = []
+  # st = dt.datetime.now()
+  for i in range(0, len(xyz), shift):
+    if i+winsize > len(xyz):
+      break
+    cv = np.cov(xyz[i:i+winsize].reshape(winsize, nDIM).T)
+    covariance.append(cv)
+  return np.array(covariance)
 
 def PCA(src, pc, numpc=3):
   # TODO: Check size requirements

@@ -10,14 +10,15 @@ from datatools.datareduce import *
 from datatools.rmsd import *
 from mdtools.deshaw import *
 
-HOST = 'compute0672'
+HOST = 'localhost'
+PORT = 6385
 PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
 topo = md.load(PDB_PROT)
 filt = topo.top.select_atom_indices('alpha')
 topoa = topo.atom_slice(FILTER['alpha'])
 home = os.environ['HOME']
 
-r = redis.StrictRedis(host=HOST, decode_responses=True)
+r = redis.StrictRedis(host=HOST, port=PORT, decode_responses=True)
 filelist = r.lrange('xid:filelist', 0, -1)
 
 takesample = lambda data, x: np.array([data[i] for i in range(0, len(data), x)])
@@ -357,14 +358,18 @@ DEcov = np.load('../data/covar_1ns.npy')
 
 # Using Gen data
 NUMFILES = 150
-dcdlist = r.lrange('xid:filelist', 0, 10)
+dcdlist = r.lrange('xid:filelist', 0, 1000)
 covmat = []
 fmap = []
 trajlist = []
+st = datetime.now()
 for i, d in enumerate(dcdlist):
-  if i % 100 == 0:
-    print('Loading file #', i)
-  traj = md.load(d, top=d.replace('dcd', 'pdb'))
+  if i % 50 == 0:
+    print('Loading file #', i, (datetime.now()-st).total_seconds())
+  p = d.replace('dcd', 'pdb')
+  if (not os.path.exists(d)) or (not os.path.exists(p)):
+    continue
+  traj = md.load(d, top=p)
   traj.atom_slice(filt, inplace=True)
   trajlist.append(traj)
   cov = calc_covar(traj.xyz, .2, 1, slide=.1)
@@ -372,9 +377,14 @@ for i, d in enumerate(dcdlist):
     fmap.append(d)
   covmat.extend(cov)
 
+print((datetime.now()-st).total_seconds())
 
-
-
+X=np.array([np.hstack(x[i][:i] for i in range(174)) for x in covmat])
+st = dt.datetime.now()
+for i in range(4):
+  ipca2.partial_fit(X[5500+(500*i):6000+(500*i)])
+  print((dt.datetime.now()-st).total_seconds())  
+#ipca.fit(X[:5000])
 
 
 allpts = []
@@ -390,6 +400,19 @@ for i, d in enumerate(files1):
     fmap.append(d)
   covmat.extend(cov)
 
+def showtree(kdt):
+  enc = kdt.encode()
+  klist = [k for k in sorted(enc.keys()) if k.startswith('1') or k.startswith('0')]
+  for k in klist: 
+    l = 0 if enc[k]['elm'] is None else len(enc[k]['elm'])
+    if l > 0:
+      vol = kdt.volume(k)
+      adj_vol = math.pow(vol, 1/6)
+      density = l / adj_vol 
+      print('%-12s %4d %10.1f %6.1f %6.1f' % (k, l, vol, adj_vol*adj_vol, density))
+
+kdt1 = kdtree.KDTree(100, maxdepth=9, data=P1, method='middle')
+showtree(kdt1)
 
 
 # Incremental PCA:

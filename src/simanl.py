@@ -140,7 +140,11 @@ class simulationJob(macrothread):
     USE_SHM = True
 
     frame_size = (SIMULATE_RATIO * int(job['interval'])) / (1000)
-    logging.info('Frame Size is %f  Using Sim Ratio of 1:%d', frame_size, SIMULATE_RATIO)
+    logging.info('Frame Size is %f  Using Sim Ratio of 1:%d', \
+      frame_size, SIMULATE_RATIO)
+
+    # TODO: FOR LINEAGE
+    # srcA, srcB = eval(job['src_bin'])
 
   # EXECUTE SIMULATION ---------------------------------------------------------
     if self.skip_simulation:
@@ -300,30 +304,29 @@ class simulationJob(macrothread):
     numLabels = len(self.data['centroid'])
     numConf = len(traj.xyz)
     stat.collect('numpts',numConf)
-    rmsraw = calc_rmsd(alpha, self.data['centroid'], weights=cw)
-    logging.debug('  RMS:  %d points projected to %d centroid-distances', numConf, numLabels)
 
-    # 4. Account for noise
-    #    For now: noise is user-defined; TODO: Factor in to Kalman Filter
+    # 4. Account for noise : Simple spatial mean filter over a small window
+    #    Where size of window captures extent of noise 
+    #    (e.g. 10000fs window => motions under 10ps are considered "noisy")
     noise = self.data['obs_noise']
     stepsize = 500 if 'interval' not in job else int(job['interval'])
     nwidth = noise//(2*stepsize)
     noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+    rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
 
+    # 5. Calculate the RMSD for each filtered point to 5 pre-determined centroids
     # Notes: Delta_S == rmslist
-    rmslist = np.array([noisefilt(rmsraw, i) for i in range(numConf)])
+    rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
+    logging.debug('  RMS:  %d points projected to %d centroid-distances', \
+      numConf, numLabels)
 
-    # logging.debug("RMS CHECK......")
-    # for i in rmslist:
-    #   logging.debug("  %s", str(np.argsort(i)))
-
-
-    # 4. Apply Heuristics Labeling
-    logging.debug('Applying Labeling Heuristic')
+    # 6. Apply Heuristics Labeling
+    # logging.debug('Applying Labeling Heuristic. Origin:   %d, %d', srcA, srcB)
     rmslabel = []
     binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
-    label_count = {b: 0 for b in binlist}
+    label_count = {ab: 0 for ab in binlist}
     groupbystate = [[] for i in range(numLabels)]
+    groupbybin = {ab: [] for ab in binlist}
     for i, rms in enumerate(rmslist):
       #  Sort RMSD by proximity & set state A as nearest state's centroid
       prox = np.argsort(rms)
@@ -357,12 +360,18 @@ class simulationJob(macrothread):
       # Group high-dim point by state
       # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
       groupbystate[A].append(i)
+      groupbybin[(A,B)].append(i)
 
     stat.collect('observe', label_count)
     bench.mark('RMS')
-    logging.info('Labeled the following by State:')
+    logging.info('Labeled the following:')
     for A in range(numLabels):
-      logging.info('## %d  %d', A, len(groupbystate[A]))
+      if len(groupbystate[A]) > 0:
+        logging.info('label,state,%d,num,%d', A, len(groupbystate[A]))
+    for ab in binlist:
+      if len(groupbybin[ab]) > 0:
+        A, B = ab
+        logging.info('label,bin,%d,%d,num,%d', A, B, len(groupbybin[ab]))
 
   # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Full Protein
   #------ B:  Covariance Matrix  -----------------
@@ -405,10 +414,13 @@ class simulationJob(macrothread):
           pipe.multi()
           logging.debug('Update RMS Subspace')
           for x in range(traj.n_frames):
-            A, B = rmslabel[i]
+            A, B = rmslabel[x]
+            index = global_index[x]
             # Labeled Observation (from RMSD)
             pipe.rpush('label:rms', rmslabel[x])
             pipe.rpush('varbin:rms:%d_%d' % (A, B), index)
+            # pipe.rpush('lineage:rms:%d_%d:%d_%d' % (srcA, srcB, A, B), index)
+            # pipe.rpush('lineage:pca:%s:%d_%d' % (job['src_hcube'], A, B), index)
             pipe.rpush('subspace:rms', bytes(rmslist[x]))
 
           logging.debug('Update OBS Counts')
@@ -441,7 +453,7 @@ class simulationJob(macrothread):
   # 4-C. Subspace Calcuation: PCA BY Strata (PER STATE) using Alpha Filter
   #------ C:  GLOBAL PCA by state  -----------------
   #  Update PCA Vectors for each state with new data
-    logging.info('---- PCA Calculation per state over Alpha Filter in cartesian Space ----')
+    logging.info('---- PCA per BIN over Alpha Filter in cartesian Space ----')
     # TODO:  This will eventually get moved into a User process macrothread 
     #   which will set in between analysis and controller. 
     # For now, we're recalculating using a lock
@@ -452,74 +464,91 @@ class simulationJob(macrothread):
     reservoir = ReservoirSample('rms', self.catalog)
     # STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
 
-    num_inserted = {A: 0 for A in range(numLabels)}
+    num_inserted = {ab: 0 for ab in binlist}
+    num_params = np.prod(alpha.xyz.shape[1:])
 
-    for A in range(numLabels):
-      if len(groupbystate[A]) == 0:
-        logging.info('No data received for state %d.  Not processing this state here.', A)
+    for A, B in binlist:
+      num_observations = len(groupbybin[(A,B)])
+
+      if num_observations == 0:
+        logging.info('No data received for bin (%d,%d).  Not processing this bin here.', A, B)
         continue
 
+      res_label = '%d_%d' % (A,B)
       updateVectors = False
-      kpca_key = 'subspace:pca:kernel:%d' % A
+      kpca_key = 'subspace:pca:kernel:%d_%d' % (A, B)
       kpca = PCAnalyzer.load(self.catalog, kpca_key)
       newkpca = False
       if kpca is None:
         # kpca = PCAKernel(None, 'sigmoid')
-        kpca = PCAKernel(10, 'sigmoid')
+        kpca = PCAKernel(6, 'rbf')
         newkpca = True
 
 
       logging.info('PCA:  Checking if current vectors for state %d are out of date', A)
-      rsize = reservoir.getsize(A)
+      rsize = reservoir.getsize(res_label)
       tsize = kpca.trainsize
 
       #  KPCA is out of date is the sample size is 20% larger than previously used  set
       #  Heuristics --- this could be a different "staleness" factor or we can check it some other way
       if newkpca or rsize > (tsize * 1.5):
-        logging.info('PCA Kernel is old (Updating it). Trained on data set of size %d. Current reservoir is %d pts.', tsize, rsize)
 
         #  Should we only use a sample here??? (not now -- perhaps with larger rervoirs or if KPCA is slow
-        traindata = reservoir.get(A)
+        traindata = reservoir.get(res_label)
         if newkpca:
-          num_hd_pts = len(groupbystate[A])
-          logging.info('Projecting %d points on Kernel PCA for state %d', num_hd_pts, A)
-          traindata = np.zeros(shape=((num_hd_pts,)+alpha.xyz.shape[1:]), dtype=np.float32)
-          for i, index in enumerate(groupbystate[A]):
+          logging.info('New PCA Kernel. Trained on data set of size %d. Current \
+            reservoir is %d pts.', tsize, rsize)
+          logging.info('Projecting %d points on Kernel PCA for bin (%d,%d)',
+            num_observations, A, B)
+          traindata = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]),
+            dtype=np.float32)
+          for i, index in enumerate(groupbybin[(A,B)]):
             np.copyto(traindata[i], alpha.xyz[index])
+        else:
+          logging.info('PCA Kernel is old (Updating it). Trained on data set of \
+            size %d. Current reservoir is %d pts.', tsize, rsize)
 
-        if len(traindata) < 2:
-          logging.info("Not enough data to update PC's. Skipping-PCA-%d", A)
+
+        if len(traindata) <= num_params:
+          logging.info("Not enough data to calculate PC's (Need at least %d \
+            observations). Skipping PCA for Bin (%d,%d)", num_params, A, B)
+          hd_pts = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]), dtype=np.float32)
+          for i, index in enumerate(groupbybin[(A,B)]):
+            np.copyto(hd_pts[i], alpha.xyz[index])
+          num_inserted[(A,B)] = reservoir.insert(res_label, hd_pts)
+          logging.debug('Updating reservoir Sample for Bin (%d, %d)')
           continue
-        logging.info('   Performing Kernel PCA (Sigmoid) for state %d using traindata of size %d', A, len(traindata))
+
+        logging.info('   Performing Kernel PCA (Gaussian) for bin (%d,%d) using traindata of size %d', \
+          A, B, len(traindata))
 
         kpca.solve(traindata)
 
         # NOTE: Pick PCA Algorithm HERE
         # pca = calc_kpca(np.array(traindata), kerneltype='sigmoid')
         # pca = calc_pca(np.array(traindata))
-        bench.mark('CalcKPCA_%d'%A)
+        bench.mark('CalcKPCA_%d_%d'%(A,B))
 
         # new_vect = pca.alphas_.T
         lock = self.catalog.lock_acquire(kpca_key)
         if lock is None:
-          logging.info('Could not lock the PC Kernel for State %d. Not updating', A)
+          logging.info('Could not lock the PC Kernel for Bin (%d,%d). Not updating', A, B)
         else:
           kpca.store(self.catalog, kpca_key)
           lock = self.catalog.lock_release(kpca_key, lock)
-        bench.mark('ConcurrPCAWrite_%d'%A)
-
-        #  NOTE::::  SET MAX # OF PC's STORED AND/OR KPCA N_COMPONENT SIZE (ILO ALL)
+        bench.mark('ConcurrPCAWrite_%d_%d'%(A,B))
 
         # Project Reservoir Sample to the Kernel and overwrite current set of points
         #  This should only happen up until the reservior is filled
         # If we are approx above to train, be sure to project all reservor points
         if not newkpca:
-          logging.info('Clearing and Re-Projecting the entire reservoir of %d points for State %d.', rsize, A)
+          logging.info('Clearing and Re-Projecting the entire reservoir of %d points for Bin (%d,%d).', \
+            rsize, A, B)
           rsamp_lowdim = kpca.project(traindata)
           pipe = self.catalog.pipeline()
-          pipe.delete('subspace:pca:%d'%A)
+          pipe.delete('subspace:pca:%d_%d'%(A,B))
           for si in rsamp_lowdim:
-            pipe.rpush('subspace:pca:%d'%A, bytes(si))
+            pipe.rpush('subspace:pca:%d_%d'%(A,B), bytes(si))
           pipe.execute()
 
 
@@ -527,28 +556,27 @@ class simulationJob(macrothread):
         logging.info('PCA Kernel is good -- no need to change them')
 
       bench.mark('start_ProjPCA')
-      num_hd_pts = len(groupbystate[A])
-      logging.info('Projecting %d points on Kernel PCA for state %d', num_hd_pts, A)
-      hd_pts = np.zeros(shape=((num_hd_pts,)+alpha.xyz.shape[1:]), dtype=np.float32)
-      for i, index in enumerate(groupbystate[A]):
+      logging.info('Projecting %d points on Kernel PCA for Bin (%d,%d)', num_observations, A, B)
+      hd_pts = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]), dtype=np.float32)
+      for i, index in enumerate(groupbybin[(A,B)]):
         np.copyto(hd_pts[i], alpha.xyz[index])
       pc_proj = kpca.project(hd_pts)
-      bench.mark('ProjPCA_%d'%A)
+      bench.mark('ProjPCA_%d_%d'%(A,B))
 
       # 2. Append subspace in catalog
       pipe = self.catalog.pipeline()
       for si in pc_proj:
-        pipe.rpush('subspace:pca:%d' % A, bytes(si))
+        pipe.rpush('subspace:pca:%d_%d' % (A,B), bytes(si))
       pipe.execute()
 
       logging.debug('Updating reservoir Sample')
-      num_inserted[A] = reservoir.insert(A, hd_pts)
+      num_inserted[(A,B)] = reservoir.insert(res_label, hd_pts)
 
     bench.mark('PCA')
     pipe = self.catalog.pipeline()
-    for A, num in enumerate(num_inserted):
+    for ab, num in num_inserted.items():
       if num > 0:
-        pipe.rpush('subspace:pca:updates:%d' % A, num)
+        pipe.rpush('subspace:pca:updates:%d_%d' % (A, B), num)
     pipe.execute()
 
   # ---- POST PROCESSING

@@ -65,6 +65,8 @@ class PCAnalyzer(object):
       analyzer = PCALinear(n_comp)
     elif obj['type'] == 'kernel':
       analyzer = PCAKernel(n_comp)
+    elif obj['type'] == 'incremental':
+      analyzer = PCAIncremental(n_comp)
     if not analyzer:
       print('Could not load the analyzer')
       return None
@@ -100,6 +102,30 @@ class PCALinear(PCAnalyzer):
     return projection
 
 
+class PCAIncremental(PCAnalyzer):
+
+  def __init__(self, components):
+    PCAnalyzer.__init__(self)
+    if isinstance(components, int):
+      self.n_components = components
+    self.pca = IncrementalPCA(n_components=components, batch_size=500)
+    self.num_seen = 0
+    self.type = 'incremental'
+
+  def solve(self, X):
+    self.dim = np.prod(X.shape[1:])
+    self.pca.partial_fit(X.reshape(len(X), self.dim))
+    self.trainsize += len(X)
+
+  def project(self, X):
+    if isinstance(X, list):
+      X = np.array(X)
+    dimX = np.prod(X.shape[1:])
+    if dimX != self.dim:
+      logging.error('Projection Error in PCA: Cannot reshape/project %s size data using PC Vects of size, %s', str(X.shape), str(self.dim))
+      return None
+    projection = self.pca.transform(X.reshape(len(X), dimX))
+    return projection
 
 class PCAKernel(PCAnalyzer):
 
