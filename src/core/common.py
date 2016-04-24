@@ -71,6 +71,13 @@ class systemsettings:
     ini = defaults['settings']
 
     # System Environment Settings
+    self.EXPERIMENT_NUMBER    = ini.get('experiment_number', -1)
+    # For now exit to remind me to set this
+    if self.EXPERIMENT_NUMBER < 0:
+      logging.error('NO Experiment Number set in JSON. Please set it.')
+      sys.exit(1)
+
+
     #  READ & SET for EACH 
     application = os.path.basename(self._confile).split('.')[0]
     self.APPL_LABEL  = application

@@ -268,7 +268,7 @@ class CacheClient(object):
       logging.warning('[CacheClient] Only accepting "deshaw" and "sim"')
       return None
 
-    logging.info('[CacheClient] Request for %s   [%d]', str(filename), frame)
+    # logging.info('[CacheClient] Request for %s   [%d]', str(filename), frame)
 
     if file_type == 'deshaw':
       fileno = int(filename)
@@ -311,7 +311,7 @@ class CacheClient(object):
       key = 'sim:%s' % filename
 
     iscached = (self.conn.exists(key) == 1)
-    logging.debug('[CacheClient] Request for key %s. Presence: %s', key, str(iscached))
+    # logging.debug('[CacheClient] Request for key %s. Presence: %s', key, str(iscached))
     if iscached:
       pipe = self.conn.pipeline()
       for frame in framelist:

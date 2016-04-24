@@ -94,6 +94,8 @@ class macrothread(object):
     # To help debugging
     self.singleuse = False
 
+    self.experiment_number = 0
+
   #  Job ID Management  
   #  Sequence ALL JOBS --- good for up to 10,000 managers and 100 concurrently launched workers
   #  TODO:  Can make this larger, if nec'y
@@ -491,6 +493,7 @@ class macrothread(object):
     args = self.parser.parse_args()
 
     settings = systemsettings()
+    self.experiment_number = settings.EXPERIMENT_NUMBER
 
     logging.info("APPLICATION:    %s", settings.APPL_LABEL)
     logging.info("WORKDIR:  %s", settings.WORKDIR)

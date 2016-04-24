@@ -192,7 +192,7 @@ class KDTree(object):
 
 
 
-  def __init__(self, leafsize, maxdepth=None, data=None, method='mean'):
+  def __init__(self, leafsize, maxdepth=None, data=None, method='middle'):
     """
     Created new KD-Tree. 
     If data (in ND-Array form) is provided, builds the KD-Tree with the data

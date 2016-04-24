@@ -143,6 +143,9 @@ class simulationJob(macrothread):
     logging.info('Frame Size is %f  Using Sim Ratio of 1:%d', \
       frame_size, SIMULATE_RATIO)
 
+    EXPERIMENT_NUMBER = settings.EXPERIMENT_NUMBER
+    logging.info('Running Experiment #%d', EXPERIMENT_NUMBER)
+
     # TODO: FOR LINEAGE
     # srcA, srcB = eval(job['src_bin'])
 
@@ -375,18 +378,20 @@ class simulationJob(macrothread):
 
   # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Full Protein
   #------ B:  Covariance Matrix  -----------------
-    # 1. Project Pt to PC's for each conform (top 3 PC's)
-    logging.info('---- Covariance Calculation on 200ns windows (Full Protein, cartesian Space) ----')
+    if EXPERIMENT_NUMBER > 5:
+      # 1. Project Pt to PC's for each conform (top 3 PC's)
+      logging.info('---- Covariance Calculation on 200ns windows (Full Protein, cartesian Space) ----')
 
-    # Calculate Covariance over 200 ps Windows sliding every 100ps
-    #  These could be user influenced...
-    WIN_SIZE_NS = .2
-    SLIDE_AMT_NS = .1
-    logging.debug("Calculating Covariance over trajectory. frame_size = %.1f, WINSIZE = %dps, Slide = %dps", 
-      frame_size, WIN_SIZE_NS*1000, SLIDE_AMT_NS*1000)
-    covar = dr.calc_covar(alpha.xyz, WIN_SIZE_NS, frame_size, slide=SLIDE_AMT_NS)
-    bench.mark('CalcCovar')
-    logging.debug("Calcualted %d covariance matrices. Storing variances", len(covar)) 
+      # Calculate Covariance over 200 ps Windows sliding every 100ps
+      #  These could be user influenced...
+      WIN_SIZE_NS = .2
+      SLIDE_AMT_NS = .1
+      logging.debug("Calculating Covariance over trajectory. frame_size = %.1f, WINSIZE = %dps, Slide = %dps", 
+        frame_size, WIN_SIZE_NS*1000, SLIDE_AMT_NS*1000)
+      covar = dr.calc_covar(alpha.xyz, WIN_SIZE_NS, frame_size, slide=SLIDE_AMT_NS)
+      bench.mark('CalcCovar')
+      stat.collect('numcovar', len(covar))
+      logging.debug("Calcualted %d covariance matrices. Storing variances", len(covar)) 
 
 
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
@@ -429,12 +434,13 @@ class simulationJob(macrothread):
           pipe.incr('observe:count')
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)
 
-          logging.debug('Update Covar Subspace')
-          for i, si in enumerate(covar):
-            local_index = int(i * frame_size * SLIDE_AMT_NS)
-            pipe.rpush('subspace:covar:pts', bytes(si))
-            pipe.rpush('subspace:covar:xid', global_index[local_index])
-            pipe.rpush('subspace:covar:fidx', (file_idx, local_index))
+          if EXPERIMENT_NUMBER > 5:
+            logging.debug('Update Covar Subspace')
+            for i, si in enumerate(covar):
+              local_index = int(i * frame_size * SLIDE_AMT_NS)
+              pipe.rpush('subspace:covar:pts', bytes(si))
+              pipe.rpush('subspace:covar:xid', global_index[local_index])
+              pipe.rpush('subspace:covar:fidx', (file_idx, local_index))
 
           logging.debug('Executing')
           pipe.execute()
@@ -446,138 +452,138 @@ class simulationJob(macrothread):
     self.data[key]['xid:start'] = global_index[0]
     self.data[key]['xid:end'] = global_index[-1]
     bench.mark('Indx_Update')
-    stat.collect('numcovar', len(covar))
 
   # (Should we Checkpoint here?)
 
   # 4-C. Subspace Calcuation: PCA BY Strata (PER STATE) using Alpha Filter
   #------ C:  GLOBAL PCA by state  -----------------
   #  Update PCA Vectors for each state with new data
-    logging.info('---- PCA per BIN over Alpha Filter in cartesian Space ----')
-    # TODO:  This will eventually get moved into a User process macrothread 
-    #   which will set in between analysis and controller. 
-    # For now, we're recalculating using a lock
+    if EXPERIMENT_NUMBER > 5:
+      logging.info('---- PCA per BIN over Alpha Filter in cartesian Space ----')
+      # TODO:  This will eventually get moved into a User process macrothread 
+      #   which will set in between analysis and controller. 
+      # For now, we're recalculating using a lock
 
-    # Check if vectors need to be recalculated
-    # Connect to reservoir samples
-    # TODO: Catalog or Cache?
-    reservoir = ReservoirSample('rms', self.catalog)
-    # STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
+      # Check if vectors need to be recalculated
+      # Connect to reservoir samples
+      # TODO: Catalog or Cache?
+      reservoir = ReservoirSample('rms', self.catalog)
+      # STALENESS_FACTOR = .25   # Recent updates account for 25% of the sample (Just a guess)
 
-    num_inserted = {ab: 0 for ab in binlist}
-    num_params = np.prod(alpha.xyz.shape[1:])
+      num_inserted = {ab: 0 for ab in binlist}
+      num_params = np.prod(alpha.xyz.shape[1:])
 
-    for A, B in binlist:
-      num_observations = len(groupbybin[(A,B)])
+      for A, B in binlist:
+        num_observations = len(groupbybin[(A,B)])
 
-      if num_observations == 0:
-        logging.info('No data received for bin (%d,%d).  Not processing this bin here.', A, B)
-        continue
-
-      res_label = '%d_%d' % (A,B)
-      updateVectors = False
-      kpca_key = 'subspace:pca:kernel:%d_%d' % (A, B)
-      kpca = PCAnalyzer.load(self.catalog, kpca_key)
-      newkpca = False
-      if kpca is None:
-        # kpca = PCAKernel(None, 'sigmoid')
-        kpca = PCAKernel(6, 'rbf')
-        newkpca = True
-
-
-      logging.info('PCA:  Checking if current vectors for state %d are out of date', A)
-      rsize = reservoir.getsize(res_label)
-      tsize = kpca.trainsize
-
-      #  KPCA is out of date is the sample size is 20% larger than previously used  set
-      #  Heuristics --- this could be a different "staleness" factor or we can check it some other way
-      if newkpca or rsize > (tsize * 1.5):
-
-        #  Should we only use a sample here??? (not now -- perhaps with larger rervoirs or if KPCA is slow
-        traindata = reservoir.get(res_label)
-        if newkpca:
-          logging.info('New PCA Kernel. Trained on data set of size %d. Current \
-            reservoir is %d pts.', tsize, rsize)
-          logging.info('Projecting %d points on Kernel PCA for bin (%d,%d)',
-            num_observations, A, B)
-          traindata = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]),
-            dtype=np.float32)
-          for i, index in enumerate(groupbybin[(A,B)]):
-            np.copyto(traindata[i], alpha.xyz[index])
-        else:
-          logging.info('PCA Kernel is old (Updating it). Trained on data set of \
-            size %d. Current reservoir is %d pts.', tsize, rsize)
-
-
-        if len(traindata) <= num_params:
-          logging.info("Not enough data to calculate PC's (Need at least %d \
-            observations). Skipping PCA for Bin (%d,%d)", num_params, A, B)
-          hd_pts = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]), dtype=np.float32)
-          for i, index in enumerate(groupbybin[(A,B)]):
-            np.copyto(hd_pts[i], alpha.xyz[index])
-          num_inserted[(A,B)] = reservoir.insert(res_label, hd_pts)
-          logging.debug('Updating reservoir Sample for Bin (%d, %d)')
+        if num_observations == 0:
+          logging.info('No data received for bin (%d,%d).  Not processing this bin here.', A, B)
           continue
 
-        logging.info('   Performing Kernel PCA (Gaussian) for bin (%d,%d) using traindata of size %d', \
-          A, B, len(traindata))
+        res_label = '%d_%d' % (A,B)
+        updateVectors = False
+        kpca_key = 'subspace:pca:kernel:%d_%d' % (A, B)
+        kpca = PCAnalyzer.load(self.catalog, kpca_key)
+        newkpca = False
+        if kpca is None:
+          # kpca = PCAKernel(None, 'sigmoid')
+          kpca = PCAKernel(6, 'rbf')
+          newkpca = True
 
-        kpca.solve(traindata)
 
-        # NOTE: Pick PCA Algorithm HERE
-        # pca = calc_kpca(np.array(traindata), kerneltype='sigmoid')
-        # pca = calc_pca(np.array(traindata))
-        bench.mark('CalcKPCA_%d_%d'%(A,B))
+        logging.info('PCA:  Checking if current vectors for state %d are out of date', A)
+        rsize = reservoir.getsize(res_label)
+        tsize = kpca.trainsize
 
-        # new_vect = pca.alphas_.T
-        lock = self.catalog.lock_acquire(kpca_key)
-        if lock is None:
-          logging.info('Could not lock the PC Kernel for Bin (%d,%d). Not updating', A, B)
+        #  KPCA is out of date is the sample size is 20% larger than previously used  set
+        #  Heuristics --- this could be a different "staleness" factor or we can check it some other way
+        if newkpca or rsize > (tsize * 1.5):
+
+          #  Should we only use a sample here??? (not now -- perhaps with larger rervoirs or if KPCA is slow
+          traindata = reservoir.get(res_label)
+          if newkpca:
+            logging.info('New PCA Kernel. Trained on data set of size %d. Current \
+              reservoir is %d pts.', tsize, rsize)
+            logging.info('Projecting %d points on Kernel PCA for bin (%d,%d)',
+              num_observations, A, B)
+            traindata = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]),
+              dtype=np.float32)
+            for i, index in enumerate(groupbybin[(A,B)]):
+              np.copyto(traindata[i], alpha.xyz[index])
+          else:
+            logging.info('PCA Kernel is old (Updating it). Trained on data set of \
+              size %d. Current reservoir is %d pts.', tsize, rsize)
+
+
+          if len(traindata) <= num_params:
+            logging.info("Not enough data to calculate PC's (Need at least %d \
+              observations). Skipping PCA for Bin (%d,%d)", num_params, A, B)
+            hd_pts = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]), dtype=np.float32)
+            for i, index in enumerate(groupbybin[(A,B)]):
+              np.copyto(hd_pts[i], alpha.xyz[index])
+            num_inserted[(A,B)] = reservoir.insert(res_label, hd_pts)
+            logging.debug('Updating reservoir Sample for Bin (%d, %d)')
+            continue
+
+          logging.info('   Performing Kernel PCA (Gaussian) for bin (%d,%d) using traindata of size %d', \
+            A, B, len(traindata))
+
+          kpca.solve(traindata)
+
+          # NOTE: Pick PCA Algorithm HERE
+          # pca = calc_kpca(np.array(traindata), kerneltype='sigmoid')
+          # pca = calc_pca(np.array(traindata))
+          bench.mark('CalcKPCA_%d_%d'%(A,B))
+
+          # new_vect = pca.alphas_.T
+          lock = self.catalog.lock_acquire(kpca_key)
+          if lock is None:
+            logging.info('Could not lock the PC Kernel for Bin (%d,%d). Not updating', A, B)
+          else:
+            kpca.store(self.catalog, kpca_key)
+            lock = self.catalog.lock_release(kpca_key, lock)
+          bench.mark('ConcurrPCAWrite_%d_%d'%(A,B))
+
+          # Project Reservoir Sample to the Kernel and overwrite current set of points
+          #  This should only happen up until the reservior is filled
+          # If we are approx above to train, be sure to project all reservor points
+          if not newkpca:
+            logging.info('Clearing and Re-Projecting the entire reservoir of %d points for Bin (%d,%d).', \
+              rsize, A, B)
+            rsamp_lowdim = kpca.project(traindata)
+            pipe = self.catalog.pipeline()
+            pipe.delete('subspace:pca:%d_%d'%(A,B))
+            for si in rsamp_lowdim:
+              pipe.rpush('subspace:pca:%d_%d'%(A,B), bytes(si))
+            pipe.execute()
+
+
         else:
-          kpca.store(self.catalog, kpca_key)
-          lock = self.catalog.lock_release(kpca_key, lock)
-        bench.mark('ConcurrPCAWrite_%d_%d'%(A,B))
+          logging.info('PCA Kernel is good -- no need to change them')
 
-        # Project Reservoir Sample to the Kernel and overwrite current set of points
-        #  This should only happen up until the reservior is filled
-        # If we are approx above to train, be sure to project all reservor points
-        if not newkpca:
-          logging.info('Clearing and Re-Projecting the entire reservoir of %d points for Bin (%d,%d).', \
-            rsize, A, B)
-          rsamp_lowdim = kpca.project(traindata)
-          pipe = self.catalog.pipeline()
-          pipe.delete('subspace:pca:%d_%d'%(A,B))
-          for si in rsamp_lowdim:
-            pipe.rpush('subspace:pca:%d_%d'%(A,B), bytes(si))
-          pipe.execute()
+        bench.mark('start_ProjPCA')
+        logging.info('Projecting %d points on Kernel PCA for Bin (%d,%d)', num_observations, A, B)
+        hd_pts = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]), dtype=np.float32)
+        for i, index in enumerate(groupbybin[(A,B)]):
+          np.copyto(hd_pts[i], alpha.xyz[index])
+        pc_proj = kpca.project(hd_pts)
+        bench.mark('ProjPCA_%d_%d'%(A,B))
 
+        # 2. Append subspace in catalog
+        pipe = self.catalog.pipeline()
+        for si in pc_proj:
+          pipe.rpush('subspace:pca:%d_%d' % (A,B), bytes(si))
+        pipe.execute()
 
-      else:
-        logging.info('PCA Kernel is good -- no need to change them')
+        logging.debug('Updating reservoir Sample')
+        num_inserted[(A,B)] = reservoir.insert(res_label, hd_pts)
 
-      bench.mark('start_ProjPCA')
-      logging.info('Projecting %d points on Kernel PCA for Bin (%d,%d)', num_observations, A, B)
-      hd_pts = np.zeros(shape=((num_observations,)+alpha.xyz.shape[1:]), dtype=np.float32)
-      for i, index in enumerate(groupbybin[(A,B)]):
-        np.copyto(hd_pts[i], alpha.xyz[index])
-      pc_proj = kpca.project(hd_pts)
-      bench.mark('ProjPCA_%d_%d'%(A,B))
-
-      # 2. Append subspace in catalog
+      bench.mark('PCA')
       pipe = self.catalog.pipeline()
-      for si in pc_proj:
-        pipe.rpush('subspace:pca:%d_%d' % (A,B), bytes(si))
+      for ab, num in num_inserted.items():
+        if num > 0:
+          pipe.rpush('subspace:pca:updates:%d_%d' % (A, B), num)
       pipe.execute()
-
-      logging.debug('Updating reservoir Sample')
-      num_inserted[(A,B)] = reservoir.insert(res_label, hd_pts)
-
-    bench.mark('PCA')
-    pipe = self.catalog.pipeline()
-    for ab, num in num_inserted.items():
-      if num > 0:
-        pipe.rpush('subspace:pca:updates:%d_%d' % (A, B), num)
-    pipe.execute()
 
   # ---- POST PROCESSING
     if USE_SHM:

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/osvc-redis-%j.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
-#SBATCH --partition=debug,shared
+#SBATCH --partition=debug,shared,parallel
 
 module load namd
 module load redis

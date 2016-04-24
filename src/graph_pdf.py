@@ -36,9 +36,10 @@ def bootstrap_actual (series, interval=.95):
   return (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i, std)
 
 
+
+
 # HOST = 'bigmem0003'
 SAVELOC = os.environ['HOME'] + '/ddc/graph/'
-
 # r = redis.StrictRedis(host=HOST, decode_responses=True)
 # u = redis.StrictRedis(host='localhost', decode_responses=True)
 s = redis.StrictRedis(port=6381, decode_responses=True)
@@ -48,11 +49,8 @@ b = redis.StrictRedis(port=6384, decode_responses=True)
 r = redis.StrictRedis(port=6385, decode_responses=True)
 # r = redis.StrictRedis(host=HOST, decode_responses=True)
 
-
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
-
 OBS_PER_NS = 1000
-
 
 def recheckStats_cumulative(ts, cumulative=False):
   TIMESTEP = ts * OBS_PER_NS

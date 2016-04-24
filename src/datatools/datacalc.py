@@ -28,7 +28,7 @@ def bootstrap_std (series, interval=.9):
 
 
 
-def posterior_prob (source):
+def posterior_prob (source, withcount=False):
   """
   Calculate posterior probability for set of observations
   """
@@ -42,12 +42,15 @@ def posterior_prob (source):
     else:
       groupby[key] = 1
 
-  probility_est = {}
+  probability_est = {}
   for v_i in sorted(groupby.keys()):
     mu = groupby[v_i] / len(source)
     logging.debug('%10s:  %8d %6.4f', v_i, groupby[v_i], mu)
-    probility_est[v_i] = mu
-  return probility_est
+    probability_est[v_i] = mu
+  if withcount:
+    return groupby, probability_est
+  else:
+    return probility_est
 
 
 def incremental_posterior_prob (histdata, batch):

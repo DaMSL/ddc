@@ -64,6 +64,7 @@ class microbench:
   def show(self):
     last = None
     num = 0
+    self.log.info('0,%s',self._begin.isoformat())
     for label, ts in self.tick.items():
       t = (ts-self._begin).total_seconds()
       if last is None:
@@ -72,7 +73,8 @@ class microbench:
       last = ts
       str_t = '%f'%t if t < 10 else '%d'%t
       str_d = '%f'%d if d < 10 else '%d'%d
-      self.log.info('%d,%s,%s,%s',num,str_t,str_d,label)
+      if num > 0:
+        self.log.info('%d,%s,%s,%s',num,str_t,str_d,label)
       num += 1
 
   def postdb(self):

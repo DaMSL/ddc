@@ -105,6 +105,9 @@ class controlJob(macrothread):
       self.cache_hit = 0
       self.cache_miss = 0
 
+
+
+
     def term(self):
       # For now
       return False
@@ -115,7 +118,7 @@ class controlJob(macrothread):
 
       # Batch sizes should be measures in abosolute # of observations
       workloadList = deque(self.data['completesim'])
-      minbatchSize = int(self.data['ctlBatchSize_min'])
+      minbatchSize = round(self.data['ctlBatchSize_min'])
       maxbatchSize = int(self.data['ctlBatchSize_max'])
       batchAmt = 0
       logging.debug('Controller will launch with batch size between: %d and %d observations', minbatchSize, maxbatchSize)
@@ -151,21 +154,6 @@ class controlJob(macrothread):
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
-
-    # FOR THREADING
-    # def trajLoader(self, indexlist):
-    #   for idx, framelist in indexlist:
-    #     logging.debug(" Threaded Traj Loader for idx#%d", idx)
-    #     if idx >= 0:
-    #       filename = self.catalog.lindex('xid:filelist', idx)
-    #       traj = datareduce.load_trajectory(filename)
-    #     else:
-    #       filename = deshaw.getDEShawfilename(-idx, fullpath=True) % (-idx)
-    #       traj = md.load(filename, top=deshaw.PDB_FILE)
-    #       # traj = deshaw.loadDEShawTraj(-1 * idx, filt='all')
-    #     traj.atom_slice(traj.top.select('protein'), inplace=True)
-    #     self.trajlist_async.append(traj.slice(framelist))
-    #     logging.debug('FILE ld complete for %s.  # Traj Loaded = %d', filename, len(self.trajlist_async))
 
     def backProjection(self, index_list):
       """Perform back projection function for a list of indices. Return a list 
@@ -254,11 +242,11 @@ class controlJob(macrothread):
           dataptlist = self.cacheclient.get_many(fileno, frames, 'deshaw')
         if dataptlist is None:
           self.cache_miss += 1
-          logging.debug('[BP] Cache MISS on: %d', fileno)
+          # logging.debug('[BP] Cache MISS on: %d', fileno)
           cache_miss.append(('deshaw', fileno, frames))
         else:
           self.cache_hit += 1
-          logging.debug('[BP] Cache HIT on: %d', fileno)
+          # logging.debug('[BP] Cache HIT on: %d', fileno)
           source_points.extend(dataptlist)
 
       # Check cache for generated data points
@@ -272,11 +260,11 @@ class controlJob(macrothread):
           dataptlist = self.cacheclient.get_many(filename, frames, 'sim')
         if dataptlist is None:
           self.cache_miss += 1
-          logging.debug('[BP] Cache MISS on: %s', filename)
+          # logging.debug('[BP] Cache MISS on: %s', filename)
           cache_miss.append(('sim', generated_filemap[filename], frames))
         else:
           self.cache_hit += 1
-          logging.debug('[BP] Cache HIT on: %s', filename)
+          # logging.debug('[BP] Cache HIT on: %s', filename)
           source_points.extend(dataptlist)
 
 
@@ -343,6 +331,9 @@ class controlJob(macrothread):
       numLabels = self.data['numLabels']
       binlist = [(A, B) for A in range(numLabels) for B in range(numLabels)]
 
+      numresources = self.data['numresources']
+
+
     # LOAD all new subspaces (?) and values
 
       ##### BARRIER
@@ -359,21 +350,25 @@ class controlJob(macrothread):
       
       num_pts = len(labeled_pts_rms)
       self.data['ctlIndexHead'] = thru_index
-
       thru_count = self.data['observe:count']
 
       logging.debug('##NUM_RMS_THIS_ROUND: %d', num_pts)
       stat.collect('numpts', len(labeled_pts_rms))
 
-      # Load Previous count by bin
+      # # Load Previous count by bin
       pipe = self.catalog.pipeline()
       for v_i in binlist:
         A, B = v_i
         pipe.llen('varbin:rms:%d_%d' % (A, B))
-      bincounts = pipe.execute()
-      logging.debug('Global Counts retrieved for %d keys', len(bincounts))
+      bincounts_raw = pipe.execute()
+      bincounts = [int(i) for i in bincounts_raw]
 
+      # pipe = self.catalog.pipeline()
+      # for v_i in binlist:
+      #   A, B = v_i
+      #   pipe.llen('varbin:rms:%d_%d' % (A, B))
 
+      # logging.debug('Global Counts retrieved for %d keys, %s', len(bincounts), str(bincounts))
 
     # Calculate variable PDF estimations for each subspace via bootstrapping:
       logging.debug("=======================  <SUBSPACE CONVERGENCE>  =========================")
@@ -382,16 +377,42 @@ class controlJob(macrothread):
       logging.info("RMS Labels for %d points loaded. Calculating PDF.....", len(labeled_pts_rms))
 
       logging.info("Posterer PDF: This Sample ONLY")
-      pdf_rms_local = datacalc.posterior_prob(labeled_pts_rms)
-
-      vals_iter = {}
-      counts_local = {}
-      # pipe = self.catalog.pipeline()
+      count_rms_local, pdf_rms_local = datacalc.posterior_prob(labeled_pts_rms, withcount=True)
       for v_i in binlist:
-        A, B = v_i
         if v_i not in pdf_rms_local.keys():
           pdf_rms_local[v_i] = 0.
-        counts_local[v_i] = round(pdf_rms_local[v_i] * num_pts)
+
+      # Update current Bootstrap, push to catalog, and then get all previous bootstraps
+      vals_iter = {}
+      counts_local = {}
+      pipe = self.catalog.pipeline()
+      for v_i in binlist:
+        if v_i not in count_rms_local.keys():
+          counts_local[v_i] = 0
+        else:
+          counts_local[v_i] = count_rms_local[v_i]
+        pipe.rpush('bootstrap:rms:%d_%d'%(v_i), counts_local[v_i])
+      pipe.execute()
+      pipe = self.catalog.pipeline()
+      for v_i in binlist:
+        pipe.lrange('bootstrap:rms:%d_%d'%(v_i), 0, -1)
+      bootlists = pipe.execute()
+
+      # Calculate Current Global Convergence based on RMSD metric
+      bootstrap = {}
+      convergence_rms = {}
+      for i, v_i in enumerate(binlist):
+        bootstrap[v_i] = [int(k) for k in bootlists[i]]
+        # if len(bootlists[i]) > 0:
+        #   logging.info('Bootlist for %s: %s', v_i, bootlists[i])
+        mean, CI, stddev, err = datacalc.bootstrap_std(bootstrap[v_i])
+        if CI == 0 or mean == 0:
+          convergence_rms[v_i] = 1.
+        else:    
+          convergence_rms[v_i] = CI / mean
+        # logging.debug('Convergence: `%s`:  %6.3f', str(v_i), convergence_rms[v_i])
+      stat.collect('convergence', [v for k, v in sorted(convergence_rms.items())])
+
       bench.mark('PostPDF:This')
 
       #  LOAD ALL POINTS TO COMPARE CUMULTIVE vs ITERATIVE:
@@ -400,17 +421,20 @@ class controlJob(macrothread):
       #  FOR EARLIER EXPIRIMENTS: We pulled ALL pts to calc global PDF
       # all_pts_rms = self.catalog.lrange('label:rms', 0, thru_index)
       # pdf_rms_cuml = datacalc.posterior_prob(all_pts_rms)
-      logging.info("Posterer PDF: ALL DATA Points Collected")
+      logging.info("Posterer PDF: For ALL DATA Points")
+      total = sum(bincounts)
+      logging.debug('Total Obs count = %d', total)
+      pdf_rms_global = {binlist[v_i]: bincounts[v_i]/total for v_i in range(len(binlist))}
 
-      # Retrieve Previous Cuml stats
-      vals_cuml = {}
-      counts_global = {}
-      for i, elm in enumerate(bincounts):
-        val = int(elm) if elm is not None else 0
-        counts_global[binlist[i]] = val
+      # # Retrieve Previous Cuml stats
+      # vals_cuml = {}
+      # counts_global = {}
+      # for i, elm in enumerate(bincounts):
+      #   val = int(elm) if elm is not None else 0
+      #   counts_global[binlist[i]] = val
 
-      # Calculate incremental PDF
-      pdf_rms_global = datacalc.incremental_posterior_prob(counts_global, labeled_pts_rms)
+      # # Calculate incremental PDF
+      # pdf_rms_global = datacalc.incremental_posterior_prob(counts_global, labeled_pts_rms)
       bench.mark('PostPDF:All')
 
       # for v_i in binlist:
@@ -419,35 +443,31 @@ class controlJob(macrothread):
       #   pipe.rpush('pdf:local:%d_%d' % (A, B), vals_iter[v_i])
 
       logging.info("PDF Comparison for all RMSD Bins")
-      logging.info('##VAL TS   BIN:       Local     Global') 
+      logging.info('##VAL TS   BIN:      Local     Global     Convergence') 
       obs_by_state = [0 for i in range(numLabels)]
       obs_by_state_local = [0 for i in range(numLabels)]
-      for key in sorted(binlist):
+      for v_i, key in enumerate(sorted(binlist)):
         A, B = key
         obs_by_state_local[A] += counts_local[key]
-        obs_by_state[A] += counts_global[key] + counts_local[key]
-        logging.info('##VAL %03d %s:    %5.2f    %5.2f' % 
-          (self.data['timestep'], str(key), pdf_rms_local[key]*100, pdf_rms_global[key]))
+        obs_by_state[A] += bincounts[v_i]
+        logging.info('##VAL %03d %s:    %5.2f      %5.2f      %5.2f' % 
+          (self.data['timestep'], str(key), 
+            pdf_rms_local[key]*100, pdf_rms_global[key]*100, convergence_rms[key]*100))
 
-      logging.info("OBS_LOCAL,%s", str(obs_by_state_local))
-      logging.info("OBS_GLOBAL,%s", str(obs_by_state))
+      logging.info("OBS_LOCAL,%s", ','.join([str(i) for i in obs_by_state_local]))
+      logging.info("OBS_GLOBAL,%s", ','.join([str(i) for i in obs_by_state]))
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
-      #   Using RMS and PCA, umbrella sample transitions out of state 3
-
 
       ##### BARRIER
       self.wait_catalog()
-
       selected_index_list = []
 
       # QUERY PROCESSING & SAMPLING BELOW to select indices. 
-
-      EXPERIMENT_NUMBER = 8
-
+      EXPERIMENT_NUMBER = self.experiment_number
       logging.info("RUNNING EXPER CONFIGURATION #%d", EXPERIMENT_NUMBER)
-      # 1. get all points in some state
+
       #####  Experment #1: Round-Robin each of 25 bins (do loop to prevent select from empty bin)
       if EXPERIMENT_NUMBER == 1:
         target_bin = self.data['timestep']
@@ -493,22 +513,8 @@ class controlJob(macrothread):
 
       ###### EXPERIMENT #4:  UNIFORM (w/updated Convergence)
       if EXPERIMENT_NUMBER == 4:
-        pipe = self.catalog.pipeline()
-        for b in binlist:
-          pipe.llen('varbin:rms:%d_%d' % b)
-        length = pipe.execute()
-
-
-        logging.info('Variable bins sizes follows')
-        idxlist = {}
-        for i, b in enumerate(binlist):
-          idxlist[b] = length[i]
-          logging.info('  %s:  %d', b, length[i])
 
         ## UNIFORM SAMPLER
-        numresources = self.data['numresources']
-
-
         quota = numresources // len(binlist)
         sel = 0
         pipe = self.catalog.pipeline()
@@ -542,18 +548,6 @@ class controlJob(macrothread):
 
       ###### EXPERIMENT #5:  BIASED (Umbrella) SAMPLER
       if EXPERIMENT_NUMBER == 5:
-        pipe = self.catalog.pipeline()
-        for b in binlist:
-          pipe.llen('varbin:rms:%d_%d' % b)
-        num_gen_samples = pipe.execute()
-
-        logging.info('Variable bins sizes follows')
-        idxlist = {}
-        for i, b in enumerate(binlist):
-          idxlist[b] = num_gen_samples[i]
-          logging.info('  %s:  %d', b, num_gen_samples[i])
-
-        numresources = self.data['numresources']
 
         ## UMBRELLA SAMPLER
 
@@ -563,7 +557,7 @@ class controlJob(macrothread):
 
         # Load DEShaw labeled indices
         if self.catalog.exists('label:deshaw'):
-          logging.info("Loading DEShaw historical points.... From Cache")
+          logging.info("Loading DEShaw historical points.... From Catalog")
           rmslabel = [eval(x) for x in self.catalog.lrange('label:deshaw', 0, -1)]
         else:
           logging.info("Loading DEShaw historical points.... From File (and recalculating)")
@@ -574,24 +568,25 @@ class controlJob(macrothread):
           deshaw_samples[b].append(i)
 
         coord_origin = []
-        norm_pdf_iter = convergence_iter / sum(convergence_iter)
-        norm_pdf_cuml = convergence_cuml / sum(convergence_cuml)
-        logging.info("Umbrella Samping PDF (Using Iterative Bootstrapping):")
+        conv_vals = np.array([v for k, v in sorted(convergence_rms.items())])
+        norm_pdf_conv = conv_vals / sum(conv_vals)
+        logging.info("Umbrella Samping PDF (Bootstrapping):")
         sampled_distro_perbin = {b: 0 for b in binlist}
 
         while numresources > 0:
           # First sampling is BIASED
-          selected_bin = np.random.choice(len(binlist), p=norm_pdf_iter)
+          selected_bin = np.random.choice(len(binlist), p=norm_pdf_conv)
+          A, B = binlist[selected_bin]
           sampled_distro_perbin[binlist[selected_bin]] += 1
-          if num_gen_samples[selected_bin] is not None and num_gen_samples[selected_bin] > 0:
+          if bincounts[selected_bin] is not None and bincounts[selected_bin] > 0:
             # Secondary Sampling is Uniform
-            sample_num = np.random.randint(num_gen_samples[selected_bin])
+            sample_num = np.random.randint(bincounts[selected_bin])
             logging.debug('SAMPLER: selecting sample #%d from bin %s', 
               sample_num, str(binlist[selected_bin]))
             index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[selected_bin], 
               sample_num)
             selected_index_list.append(index)
-            coord_origin.append(('sim', index, binlist[selected_bin]))
+            coord_origin.append(('sim', index, binlist[selected_bin], '%d-D'%A))
             numresources -= 1
           elif len(deshaw_samples[binlist[selected_bin]]) > 0:
             index = np.random.choice(deshaw_samples[binlist[selected_bin]])
@@ -599,7 +594,7 @@ class controlJob(macrothread):
               index, str(binlist[selected_bin]))
             # Negation indicates an historical index number
             selected_index_list.append(-index)
-            coord_origin.append(('deshaw', index, binlist[selected_bin]))
+            coord_origin.append(('deshaw', index, binlist[selected_bin], '%d-D'%A))
             numresources -= 1
           else:
             logging.info("NO Candidates for bin: %s", binlist[selected_bin])
@@ -1027,18 +1022,20 @@ class controlJob(macrothread):
         # OW/ PROJECT NEW PTS ONLY -- BUT RETAIN grouped index of all points
         logging.info('Building Global KD Tree over Covar Subspace with %d data pts', len(subspace_covar_pts))
 
-        global_kdtree = KDTree(200, maxdepth=8, data=subspace_covar_pts, method='middle')
+        global_kdtree = KDTree(250, maxdepth=8, data=subspace_covar_pts, method='middle')
+        hcube_global = global_kdtree.getleaves()
 
         # FOR DEBUGGING -- USE ONLY 3 GLOBAL HCUBES
-        hcube_global_ALL = global_kdtree.getleaves()
+        # hcube_global_ALL = global_kdtree.getleaves()
+        # hcube_global = {}
+        # num = 0
+        # for k, v in hcube_global_ALL.items():
+        #   hcube_global[k] = v
+        #   num += 1
+        #   if num == 3:
+        #     break
 
-        hcube_global = {}
-        num = 0
-        for k, v in hcube_global_ALL.items():
-          hcube_global[k] = v
-          num += 1
-          if num == 3:
-            break
+
 
         # hcube_global = global_kdtree.getleaves()
         logging.info('Global HCubes: Key  Count  Volume  Density  (NOTE DEBUGGING ONLY 3 USED)')
@@ -1052,7 +1049,7 @@ class controlJob(macrothread):
 
         MAX_SAMPLE_SIZE   = 250   # Max # of cov "pts" to back project
         COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
-        MAX_PT_PER_MATRIX =  5   # 5% of points from Source Covariance matrix
+        MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
 
         counter = 0
         for key in hcube_global.keys():
@@ -1072,8 +1069,6 @@ class controlJob(macrothread):
           logging.debug('Back Projected %d points to HD space: %s', 
             len(hcube_global[key]['idxlist']), str(hcube_global[key]['alpha']))
 
-        hcubeB_nodes = hcube_global.keys()
-        hcubeA_nodes = {}
 
         ####  BARRIER 
         self.wait_catalog()
@@ -1091,14 +1086,15 @@ class controlJob(macrothread):
         #   if v > 0:
         #     bin_list.append(k)            
         logging.info('Selected the following: %s', str(list(bin_list)))
-
+        hcube_local = {}
 
         logging.info("=======================================================")
         logging.info("   PROJECT Global HCubes into Per-Bin HCube KD Tree(s)")
         logging.info("=======================================================\n")
         projected_bin = []
-        overlap_hcube = {k: {} for k in hcubeB_nodes}
-        for tbin in [(0,2)]:
+        overlap_hcube = {k: {} for k in hcube_global.keys()}
+        TEST_TBIN = [(i,j) for i in range(2,5) for j in range(0,5)]
+        for tbin in TEST_TBIN:
         # for tbin in sorted(bin_list):
           logging.info("Project Global HCubes into local subspace for %s", str(tbin))
           # Load Vectors
@@ -1114,14 +1110,13 @@ class controlJob(macrothread):
             logging.error('No Raw PCA data points for bin %s.... Going to next bin', str(tbin))
             continue
           projected_bin.append(tbin)
-          logging.info('Building KDtree from data of size: %s', str(data.shape))
+          logging.info('Building KDtree over local %s bin from observations matrix of size: %s', str(tbin), str(data.shape))
           kdtree = KDTree(200, maxdepth=8, data=data, method='middle')
-          hcube_local = kdtree.getleaves()
-          hcubeA_nodes[tbin] = hcube_local.keys()
+          hcube_local[tbin] = kdtree.getleaves()
           logging.info('LOCAL KD-Tree Completed for %s:', str(tbin))
-          for k in sorted(hcube_local.keys()):
-            logging.info('    `%-9s`   #pts=%6d   wgt=%5.1f', 
-              k, len(hcube_local[k]['elm']), hcube_local[k]['density'])
+          for k in sorted(hcube_local[tbin].keys()):
+            logging.info('    `%-9s`   #pts:%6d   density:%9.1f', 
+              k, len(hcube_local[tbin][k]['elm']), hcube_local[tbin][k]['density'])
           bench.mark('KDTreeBuild_%d_%d' % tbin)
 
           # Back-project all points to higher dimension <- as consolidatd trajectory
@@ -1130,7 +1125,7 @@ class controlJob(macrothread):
           #   EXPLOIT: Project lower dense hcubes
           #  For now, do both
           n_total = 0
-          logging.debug('Global Hcubes (%d):  %s', len(hcube_global.keys()), str(hcube_global.keys()))
+          logging.debug('Global Hcubes to Project (%d):  %s', len(hcube_global.keys()), str(hcube_global.keys()))
           for key, hc in hcube_global.items():
             overlap_hcube[key][tbin] = {}
             cov_proj_pca = kpca.project(hc['alpha'].xyz)
@@ -1140,11 +1135,13 @@ class controlJob(macrothread):
               hcube = kdtree.probe(pt, probedepth=9)
               # NOTE: Retaining count of projected pts. Should we track individual pts???
               if hcube not in overlap_hcube[key][tbin]:
-                overlap_hcube[key][tbin][hcube] = {'idxlist': hcube_local[hcube]['elm'],
-                    'wgt': hcube_local[hcube]['density'], 'num_projected': 0}
+                overlap_hcube[key][tbin][hcube] = {
+                    'idxlist': hcube_local[tbin][hcube]['elm'],
+                    'wgt': hcube_local[tbin][hcube]['density'], 
+                    'num_projected': 0}
               overlap_hcube[key][tbin][hcube]['num_projected'] += 1
-            for k, v in overlap_hcube[key][tbin].items():
-              logging.debug('          Local HCube `%-9s` ==> %6d points', k, v['num_projected'])
+            for k, v in sorted(overlap_hcube[key][tbin].items()):
+              logging.debug('          to ==> Local HCube `%-9s`: %6d points', k, v['num_projected'])
           
             
 
@@ -1165,43 +1162,66 @@ class controlJob(macrothread):
         gamma2 = lambda a, b : (a + b) / 2
 
         # TODO: Factor in RMS weight
-        idxB = {key: i for i, key in enumerate(hcubeB_nodes)}
-        for tbin in [(0,2)]:
+        for tbin in TEST_TBIN:
         # for tbin in sorted(bin_list):
-          idxA = {key: i for i, key in enumerate(hcubeA_nodes[tbin])}
           logging.info('')
           logging.info('BIPARTITE GRAPH for %s', str(tbin))
           bipart = {}
           edgelist = []
           for hcB in hcube_global.keys():
+            num_B  = hcube_global[hcB]['count']
             wgt1_B = hcube_global[hcB]['density']
+            if tbin not in overlap_hcube[hcB]:
+              continue
             for hcA, hcA_data in overlap_hcube[hcB][tbin].items():
               edge = {}
               if hcA not in bipart:
                 bipart[hcA] = []  
-              num_B  = hcA_data['num_projected']
+              num_proj  = hcA_data['num_projected']
               wgt_A  = hcA_data['wgt']
-              wgt2_B = wgt1_B*num_B
+              wgt2_B = wgt1_B*num_proj
               edge['combW1'] = gamma1(wgt_A, wgt1_B)
               edge['combW2'] = gamma1(wgt_A, wgt2_B)
               edge['combW3'] = gamma2(wgt_A, wgt1_B)
               edge['combW4'] = gamma2(wgt_A, wgt2_B)
               edge['num_A']  = len(hcA_data['idxlist'])
               edge['num_B']  = num_B
+              edge['num_proj']  = num_proj
               edge['wgt_A']  = wgt_A
               edge['wgt1_B'] = wgt1_B
               edge['wgt2_B'] = wgt2_B
               edge['hcA'] = hcA
               edge['hcB'] = hcB
               bipart[hcA].append(edge)
-              edgelist.append((idxA[hcA], idxB[hcB], num_B))
+              edgelist.append((hcA, hcB, num_proj))
+          if len(bipart) == 0:
+            logging.info("NO DATA FOR %s", str(tbin))
+            continue
           logging.info('')
-          logging.info('A (# Pts) H-Cube        <--- B H-Cube (# Pts)      wgt_A  wB1:density wB2:Mass     A*B1     A*B2     AVG(A,B1)     AVG(A,B2)')
+          logging.info('A (# Pts) H-Cube        <--- B H-Cube (# proj/total Pts)      wgt_A  wB1:density wB2:Mass     A*B1     A*B2     AVG(A,B1)     AVG(A,B2)')
           for k, v in bipart.items():
             for edge in v:
-              logging.info('A (%(num_A)4d pts) `%(hcA)-8s` <--- `%(hcB)9s`  (%(num_B)4d pts) B %(wgt_A)9.1f %(wgt1_B)9.1f %(wgt2_B)9.1f %(combW1)9.1f %(combW2)9.1f %(combW3)9.1f %(combW3)9.1f' % edge)
+              logging.info('A (%(num_A)4d pts) `%(hcA)-8s` <--- `%(hcB)9s`  (%(num_B)4d / %(num_proj)4d pts) B %(wgt_A)9.1f %(wgt1_B)9.1f %(wgt2_B)9.1f %(combW1)9.1f %(combW2)9.1f %(combW3)9.1f %(combW3)9.1f' % edge)
 
-          G.bipartite(hcubeA_nodes, hcubeB_nodes, edgelist, 'bipartite_0_2')
+          # Prepare nodes for graph
+          nA = set()
+          nB = set()
+          elist = []
+          for e in edgelist:
+            a, b, z = e
+            if z <= 5:
+              continue
+            nA.add(a)
+            nB.add(b)
+            elist.append((a,b,z))
+          nAKeys = sorted(nA)[::-1]
+          nBKeys = sorted(nB)[::-1]
+          sizesA = [hcube_local[tbin][n]['count'] for n in nAKeys]
+          sizesB = [hcube_global[n]['count']*3 for n in nBKeys]
+          idxA = {key: i for i, key in enumerate(nAKeys)}
+          idxB = {key: i for i, key in enumerate(nBKeys)}
+          edges = [(idxA[a], idxB[b], z) for a, b, z in elist]
+          G.bipartite(sizesA,sizesB,edges,sizesA,sizesB,'bipartite_%d_%d' % tbin)
 
         logging.info('STOPPING HERE!!!!')
         sys.exit(0)
@@ -1304,7 +1324,7 @@ class controlJob(macrothread):
           bench.mark('Bootstrap')
 
 
-    # EXECUTE SAMPLER
+        # EXECUTE SAMPLER
         logging.debug("=======================  <DATA SAMPLER>  =========================")
 
         ##### BARRIER
@@ -1334,7 +1354,6 @@ class controlJob(macrothread):
         hcube_pdf /= np.sum(hcube_pdf)
 
        # TODO:  Number & Runtime of each job <--- Resource/Convergence Dependant
-        numresources = self.data['numresources']
         coord_origin = []
         if len(hcube_list) == 0:
           logging.info('Incubating: Lacking sufficient Data to sample')
@@ -1376,6 +1395,7 @@ class controlJob(macrothread):
           coord_origin.append(('sim', selected_index, origin_bin, hcube_label))
           numresources -= 1
 
+    # Back Project to get new starting Coords for each sample  
       logging.info('All Indices sampled. Back projecting to high dim coords')
       sampled_set = []
       for i in selected_index_list:
@@ -1440,8 +1460,9 @@ class controlJob(macrothread):
       self.catalog.rpush('datacount', len(labeled_pts_rms))
 
       #  EXPR 7 Update:
-      self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
-      self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
+      if EXPERIMENT_NUMBER > 5:
+        self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
+        self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
 
       # Update cache hit/miss
       hit = self.cache_hit

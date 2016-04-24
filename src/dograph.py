@@ -6,21 +6,21 @@ import numpy as np
 
 HOME = os.environ['HOME']
 
-appl_name = 'leastconv'
+appl_nodeAme = 'leastconv'
 
-def scrape_cw(appl_name):
+def scrape_cw(appl_nodeAme):
   data = {}
   bench = []
   for a in range(5):
     for b in range(5):
       data[str((a, b))] = []
   state_data = [[] for i in range(5)]
-  logdir = os.path.join(HOME, 'work', 'log', appl_name)
+  logdir = os.path.join(HOME, 'work', 'log', appl_nodeAme)
   ls = sorted([f for f in os.listdir(logdir) if f.startswith('cw')])
   for i, cw in enumerate(ls[1:]):
-    filename = os.path.join(logdir, cw) 
-    # print('Scanning: ', filename)
-    with open(filename, 'r') as src:
+    filenodeAme = os.path.join(logdir, cw) 
+    # print('Scanning: ', filenodeAme)
+    with open(filenodeAme, 'r') as src:
       ts = None
       lines = src.read().split('\n')
       timing = []
@@ -135,7 +135,7 @@ def linegraphcsv(X, title, nolabel=False):
 
 
 
-def plotconvergence(appl_name, data):
+def plotconvergence(appl_nodeAme, data):
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   for a in range(5):
     for b in range(5):
@@ -147,7 +147,7 @@ def plotconvergence(appl_name, data):
     plt.ylabel('Convergence')
     plt.ylim(0, 1)
     plt.legend()
-    plt.savefig(loc + '/' + appl_name + '_conv_%d.png' % a)
+    plt.savefig(loc + '/' + appl_nodeAme + '_conv_%d.png' % a)
     plt.close()
 
 # markpts=['START',
@@ -224,34 +224,76 @@ def drawnodes(ax, s, left=True):
       ax.annotate(n,xy=(posx-len(n)*0.1,posy+0.1))
     posy+=1
 
-def bipartite(nodeA, nodeB, edges, title='bipartite'):
-  ax=plt.figure().add_subplot(111)
+def bipartite(nodeA, nodeB, edges, sizeA=None, sizeB=None, title='bipartite'):
+  nodesizes = [.01, .03, .1, .25, .6, 1]
+  if sizeA is None:
+    zA = [.2]*len(nodeA)
+  else:
+    zA = [nodesizes[len(str(round(i)))] for i in sizeA]
+  if sizeB is None:
+    zB = [.2]*len(nodeB)
+  else:
+    zB = [nodesizes[len(str(round(i)))] for i in sizeB]
+
+  print('Size Lists:')
+  print('  ', zA)
+  print('  ', zB)
+  print('Edges: ', len(edges), edges)
+  pad = 3
   H = max(len(nodeA),len(nodeB))
-  plt.axis([-1,H+1,-1,H+1])
+
+  ax=plt.figure().add_subplot(111)
+  plt.axis([0,H,0,H])
   frame=plt.gca()
   frame.axes.get_xaxis().set_ticks([])
   frame.axes.get_yaxis().set_ticks([])
 
-  padding = 3
-  posx = padding
-  posy = 1
+
+  # Left Nodes
   stepA = H / len(nodeA)
-  for n in nodeA:
-    plt.gca().add_patch(plt.Circle((posx,posy),radius=0.5,fc='red'))
-    ax.annotate(n,xy=(posx-1,posy-.5), horizontalalignment='right')
+  posx = pad
+  posy = (stepA/2)
+  for n, z in zip(nodeA, zA):
+    plt.gca().add_patch(plt.Circle((posx,posy),radius=z,fc='blue'))
+    ax.annotate(n,xy=(posx-1,posy-.1), horizontalalignment='right')
     posy+=stepA
 
-  posx = H-padding
-  posy = 1
+  # Right Nodes
   stepB = H / len(nodeB)
-  for n in nodeB:
-    plt.gca().add_patch(plt.Circle((posx,posy),radius=0.5,fc='red'))
-    ax.annotate(n,xy=(posx+1,posy-.5), horizontalalignment='left')
+  posx = H-pad
+  posy = (stepB/2)
+  for n, z in zip(nodeB, zB):
+    plt.gca().add_patch(plt.Circle((posx,posy),radius=z,fc='red'))
+    ax.annotate(n,xy=(posx+1,posy-.1), horizontalalignment='left')
     posy+=stepB
 
-  for a, b, W in edges:
-    plt.plot((padding,H-padding),(a*stepA+1, b*stepB+1),'k', linewidth=(W//30))
+  # Edges
+  maxz = max([i[2] for i in edges])
+  sumz = sum([i[2] for i in edges])
+  for a, b, z in edges:
+    W = 1
+    S = ':'
+    if z > 10:
+      S = '--'
+    if z > 50:
+      S = '-'
+    if z > sumz/len(edges):
+      W = 2
+    if z > 150:
+      W = 3
+    if z > 500:
+      W = 4
+    if z > 1000:
+      W = 4 + z//1000
+    plt.plot((pad,H-pad),(a*stepA+(stepA/2), b*stepB+(stepB/2)),'k', linestyle=S, linewidth=W)
 
+
+  ax.annotate('GLOBAL (B)', xy=(H-4, 0), horizontalalignment='left')
+  ax.annotate('LOCAL (A)', xy=(4, 0), horizontalalignment='right')
+  ax.arrow(H-4, .5, -(H-8), 0, head_width=0.1, head_length=0.5, fc='k', ec='k')
+  plt.ylabel("Numbers are HCube Sizes")
+  plt.xlabel("Line style/width => # of projected Pts (Note: not all lines drawn)")
+  plt.title(title)
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.savefig(loc + '/' + title + '.png')
   plt.close()
