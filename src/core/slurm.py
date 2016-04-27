@@ -76,6 +76,22 @@ class slurm:
           info[k] = v
     return info
 
+  @classmethod
+  def jobexecinfo(cls, jobid):
+    if isinstance(jobid, list):
+      job = ','.join(['%d.batch'%i for i in jobid])
+    else:
+      job = str(jobid)
+    print('JOBLIST=', job)
+    out = proc.check_output("sacct -n -P --delimiter=',' -j %s --format=jobid,exitcode,MaxVMSizeNode,elapsed,cputime,submit,eligible" \
+     % job, shell=True)
+    joblist = []
+    for line in out.decode('utf-8').strip().split('\n'):
+      j, ex, n, t, c, sub, st = line.split(',')
+      joblist.append(dict(jobid=j[:-6], exitcode=ex, node=n, time=t, cpu=c, submit=sub, start=st))
+    return joblist
+
+
 
   @classmethod
   def getJob(cls, jobid):

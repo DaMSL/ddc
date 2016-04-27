@@ -47,6 +47,10 @@ p = redis.StrictRedis(port=6382, decode_responses=True)
 u = redis.StrictRedis(port=6383, decode_responses=True)
 b = redis.StrictRedis(port=6384, decode_responses=True)
 r = redis.StrictRedis(port=6385, decode_responses=True)
+
+elas = {label: redis.StrictRedis(port=6390+i, decode_responses=True) for i, label in enumerate(['elas_base', 'elas_500', 'elas_250'])}
+
+
 # r = redis.StrictRedis(host=HOST, decode_responses=True)
 
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
@@ -297,7 +301,8 @@ def plot_bootstraps(data, ts, prefix, subdir='.'):
     plt.close()
   print('All Done!')
 
-colormap = {'uniform': "r",'biased': 'b','parallel':'g', 'serial':'k', 'reweight':'y'}
+colormap = {'uniform': "r",'biased': 'b','parallel':'g', 'serial':'k', 'reweight':'y',
+              'elas_base': "r", 'elas_500': "g", 'elas_250': "b"}
 pathmap = {'uniform': "uniform2",'biased': 'biased1','naive':'naive'}
 
 def bystate(slist=None, cumulative=False, STEPSIZE=50):
@@ -355,17 +360,7 @@ def histogram(slist=None, cumulative=False, STEPSIZE=50):
     print('%s|%d|%d|%d|%d|%d' % (b,data['serial'][b],data['parallel'][b],data['uniform'][b],data['biased'][b],data['reweight'][b]))
 
 
-
-
-
-def convtw(slist=None, cumulative=False, STEPSIZE=50):
-  # data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
-  data = {'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
-  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
-  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
-  # data['serial']['obs'] = s.lrange('label:rms', 0, -1)
-  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
-  data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
+def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
   for e in data.keys():
     # data[e]['conv'] = [[] for i in range(5)]
     data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
@@ -387,6 +382,8 @@ def convtw(slist=None, cumulative=False, STEPSIZE=50):
   statelist = [0, 1, 2, 3, 4] if slist is None else slist
 
   for A in [0, 1, 2, 3, 4]:
+    plt.clf()
+    ax = plt.subplot(111)
     maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
     for e in data.keys():
       X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
@@ -394,21 +391,41 @@ def convtw(slist=None, cumulative=False, STEPSIZE=50):
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
     # plt.title('Convergence for State %d', A)
     plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
+    ax.set_xlim(75,500)
     plt.legend()
     plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
     plt.close()
+    plt.clf()
+    ax = plt.subplot(111)
     maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
     for e in data.keys():
       X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
       print(len(X))
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
     # plt.title('Convergence for State %d', A)
+    ax.set_xlim(75,500)
     plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
     plt.legend()
     plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
     plt.close()
   return data
 
+
+def Convergence5():
+  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  data = {'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
+  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
+  # data['serial']['obs'] = s.lrange('label:rms', 0, -1)
+  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
+  data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
+  return convtw(data)
+
+def Elasticity():
+  data = {k: {} for k in elas.keys()}
+  for k in data.keys():
+    data[k]['obs'] = elas[k].lrange('label:rms', 0, -1)[400000:]
+  return convtw(data)
 
 
 

@@ -96,6 +96,22 @@ class macrothread(object):
 
     self.experiment_number = 0
 
+    # For file logging (if flagged)
+    if args.filelog:
+      self.filelog = logging.getLogger(name)
+      self.filelog.setLevel(logging.INFO)
+      filename = 'ctl.log'
+      fh = logging.FileHandler(filename)
+      fh.setLevel(logging.INFO)
+      fmt = logging.Formatter('%(message)s')
+      fh.setFormatter(fmt)
+      self.filelog.addHandler(fh)
+      self.filelog.propagate = False
+      logging.info("File Logging is enabled. Logging some output to: %s", filename)
+    else:
+      self.filelog = None
+
+
   #  Job ID Management  
   #  Sequence ALL JOBS --- good for up to 10,000 managers and 100 concurrently launched workers
   #  TODO:  Can make this larger, if nec'y
@@ -448,6 +464,7 @@ class macrothread(object):
       parser.add_argument('-i', '--init', action='store_true')
       parser.add_argument('-d', '--debug', action='store_true')
       parser.add_argument('-s', '--single', action='store_true')
+      parser.add_argument('-f', '--filelog', action='store_true')
       self.parser = parser
     return self.parser
 

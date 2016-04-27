@@ -383,6 +383,9 @@ class KDTree(object):
     """
     Retrieves all non-empty nodes along with meta-data and weighting traits
     for each as a packaged dict
+    NOTES:
+    Volume ==> square of the N-root of the N-Dimension hyper-volume
+    Density => mass / volume, where mass=# points in leaf node
     """
     enc = self.encode()
     leaves = {}
@@ -391,16 +394,16 @@ class KDTree(object):
       tot = 0 if enc[k]['elm'] is None else len(enc[k]['elm'])
       if tot == 0:
         continue
-      vol = self.volume(k)
-      adj_vol = math.pow(vol, 1/self.dim)
+      adj_vol = math.pow(self.volume(k), 1/self.dim)
       if adj_vol == 0:
         adj_vol = .001
-      density = tot / adj_vol
+      vol = adj_vol*adj_vol
+      density = tot / vol
       vals = np.array([self.deref_pt(i) for i in enc[k]['elm']])
       maxv = np.max(vals, axis=0)
       minv = np.min(vals, axis=0)
       leaves[k] = {'elm': enc[k]['elm'], 
-                  'volume': adj_vol*adj_vol,
+                  'volume': vol,
                   'density': density,
                   'count': tot,
                   'maxv': maxv,

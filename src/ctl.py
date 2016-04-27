@@ -32,7 +32,7 @@ from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
 from bench.stats import StatCollector
 
-import dograph as G
+import plot as G
 
 
 __author__ = "Benjamin Ring"
@@ -45,7 +45,7 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 np.set_printoptions(precision=5, suppress=True)
 
-SIMULATE_RATIO = 50
+# SIMULATE_RATIO = 50
 
 
 def q_select (T, value, limit=None):
@@ -1043,11 +1043,18 @@ class controlJob(macrothread):
           v = hcube_global[k]
           logging.info('%-10s        %6d %8.1f %6.1f', k, v['count'], v['volume'], v['density'])
 
+        if self.filelog:
+          keys = hcube_global.keys()
+          self.filelog.info('global,keys,%s',','.join(keys))
+          self.filelog.info('global,count,%s',','.join([str(hcube_global[k]['count']) for k in keys]))
+          self.filelog.info('global,volume,%s',','.join([str(hcube_global[k]['volume']) for k in keys]))
+          self.filelog.info('global,density,%s',','.join([str(hcube_global[k]['density']) for k in keys]))
+
         logging.info("=====  SELECT Sampling of points from each Global HCube  (B)")
         s = sorted(hcube_global.items(), key=lambda x: x[1]['count'])
         hcube_global = {x[0]: x[1] for x in s}
 
-        MAX_SAMPLE_SIZE   = 250   # Max # of cov "pts" to back project
+        MAX_SAMPLE_SIZE   = 1000   # Max # of cov "pts" to back project
         COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
         MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
 
@@ -1056,8 +1063,10 @@ class controlJob(macrothread):
           counter += 1
           if hcube_global[key]['count']  <= MAX_SAMPLE_SIZE:
             cov_index = hcube_global[key]['elm']
+            hcube_global[key]['samplefactor'] = 1
           else:
             cov_index = np.random.choice(hcube_global[key]['elm'], MAX_SAMPLE_SIZE)
+            hcube_global[key]['samplefactor'] = len(hcube_global[key]['elm']) / MAX_SAMPLE_SIZE
           hcube_global[key]['idxlist'] = []
           for cov in cov_index:
             selected_hd_idx = np.random.choice(COVAR_SIZE, MAX_PT_PER_MATRIX).tolist()
@@ -1080,12 +1089,6 @@ class controlJob(macrothread):
         hcube_list = {}
 
         logging.info("Scanning current set of observed bins and finding all smallest with data (excluding largest 2)")
-        # bin_order = deque(sorted(counts_global.items(), key=lambda x: x[1]))
-        bin_list = list(counts_global.keys())
-        # for k, v in bin_order()[:-2]:
-        #   if v > 0:
-        #     bin_list.append(k)            
-        logging.info('Selected the following: %s', str(list(bin_list)))
         hcube_local = {}
 
         logging.info("=======================================================")
@@ -1095,7 +1098,6 @@ class controlJob(macrothread):
         overlap_hcube = {k: {} for k in hcube_global.keys()}
         TEST_TBIN = [(i,j) for i in range(2,5) for j in range(0,5)]
         for tbin in TEST_TBIN:
-        # for tbin in sorted(bin_list):
           logging.info("Project Global HCubes into local subspace for %s", str(tbin))
           # Load Vectors
           logging.info('Loading subspace and kernel for bin %s', str(tbin))
@@ -1117,6 +1119,14 @@ class controlJob(macrothread):
           for k in sorted(hcube_local[tbin].keys()):
             logging.info('    `%-9s`   #pts:%6d   density:%9.1f', 
               k, len(hcube_local[tbin][k]['elm']), hcube_local[tbin][k]['density'])
+
+          if self.filelog:
+            keys = hcube_local[tbin].keys()
+            A,B = tbin
+            self.filelog.info('local,%d_%d,keys,%s',A,B,','.join(keys))
+            self.filelog.info('local,%d_%d,count,%s',A,B,','.join([str(hcube_local[tbin][k]['count']) for k in keys]))
+            self.filelog.info('local,%d_%d,volume,%s',A,B,','.join([str(hcube_local[tbin][k]['volume']) for k in keys]))
+            self.filelog.info('local,%d_%d,density,%s',A,B,','.join([str(hcube_local[tbin][k]['density']) for k in keys]))          
           bench.mark('KDTreeBuild_%d_%d' % tbin)
 
           # Back-project all points to higher dimension <- as consolidatd trajectory
@@ -1202,6 +1212,9 @@ class controlJob(macrothread):
           for k, v in bipart.items():
             for edge in v:
               logging.info('A (%(num_A)4d pts) `%(hcA)-8s` <--- `%(hcB)9s`  (%(num_B)4d / %(num_proj)4d pts) B %(wgt_A)9.1f %(wgt1_B)9.1f %(wgt2_B)9.1f %(combW1)9.1f %(combW2)9.1f %(combW3)9.1f %(combW3)9.1f' % edge)
+              if self.filelog:
+                A,B = tbin
+                self.filelog.info('edge,%d_%d,%s,%s,%d',A,B,edge['hcA'],edge['hcB'],edge['num_proj'])
 
           # Prepare nodes for graph
           nA = set()
