@@ -64,7 +64,7 @@ def makebars(joblist):
   return barlist
 
 
-def drawjobs(barlist):
+def drawjobs(barlist, title, sizefactor=3):
   # Find IDle Time
   TIME_LOAD = 1
   TIME_ANL = 2
@@ -92,7 +92,7 @@ def drawjobs(barlist):
   # fig = plt.gcf()
   fig, ax = plt.subplots()
   fig.set_dpi(300)
-  fig.set_size_inches(18,12)
+  fig.set_size_inches(6*sizefactor, 4*sizefactor)
   for Y, X0, X1 in barlist:
     plt.hlines(Y, X0, X0+TIME_LOAD, color='brown', lw=2)
     plt.hlines(Y, X0+TIME_LOAD, X1-TIME_ANL, color='blue', lw=2)
@@ -112,7 +112,7 @@ def drawjobs(barlist):
   ax.set_ylim(0, maxnode+12)
 
   plt.legend(handles=patches, loc='center right')  
-  plt.savefig(SAVELOC + '/biggantt.png')
+  plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()  
 
 

@@ -82,7 +82,6 @@ class slurm:
       job = ','.join(['%d.batch'%i for i in jobid])
     else:
       job = str(jobid)
-    print('JOBLIST=', job)
     out = proc.check_output("sacct -n -P --delimiter=',' -j %s --format=jobid,exitcode,MaxVMSizeNode,elapsed,cputime,submit,eligible" \
      % job, shell=True)
     joblist = []
