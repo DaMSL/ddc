@@ -87,7 +87,7 @@ class slurm:
     joblist = []
     for line in out.decode('utf-8').strip().split('\n'):
       j, ex, n, t, c, sub, st = line.split(',')
-      joblist.append(dict(jobid=j[:-6], exitcode=ex, node=n, time=t, cpu=c, submit=sub, start=st))
+      joblist.append(dict(jobid=int(j[:-6]), exitcode=ex, node=n, time=t, cpu=c, submit=sub, start=st))
     return joblist
 
 

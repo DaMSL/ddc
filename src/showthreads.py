@@ -1,4 +1,4 @@
-import os
+import os, sys
 import re
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -26,10 +26,12 @@ def splicename(fname):
 
 def getjoblist(sourcedir='/home-1/bring4@jhu.edu/work/log/biased2_base/sim'):
   ls = os.listdir(sourcedir)
-  ls = [i for i in ls if i.startswith('sw')]
+  ls = [i for i in ls if (i.startswith('sw') or i.startswith('cw'))]
   jobidlist = []
   joblist = []
+  type_map = {}
   for logfile in sorted(ls):
+    mt_type = 'sim' if logfile.startswith('sw') else 'ctl'
     with open(sourcedir + '/' + logfile) as src:
       log = src.read().split('\n')
       for l in log:
@@ -37,9 +39,12 @@ def getjoblist(sourcedir='/home-1/bring4@jhu.edu/work/log/biased2_base/sim'):
           _, jobid = l.split(':')
           jobid = int(jobid.strip())
           jobidlist.append(jobid)
+          type_map[jobid] = mt_type
           break
-  return slurm.jobexecinfo(jobidlist)
-
+  job_data = slurm.jobexecinfo(jobidlist)
+  for i in range(len(job_data)):
+    job_data[i]['type'] = type_map[job_data[i]['jobid']]
+  return job_data
 
 
 def makenodelist(joblist):
@@ -60,7 +65,12 @@ def makebars(joblist):
     start_time = dparse.parse(job['start']).timestamp()
     X0 = int((start_time - begin_ts) // 60)
     X1 = int(X0 + timetomin(*job['time'].split(':')))
-    barlist.append((Y, X0, X1))
+    if job['type'] == 'ctl':
+      barlist.append((Y, X0, X1, 'g'))      
+    else:
+      barlist.append((Y, X0, X0+1, 'red'))
+      barlist.append((Y, X0+1, X1-2, 'blue'))
+      barlist.append((Y, X1-2, X1, 'red'))
   return barlist
 
 
@@ -68,23 +78,40 @@ def drawjobs(barlist, title, sizefactor=3):
   # Find IDle Time
   TIME_LOAD = 1
   TIME_ANL = 2
-  activecol = {True: 'green', False:'black'}
+  activecol = {True: 'red', False:'black'}
   end_ts = max(barlist, key=lambda x: x[2])[2]
   maxnode = max(barlist, key=lambda x: x[0])[0] + 10
-  catalog = [False for i in range(int(end_ts))]
-  catalog[0] = True
-  for Y, X0, X1 in barlist:
-    catalog[int(X0)] = True
+  catalog = [0 for i in range(int(end_ts))]
+  parallelism = [0 for i in range(int(end_ts))]
+  catalog[0] = 1
+  for Y, X0, X1, col in barlist:
+    catalog[int(X0)] += 1
     for i in range(int(X1)-TIME_ANL, int(X1)):
-      catalog[i] = True
+      catalog[i] += 1
+    for i in range(int(X0), int(X1)):
+      parallelism[i] += 1
   catbars = []
   lastactive = True
   c0 = 0
-  for ts, active in enumerate(catalog):
+  maxparallel = max(catalog)
+  for ts, numconn in enumerate(catalog):
+    active = (numconn > 0)
+    if not active:
+      usage = (0., 0., 0.)
+    else:
+      usage = (min(numconn/maxparallel + .15, 1.), .15, .15)
+    catbars.append((maxnode+10, ts, ts+1, usage))
     if active != lastactive:
-      catbars.append((maxnode, c0, ts, lastactive))
+      catbars.append((maxnode, c0, ts, activecol[lastactive]))
       c0 = ts
       lastactive = not lastactive
+
+  for ts, p in enumerate(parallelism):
+    if p == 0:
+      usage = (0., 0., 0.)
+    else:
+      usage = (0., 0., min(p/50., 1.))
+    catbars.append((maxnode+20, ts, ts+1, usage))    
 
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.cla()
@@ -93,23 +120,34 @@ def drawjobs(barlist, title, sizefactor=3):
   fig, ax = plt.subplots()
   fig.set_dpi(300)
   fig.set_size_inches(6*sizefactor, 4*sizefactor)
-  for Y, X0, X1 in barlist:
-    plt.hlines(Y, X0, X0+TIME_LOAD, color='brown', lw=2)
-    plt.hlines(Y, X0+TIME_LOAD, X1-TIME_ANL, color='blue', lw=2)
-    plt.hlines(Y, X1-TIME_ANL, X1, color='red', lw=2)
+  for Y, X0, X1, col in barlist:
+    linewdth = 4 if col == 'g' else 2
+    plt.hlines(Y, X0, X1, color=col, lw=linewdth)
+    # plt.hlines(Y, X0, X0+TIME_LOAD, color='brown', lw=2)
+    # plt.hlines(Y, X0+TIME_LOAD, X1-TIME_ANL, color='blue', lw=2)
+    # plt.hlines(Y, X1-TIME_ANL, X1, color='red', lw=2)
 
-  for Y, X0, X1, la in catbars:
-    plt.hlines(Y, X0, X1, color=activecol[la], lw=12)
+  try:
+    for Y, X0, X1, col in catbars:
+      plt.hlines(Y, X0, X1, color=col, lw=10)
+  except ValueError as e:
+    print(Y, X0, X1, col)
+    print(e)
   plt.xlabel("Total Wall Clock Time (in Minutes)")
   plt.ylabel("Node Number w/CATALOG node at the top")
 
+  ax.annotate('Sims running in parallel (Brighter blue => more parallel)', xy=(10, maxnode+22), fontsize=8)
+  ax.annotate('Catalog Usage (Brighter red => more used)', xy=(10, maxnode+12), fontsize=8)
+  ax.annotate('Catalog Usage (Binary Only)', xy=(10, maxnode+2), fontsize=8)
+
+
   # Custom Legend:
-  labels = {'green': 'Catalog_ACTIVE', 'black':'Catalog_IDLE', 'blue':'Simulation', 'red':'Catalog I/O'}
+  labels = {'g': 'Controller', 'r': 'Catalog_ACTIVE', 'black':'Catalog_IDLE', 'blue':'Simulation', 'red':'Catalog I/O'}
 
   patches = [mpatches.Patch(color=k, label=v) for k, v in labels.items()]
 
   ax.set_xlim(0, end_ts)
-  ax.set_ylim(0, maxnode+12)
+  ax.set_ylim(0, maxnode+25)
 
   plt.legend(handles=patches, loc='center right')  
   plt.savefig(SAVELOC + '/' + title + '.png')
