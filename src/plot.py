@@ -189,7 +189,7 @@ cdict = {
 mycmap = LinearSegmentedColormap('mycmap', cdict)
 plt.register_cmap(cmap=mycmap)
 
-def heatmap(data, rows, cols, title):
+def heatmap(data, rows, cols, title, vmax=None):
   # print("ROWS:", rows)
   # print("COLS:", cols)
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
@@ -198,7 +198,8 @@ def heatmap(data, rows, cols, title):
   fig, ax = plt.subplots()
   # heatmap = ax.matshow(data, interpolation='nearest')
   # fig.colorbar(heatmap)
-  heatmap = ax.pcolor(data, cmap='YlGnBu', vmin=0, vmax=300)
+  # heatmap = ax.pcolor(data, cmap='YlGnBu', vmin=0, vmax=300)
+  heatmap = ax.pcolormesh(data, cmap='YlGnBu')
   fig.colorbar(heatmap)
 
   # # put the major ticks at the middle of each cell
@@ -207,7 +208,10 @@ def heatmap(data, rows, cols, title):
 
   # # want a more natural, table-like display
   # # ax.invert_yaxis()
-
+  vmin = 0
+  if vmax is None:
+    vmax = 1. if np.max(data) <= 1. else np.max(data)
+      
   ax.set_xticklabels(rows, rotation='vertical', fontsize='small')
   ax.set_yticklabels(cols, fontsize='x-small')
   ax.set_xlim(0, len(rows))
@@ -215,9 +219,12 @@ def heatmap(data, rows, cols, title):
   plt.xlabel("Pts Projected FROM each Global HCube")
   plt.ylabel("Pts Projected INTO each HCube for %s"% title[-3:])
   # plt.legend()
+  fig.suptitle('Heatmap: '+title)
   plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
   plt.close()  
   plt.show()
+
+
 
 
 
