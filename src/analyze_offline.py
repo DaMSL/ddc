@@ -66,9 +66,9 @@ class offlineAnalysis(object):
     self.storeNPArray(self.centroid, 'centroid')
 
 
-  def analyze_dcd(self, key, num=0, force=False):
+  def analyze_job(self, key, force=False):
     logging.info("OFFLINE ANALYSIS FOR:  %s", key)
-    stat  = StatCollector('sim_naive', '%06d'%num)
+    # stat  = StatCollector('sim_naive', '%06d'%num)
     filelist = self.catalog.lrange('xid:filelist', 0, -1)
     job = self.catalog.hgetall('jc_' + key)
 
@@ -76,37 +76,39 @@ class offlineAnalysis(object):
       logging.info('This file has already been analyzed and FORCE is not on. Skipping')
       return
 
-    if self.centroid is None:
-      self.loadcentroids()
-
   # 1. Get the Traj
     traj = md.load(job['dcd'], top=job['pdb'])
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
   # 2. Update Catalog with HD points (TODO: cache this)
-    file_idx = self.append({'xid:filelist': [job['dcd']]})[0]
+    dcdfile = job['dcd']
+    self.analyze_dcd(traj)
+
+
+  def analyze_dcd(self, traj, dcdfile):
+    file_idx = self.append({'xid:filelist': dcdfile})[0]
     delta_xid_index = [(file_idx-1, x) for x in range(traj.n_frames)]
     global_idx_recv = self.append({'xid:reference': delta_xid_index})
     global_index = [x-1 for x in global_idx_recv]
-    catalog.hset('jc_' + key, 'xid:start', global_index[0])
-    catalog.hset('jc_' + key, 'xid:end', global_index[-1])
+    # catalog.hset('jc_' + key, 'xid:start', global_index[0])
+    # catalog.hset('jc_' + key, 'xid:end', global_index[-1])
 
   # 3. Update higher dimensional index
     # 1. Filter to Alpha atoms
     alpha = traj.atom_slice(deshaw.FILTER['alpha'])
 
+    if self.centroid is None:
+      self.loadcentroids()
+
     #  Set Weights
     cw = [.92, .94, .96, .99, .99]
     numLabels = len(self.centroid)
     numConf = len(traj.xyz)
-    stat.collect('numpts',numConf)
     rmsraw = calc_rmsd(alpha, self.centroid, weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', numConf, numLabels)
 
     # 2. Account for noise
-    noise = 10000
-    stepsize = 500 if 'interval' not in job else int(job['interval'])
-    nwidth = noise//(2*stepsize)
+    nwidth = 10
     noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
     rmslist = np.array([noisefilt(rmsraw, i) for i in range(numConf)])
 
@@ -142,11 +144,7 @@ class offlineAnalysis(object):
       pipe.rpush('observe:rms:%d_%d' % b, label_count[b])
     pipe.incr('observe:count')
     pipe.execute()
-    bincounts = [len(groupbystate[A]) for A in range(5)]
-    stat.collect('observe', bincounts)
-    stat.show()
-    stat.wipe()
-    
+   
 
 
 if __name__ == '__main__':
@@ -154,6 +152,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('-j', '--job')
   parser.add_argument('--jobfile')
+  parser.add_argument('-d', '--dcd')
   args = parser.parse_args()
 
   catalog = redis.StrictRedis(port=6381, decode_responses=True)
@@ -161,13 +160,16 @@ if __name__ == '__main__':
   task = offlineAnalysis(catalog)
 
   if args.job:
-    task.analyze_dcd(args.job)
+    task.analyze_job(args.job)
   elif args.jobfile:
     logging.info('Reading all jobs from: %s', args.jobfile)
     with open(args.jobfile) as src:
       for i, job in enumerate(src.read().strip().split('\n')):
         logging.info('Procesing job #%d  (%s)', i, job)
-        task.analyze_dcd(job, num=i)
+        task.analyze_job(job)
+  elif args.dcd:
+    traj = md.load(args.dcd, top=os.getenv('HOME')+'/work/jc/serial/k98564b78.pdb')
+    task.analyze_dcd(traj, args.dcd)
   else:
     logging.info("Need to provide a job or jobfile")
 

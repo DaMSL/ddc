@@ -12,7 +12,7 @@ SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
 
 ####  SCATTER PLOTS
 
-def scatter(X, Y, title, L=None):
+def scatter(X, Y, title, size=1, L=None):
   plt.cla()
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
@@ -60,12 +60,53 @@ def line(X, title):
   plt.savefig(loc + '/' + title + '.png')
   plt.close()  
 
-
-
 def linegraphcsv(X, title, nolabel=False):
   """ Plots line series for a csv list
   """
-  
+
+
+
+###### BAR PLOTS
+def bargraph(data, title, label=None):
+  colors = ['r','g','b','m','k']
+  plt.cla()
+  plt.clf()
+  nbars = len(data[0])
+  # bw = 1. / nbars
+  bw = 1
+  fig, ax = plt.subplots()
+  X = np.arange(nbars)
+  # for i in range(len(data)):
+  #   if label is None:
+  #     plt.bar(X, data[i], bw)
+  #   else:
+  #     plt.bar(X, data[i], bw, 
+  #       color=colors[i], label=label[i])
+  plt.bar(X, data[0], .4, color=colors[0], label=label[0])
+  plt.bar(X+.4, data[1], .4, color=colors[1], label=label[1])
+
+  ax.set_xlim(0, nbars)
+  ax.set_ylim(0, 1.)
+  plt.legend()
+  fig.suptitle('Sampling Distribution for bin (%s): Biased vs Reweight' % title)
+  fig.set_size_inches(16,6)
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/bar_' + title + '.png')
+  plt.close()  
+  plt.show()
+
+
+def bargraph_simple(data, title):
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  plt.bar(np.arange(len(data)), data)
+  plt.legend()
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/bar_' + title + '.png')
+  plt.close()  
+  plt.show()
+
 
 
 #### BIPARTITE GRAPH
@@ -206,8 +247,6 @@ def heatmap(data, rows, cols, title, vmax=None):
   ax.set_xticks(np.arange(len(rows))+.5)
   ax.set_yticks(np.arange(len(cols))+.5)
 
-  # # want a more natural, table-like display
-  # # ax.invert_yaxis()
   vmin = 0
   if vmax is None:
     vmax = 1. if np.max(data) <= 1. else np.max(data)
@@ -220,6 +259,8 @@ def heatmap(data, rows, cols, title, vmax=None):
   plt.ylabel("Pts Projected INTO each HCube for %s"% title[-3:])
   # plt.legend()
   fig.suptitle('Heatmap: '+title)
+  plt.tight_layout()
+  # fig.set_size_inches(3,6)
   plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
   plt.close()  
   plt.show()

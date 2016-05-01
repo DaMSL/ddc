@@ -1,6 +1,7 @@
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 import numpy as np
 import argparse
 
@@ -11,12 +12,11 @@ HOME = os.environ['HOME']
 SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
 
 TIME_CTL =  3
-DATA_PER_SIM_RATE = 33
-CTL_BATCH_SIZE = 20000
+DATA_PER_SIM_RATE = 30
 TIME_LOAD = 0
 TIME_ANL = 1
 NUM_TIME_STEPS=600   # in mins
-NUM_NODES = 30
+NUM_NODES = 100
 
 UNIT_COST_CATALOG = 1
 UNIT_COST_MTHREAD = 1
@@ -120,8 +120,9 @@ def drawjobs(sims, ctls, catalog_activity, title, sizefactor=3):
   plt.close()  
 
 
-def run(simtime, external_usage, drawgraph=False):
+def run(simtime, external_usage, resamp_rate, show=False, drawgraph=False):
   DB_SIZE = 1
+  resample_batch = resamp_rate * DATA_PER_SIM_RATE * simtime
   idlenodes = set([x for x in range(NUM_NODES)])
   runnodes  = set()
   usednodes = set()
@@ -129,7 +130,7 @@ def run(simtime, external_usage, drawgraph=False):
   data_proc = 0
   data_total = 0
   joblist = []
-  sim_manager = jobmaker('sim', simtime, int(.25*simtime))
+  sim_manager = jobmaker('sim', simtime, .4*simtime)
   ctl_manager = jobmaker('ctl', TIME_CTL, 1)   
   catalog_activity = []
   mthread_cost = 0
@@ -137,11 +138,12 @@ def run(simtime, external_usage, drawgraph=False):
   non_sim_overhead = 0
 
   #Init sim
-  print('Initializing simulation.')
-  for i in range(40):
+  # print('Initializing simulation.')
+  for i in range(int(resamp_rate * 1.2)):
     job_queue.append(sim_manager.getjob())
 
-  print('Execting:  %d Time Steps.' % NUM_TIME_STEPS)
+  # print('Executing:  %d Time Steps. TSim=%d min,  ResampRate=%d obs' % 
+  #   (NUM_TIME_STEPS, simtime, resample_batch))
   for t in range(NUM_TIME_STEPS):
     catalog_access = False
 
@@ -151,7 +153,7 @@ def run(simtime, external_usage, drawgraph=False):
         n = idlenodes.pop()
         usednodes.add(n)
 
-    # Allocate Resources
+    # Allocate Jobs -> Resources
     while len(idlenodes) > 0 and len(job_queue) > 0:
       nextnode = idlenodes.pop()
       nextjob  = job_queue.pop()
@@ -186,12 +188,12 @@ def run(simtime, external_usage, drawgraph=False):
             data_proc += simtime * DATA_PER_SIM_RATE
             data_total += simtime * DATA_PER_SIM_RATE
           else:
-            for i in range(25):
+            for i in range(resamp_rate):
               job_queue.append(sim_manager.getjob())
-            data_proc -= CTL_BATCH_SIZE
+            data_proc -= resample_batch
 
     # Check for a controller launch
-    if data_proc >= CTL_BATCH_SIZE:
+    if data_proc >= resample_batch:
       job_queue.append(ctl_manager.getjob())
 
     # TODO: stochastic change an external running nodes
@@ -206,37 +208,172 @@ def run(simtime, external_usage, drawgraph=False):
   n_idle, n_active = tuple(np.bincount(catalog_activity))
   cat_cost = len(catalog_activity) * UNIT_COST_CATALOG
   total_cost = mthread_cost + cat_cost
+  total_overhead = cat_cost + non_sim_overhead
 
   # Compile Stats:
-  print('\nCompiling Stats:')
-  print('  # Jobs Executed:       %5d' % len(joblist))
-  print('  Data Produced:       %7d' % data_total)
-  print('  WallClock Time:        %5d' % NUM_TIME_STEPS)
-  print('  Avg Sim Time:          %5d' % simtime)
-  print('  TOTAL Resource COST:   %5d' % (total_cost))
-  print('  Cost sims only:        %5d  (%4.1f%% of cost)' % (sim_cost, 100*sim_cost/total_cost))
-  print('  Cost non-sim mthread:  %5d  (%4.1f%% of cost)' % (non_sim_overhead, 100*non_sim_overhead/total_cost))
-  print('  Catalog Active:        %5d  (%4.1f%%)' % (n_active, 100*n_active/cat_cost))
-  print('  Catalog Idle :         %5d  (%4.1f%%)' % (n_idle, 100*n_idle/cat_cost))
-  print('  Catalog Cost:          %4.1f%%' % (100*cat_cost/(total_cost+cat_cost)))
-  print('  Catalog Waste:         %4.1f%%' % (100*n_idle/(total_cost+cat_cost)))
-
-  total_overhead = cat_cost + non_sim_overhead
-  print('  TOTAL OVERHEAD COST:   %5d  (%4.2f%%)  <-- Catalog Cost + Non-Sim Cost' % \
-   (total_overhead, 100*total_overhead/total_cost))
+  if show:
+    print('\nCompiling Stats:')
+    print('  # Jobs Executed:       %5d' % len(joblist))
+    print('  Data Produced:       %7d  (# Obs)' % data_total)
+    print('  Resampled every:     %7d  (Obs)' % resample_batch)
+    print('  WallClock Time:        %5d  (min, fixed)' % NUM_TIME_STEPS)
+    print('  Avg Sim Time:          %5d  (min)' % simtime)
+    print('  TOTAL Resource COST:   %5d' % (total_cost))
+    print('  Cost sims only:        %5d  (%4.1f%% of cost)' % (sim_cost, 100*sim_cost/total_cost))
+    print('  Cost non-sim mthread:  %5d  (%4.1f%% of cost)' % (non_sim_overhead, 100*non_sim_overhead/total_cost))
+    print('  Catalog Active:        %5d  min (%4.1f%%)' % (n_active, 100*n_active/cat_cost))
+    print('  Catalog Idle :         %5d  min (%4.1f%%)' % (n_idle, 100*n_idle/cat_cost))
+    print('  Catalog Cost:          %4.1f%%' % (100*cat_cost/(total_cost)))
+    print('  Catalog Waste:         %4.1f%%' % (100*n_idle/(total_cost)))
+    print('  TOTAL OVERHEAD COST:   %5d  (%4.2f%%)  <-- Catalog Cost + Non-Sim Cost' % \
+     (total_overhead, 100*total_overhead/total_cost))
 
   # Make the bars:
-  title = 'sim_test'
   if drawgraph:
+    title = 'sim_test'
     print('Visualizing simulation to: ', title)
     simlist = [(j['node'],j['start'],j['end']) for j in joblist if j['type']=='sim']
     ctllist = [(j['node'],j['start'],j['end']) for j in joblist if j['type']=='ctl']
     drawjobs(simlist, ctllist, catalog_activity, title, 1)
+
+  return dict(njobs=len(joblist), ndata=data_total, 
+    tcost=total_cost, scost=sim_cost, nscost=non_sim_overhead, overhead=total_overhead)
+
+
+
+def runmany(simtime, external_usage, resamp_rate, N=10):
+  print('Executing:  %d Time Steps. TSim=%d min, Usage=%3.1f  ResampRate=%d obs' % 
+    (NUM_TIME_STEPS, simtime, external_usage, resamp_rate))
+  data = dict(njobs=[], ndata=[],tcost=[], scost=[], nscost=[], overhead=[])
+  for i in range(N):
+    output = run(simtime, external_usage, resamp_rate)
+    for k, v in output.items():
+      data[k].append(v)
+  return {k: (np.mean(v), np.std(v)) for k, v in data.items()}
+
+
+def simusage(resamp=20):
+  plt.cla()
+  plt.clf()
+  rsamp    = (10, 20, 25, 30, 50)
+  markers = ['^', 'd', 'o', '*', 's']
+  sim_vals = (5, 150, 2)
+  use    = [.7, .9, .95]
+  colors = ['r', 'g', 'b']
+  labels = ['Light External Usage', 'Moderate External Usage', 'Heavy External Usage']
+  X = [i for i in range(*sim_vals)]
+  Ytime = {}
+  Ycost = {}
+  for r in rsamp:
+    Ytime[r] = {}
+    Ycost[r] = {}
+    for u, c, l in zip(use, colors, labels):
+      Ytime[r][l] = []
+      Ycost[r][l] = []
+      for i in range(*sim_vals):
+        d = runmany(i, u, r, N=3)
+        Ytime[r][l].append(d['ndata'][0]/NUM_TIME_STEPS)
+        Ycost[r][l].append(d['ndata'][0]/d['tcost'][0])
+  patches = [mpatches.Patch(color=i[0], label=i[1]) for i in zip(colors, labels)]
+  patches.extend([mlines.Line2D([],[],color='k', marker=i[0], label='Resample: %d Sims'%i[1]) \
+    for i in zip(markers, rsamp)])
+
+  for r, m in zip(rsamp, markers):
+    for l, c in zip(labels, colors):
+      plt.scatter(X, Ytime[r][l], c=c, marker=m, lw=0)
+      for i in range(1, len(X)):
+        plt.plot((X[i-1], X[i]), (Ytime[r][l][i-1], Ytime[r][l][i]), c=c)
+      #   fit = np.polyfit(X[i-1:i+1],Ytime[r][l][i-1:i+1],1)
+      #   y_fn = np.poly1d(fit)
+      #   y = (y_fn(X[i-1]), y_fn(X[i+1]))
+      #   x = (X[i-1], X[i+1])
+      #   plt.plot(x,y, c=c)
+  plt.ylabel('Data Observations Generated Per Wall-Clock Minute (more is better)')
+  plt.xlabel('Single Simulation Length')
+  plt.xlim(0, 180)
+  plt.ylim(0, 1000)
+  plt.title('Effectiveness:  Avg Data Generated Per Minute')
+  plt.legend(handles=patches, loc='lower right')  
+  plt.savefig(SAVELOC + '/effectiveness.png')
+  plt.close()
+
+  for r, m in zip(rsamp, markers):
+    for l, c in zip(labels, colors):
+      plt.scatter(X, Ycost[r][l], c=c, marker=m, lw=0)
+      for i in range(1, len(X)):
+        plt.plot((X[i-1], X[i]), (Ycost[r][l][i-1], Ycost[r][l][i]), c=c)
+      # for i in range(1, len(X)-1, 2):
+      #   fit = np.polyfit(X[i-1:i+1],Ycost[r][l][i-1:i+1],1)
+      #   y_fn = np.poly1d(fit)
+      #   y = (y_fn(X[i-1]), y_fn(X[i+1]))
+      #   x = (X[i-1], X[i+1])
+      #   plt.plot(x,y, c=c)  
+  plt.ylabel('Data Observations Generated Per Unit_Cost (more is better)')
+  plt.xlabel('Single Simulation Length')
+  plt.xlim(0, 180)
+  plt.ylim(0, 35)
+  plt.title('Efficiency:  Amt of Data Generated Per Unit Cost')
+  plt.legend(handles=patches, loc='lower right')  
+  plt.savefig(SAVELOC + '/efficiency.png')
+  plt.close()
+
+
+
+def sim_byrsamp(resamp=20):
+  plt.cla()
+  plt.clf()
+  rsamp  = (10, 20, 25, 30, 50)
+  sim_vals = (5, 150, 2)
+  # use    = [.5, .85, .95]
+  use = .85
+  colors = ['r', 'g', 'b', 'c', 'm']
+  X = [i for i in range(*sim_vals)]
+  Ytime = {}
+  Ycost = {}
+  for r in rsamp:
+    Ytime[r] = []
+    Ycost[r] = []
+    for i in range(*sim_vals):
+      d = runmany(i, use, r, N=3)
+      Ytime[r].append(d['ndata'][0]/NUM_TIME_STEPS)
+      Ycost[r].append(d['ndata'][0]/d['tcost'][0])
+  patches = [mpatches.Patch(color=i[0], label='Resample Rate: %d Sims'%i[1]) 
+    for i in zip(colors, rsamp)]
+
+  for r, c in zip(rsamp, colors):
+    plt.plot(X, Ytime[r], c=c)
+    # for i in range(1, len(X)):
+    #   plt.plot((X[i-1], X[i]), (Ytime[r][i-1], Ytime[r][i]), c=c)
+  plt.ylabel('Data Observations Generated Per Wall-Clock Minute (more is better)')
+  plt.xlabel('Single Simulation Length')
+  plt.xlim(0, 180)
+  plt.ylim(0, 1000)
+  plt.title('Effectiveness:  Avg Data Generated Per Minute')
+  plt.legend(handles=patches, loc='lower right')  
+  plt.savefig(SAVELOC + '/effectiveness_fixedusage.png')
+  plt.close()
+
+  for r, c in zip(rsamp, colors):
+    plt.plot(X, Ycost[r], c=c)
+    # for i in range(1, len(X)):
+    #   plt.plot((X[i-1], X[i]), (Ycost[r][i-1], Ycost[r][i]), c=c)
+  plt.ylabel('Data Observations Generated Per Unit_Cost (more is better)')
+  plt.xlabel('Single Simulation Length')
+  plt.xlim(0, 180)
+  plt.ylim(0, 35)
+  plt.title('Efficiency:  Amt of Data Generated Per Unit Cost')
+  plt.legend(handles=patches, loc='lower right')  
+  plt.savefig(SAVELOC + '/efficiency_fixedusage.png')
+  plt.close()
+
+
+
 
 
 if __name__=='__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('simtime', type=int)
   parser.add_argument('-u', '--usage', type=float, default=.5)
+  parser.add_argument('-r', '--resamp', type=int, default=20)
   args = parser.parse_args()
-  run(args.simtime, args.usage)   
+  run(args.simtime, args.usage, args.resamp)   

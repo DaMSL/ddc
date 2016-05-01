@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/osvc-cache-%j.log
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
-#SBATCH --partition=lrgmem
+#SBATCH --partition=lrgmem,unlimited
 
 
 module load namd

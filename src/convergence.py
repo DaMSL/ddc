@@ -59,7 +59,7 @@ OBS_PER_NS = 1000
 def recheckStats_cumulative(ts, cumulative=False):
   TIMESTEP = ts * OBS_PER_NS
   cuml = {b: [] for b in ab}
-  cnts={b: 0 for b in ab}
+  cnts = {b: 0 for b in ab}
   i = 0
   total = [0 for i in range(5)]
   print('Collecting data...')
@@ -69,6 +69,7 @@ def recheckStats_cumulative(ts, cumulative=False):
         A, B = b
         if total[A] == 0:
           print('No DATA for state %d  at ns interval:  %d' % (A, i/OBS_PER_NS))
+          cuml[b].append(0)
         else:
           cuml[b].append(cnts[b]/total[A])
     A, B = eval(obs[i])
@@ -81,7 +82,7 @@ def recheckStats_cumulative(ts, cumulative=False):
     cuml[b].append(cnts[b]/total[A])
   bs_all = {b: [] for b in ab}
   for b in ab:
-    bs_all[b] = [bootstrap_std(cuml[b][:i], interval=.9) for i in range(10, len(cuml[b]))]
+    bs_all[b] = [bootstrap_std(cuml[b][:i], interval=.9) for i in range(0, len(cuml[b]))]
   bs_ci = {b: [] for b in ab}
   bs_sd = {b: [] for b in ab}
   bs_mn = {b: [] for b in ab}
@@ -122,11 +123,10 @@ def postgen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False
       for b in ab:
         A, B = b
         if total[A] == 0:
-          print('No DATA for state %d  at ns interval:  %d' % (A, i/OBS_PER_NS))
           if len(bootstrap[b]) > 0:
             bootstrap[b].append(bootstrap[b][-1])
           else:
-            bootstrap[b].append(0)
+            bootstrap[b].append(1)
         else:
           bootstrap[b].append(cnts[b]/total[A])
       if not cumulative:
@@ -362,6 +362,59 @@ def histogram(slist=None, cumulative=False, STEPSIZE=50):
 
 def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
   for e in data.keys():
+    print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
+    # data[e]['conv'] = [[] for i in range(5)]
+    data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
+    data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
+    bootstrap = postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
+    data[e]['boot'] = postcalc_bootstraps(bootstrap)
+    for A in range(5):
+      aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      for B in range(5):
+        for k in range(len(data[e]['boot']['ci'][(A, B)])):
+          if A == B:
+            aggW[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+          else:
+            aggT[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+      # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
+      data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
+      data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
+  return data
+
+
+def plot_conv_tw(data, STEPSIZE=25):
+  for A in [0, 1, 2, 3, 4]:
+    print('Plotting graphs for state %d' % A)
+    plt.clf()
+    ax = plt.subplot(111)
+    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+    plt.title('Convergence for State %d (WELL)'% A)
+    plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
+    ax.set_xlim(75,600)
+    plt.legend()
+    plt.savefig(SAVELOC + 'conv-well-%s.png' % (A))
+    plt.close()
+    plt.clf()
+    ax = plt.subplot(111)
+    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+    plt.title('Convergence for State %d (Transitions)'% A)
+    ax.set_xlim(75,600)
+    plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
+    plt.legend()
+    plt.savefig(SAVELOC + 'conv-tran-%s.png' % (A))
+    plt.close()
+
+
+def convtw_binary(data, slist=None, cumulative=False, STEPSIZE=25):
+  for e in data.keys():
+    print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
     # data[e]['conv'] = [[] for i in range(5)]
     data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
     data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
@@ -382,16 +435,16 @@ def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
   statelist = [0, 1, 2, 3, 4] if slist is None else slist
 
   for A in [0, 1, 2, 3, 4]:
+    print('Plotting graphs for state %d' % A)
     plt.clf()
     ax = plt.subplot(111)
     maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
     for e in data.keys():
       X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-      print(len(X))
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    # plt.title('Convergence for State %d', A)
+    plt.title('Convergence for State %d (WELL)'% A)
     plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
-    ax.set_xlim(75,500)
+    ax.set_xlim(75,600)
     plt.legend()
     plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
     plt.close()
@@ -400,26 +453,23 @@ def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
     maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
     for e in data.keys():
       X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-      print(len(X))
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    # plt.title('Convergence for State %d', A)
-    ax.set_xlim(75,500)
+    plt.title('Convergence for State %d (Transitions)'% A)
+    ax.set_xlim(75,600)
     plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
     plt.legend()
     plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
     plt.close()
   return data
 
-
-def Convergence5():
+def Convergence5(stepsize):
   data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
-  data = {'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
   data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
-  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
-  # data['serial']['obs'] = s.lrange('label:rms', 0, -1)
+  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[25000:]
+  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
   data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
   data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
-  return convtw(data)
+  return convtw(data, STEPSIZE=stepsize)
 
 def Elasticity():
   data = {k: {} for k in elas.keys()}
