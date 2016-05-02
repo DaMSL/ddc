@@ -11,7 +11,7 @@ from datatools.rmsd import *
 from mdtools.deshaw import *
 
 HOST = 'localhost'
-PORT = 6385
+PORT = 6384
 PDB_PROT   = RAW_ARCHIVE + '/bpti-prot.pdb'
 topo = md.load(PDB_PROT)
 filt = topo.top.select_atom_indices('alpha')
@@ -51,8 +51,10 @@ def projgraph2D(data, stride, title, L=None):
 
 
 # POST CALC Convariance and sort by origin bin
-covar = {b:[] for b in ab}
-for num, tr in enumerate(filelist[:100]):
+cov = {b:[] for b in ab}
+covar = []
+avgxyz = []
+for num, tr in enumerate(filelist[:1000]):
   if num % 50 == 0:
     print ('NUM:  ', num)
   pdb = tr.replace('dcd', 'pdb')
@@ -62,12 +64,38 @@ for num, tr in enumerate(filelist[:100]):
   traj = md.load(tr, top=pdb)
   if traj.n_frames < 1000:
     continue
-  jc = r.hgetall('jc_' + os.path.splitext(os.path.basename(tr))[0])
-  srcbin.append(jc['src_bin'])
-  A, B, = eval(jc['src_bin'])
-  traj = md.load(tr, top=pdb)
   traj = traj.atom_slice(FILTER['alpha'])  
-  covar[(A, B)].extend(calc_covar(traj.xyz, .2, 1, .1))
+  covar.extend(DR.calc_covar(traj.xyz, .2, 1, .05))
+  for i in range(25, len(traj.xyz), 50):
+    if i+200 > len(traj.xyz):
+      break
+    avgxyz.append(np.mean(traj.xyz[i:i+50], axis=0))
+
+covar = np.array(covar)
+variance = np.array([np.diag(i) for i in covar])
+avgxyz = np.array(avgxyz).reshape(len(avgxyz), 174)
+
+
+st=dt.datetime.now()
+gmm.fit(X3)
+print((dt.datetime.now()-st).total_seconds())
+
+lowest_bic = np.infty
+bic = []
+n_components_range = range(1, 7)
+cv_types = ['spherical', 'tied', 'diag', 'full']
+for cv_type in cv_types:
+  for n_components in n_components_range:
+    # Fit a mixture of Gaussians with EM
+    gmm = GMM(n_components=n_components, covariance_type=cv_type)
+    gmm.fit(X3)
+    bic.append(gmm.bic(X3))
+    if bic[-1] < lowest_bic:
+      lowest_bic = bic[-1]
+      best_gmm = gmm
+
+  cov[(A, B)].extend(calc_covar(traj.xyz, .2, 1, .1))
+
 
 COV = np.array(covar)
 DEcov = np.load('data/covar_1ns.npy')

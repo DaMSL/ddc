@@ -17,9 +17,9 @@ def scatter(X, Y, title, size=1, L=None):
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   if L is None:
-    plt.scatter(X, Y, s=1, lw=0)
+    plt.scatter(X, Y, s=size, lw=0)
   else:
-    plt.scatter(X, Y, c=L, s=1, lw=0)
+    plt.scatter(X, Y, c=L, s=size, lw=0)
   plt.ylabel(title)
   # plt.legend()
   plt.savefig(loc + '/' + title + '.png')

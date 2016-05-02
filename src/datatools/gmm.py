@@ -28,4 +28,28 @@ def calc_gmm(xyz, N, ctype='full', title=None):
 # with open('gmm_alpha.dat', 'wb') as pout:
 #    pout.write(pickle.dumps(gmm))
 
+cov = np.array(cov)
+variance = np.array([np.diag(i) for i in cov])
+avg = np.array(avg).reshape(len(avg), 174)
 
+cca = CCA(n_components=3)
+cca.fit(avg, variance)
+X3,Y3 = cca.transform(avg, variance)
+
+st=dt.datetime.now()
+gmm.fit(X3)
+print((dt.datetime.now()-st).total_seconds())
+
+lowest_bic = np.infty
+bic = []
+n_components_range = range(1, 7)
+cv_types = ['spherical', 'tied', 'diag', 'full']
+for cv_type in cv_types:
+  for n_components in n_components_range:
+    # Fit a mixture of Gaussians with EM
+    gmm = GMM(n_components=n_components, covariance_type=cv_type)
+    gmm.fit(X3)
+    bic.append(gmm.bic(X3))
+    if bic[-1] < lowest_bic:
+      lowest_bic = bic[-1]
+      best_gmm = gmm
