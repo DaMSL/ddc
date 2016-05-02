@@ -302,7 +302,7 @@ class simulationJob(macrothread):
 
     # 3. Calc RMS for each conform to all centroids
     # Heuristic centroid weight (TODO: make this trained)
-    cw = [.92, .94, .96, .99, .99]
+    cw = [.94, .95, .97, .99, .99]
 
     numLabels = len(self.data['centroid'])
     numConf = len(traj.xyz)
@@ -311,15 +311,16 @@ class simulationJob(macrothread):
     # 4. Account for noise : Simple spatial mean filter over a small window
     #    Where size of window captures extent of noise 
     #    (e.g. 10000fs window => motions under 10ps are considered "noisy")
-    noise = self.data['obs_noise']
-    stepsize = 500 if 'interval' not in job else int(job['interval'])
-    nwidth = noise//(2*stepsize)
-    noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
-    rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
+    # noise = self.data['obs_noise']
+    # stepsize = 500 if 'interval' not in job else int(job['interval'])
+    # nwidth = noise//(2*stepsize)
+    # noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+    # rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
 
     # 5. Calculate the RMSD for each filtered point to 5 pre-determined centroids
     # Notes: Delta_S == rmslist
-    rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
+    # rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
+    rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', \
       numConf, numLabels)
 
