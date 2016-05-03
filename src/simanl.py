@@ -7,6 +7,7 @@ import shutil
 import time
 import fcntl
 import logging
+from datetime import datetime as dt
 import math
 from collections import namedtuple, deque
 
@@ -101,7 +102,12 @@ class simulationJob(macrothread):
       self.job_id = args.useid
 
   def term(self):
-    return False
+    numobs = self.catalog.llen('label:rms')
+    if numobs > 150000:
+      logging.info('Terminating at %d observations at %s', numobs, str(dt.now()))
+      return True
+    else:
+      return False
 
   def split(self):
 

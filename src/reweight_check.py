@@ -283,17 +283,19 @@ class reweightJob(object):
       # OW/ PROJECT NEW PTS ONLY -- BUT RETAIN grouped index of all points
       logging.info('Building Global KD Tree over Covar Subspace with %d data pts', len(subspace_covar_pts))
       global_kdtree = KDTree(250, maxdepth=8, data=subspace_covar_pts, method='middle')
-      hcube_global = global_kdtree.getleaves()
+  
+
+      # hcube_global = global_kdtree.getleaves()
 
       # FOR DEBUGGING -- USE ONLY 3 GLOBAL HCUBES
-      # hcube_global_ALL = global_kdtree.getleaves()
-      # hcube_global = {}
-      # num = 0
-      # for k, v in hcube_global_ALL.items():
-      #   hcube_global[k] = v
-      #   num += 1
-      #   if num == 3:
-      #     break
+      hcube_global_ALL = global_kdtree.getleaves()
+      hcube_global = {}
+      num = 0
+      for k, v in hcube_global_ALL.items():
+        hcube_global[k] = v
+        num += 1
+        if num == 5:
+          break
 
       # hcube_global = global_kdtree.getleaves()
       logging.info('Global HCubes: Key  Count  Volume  Density  (NOTE DEBUGGING ONLY 3 USED)')
@@ -312,9 +314,10 @@ class reweightJob(object):
       s = sorted(hcube_global.items(), key=lambda x: x[1]['count'])
       hcube_global = {x[0]: x[1] for x in s}
 
-      MAX_SAMPLE_SIZE   = 1000   # Max # of cov "pts" to back project
+      MAX_SAMPLE_SIZE   = 100   # Max # of cov "pts" to back project
       COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
       MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
+
 
       counter = 0
       for key in hcube_global.keys():
@@ -336,6 +339,19 @@ class reweightJob(object):
         logging.debug('Back Projected %d points to HD space: %s', 
           len(hcube_global[key]['idxlist']), str(hcube_global[key]['alpha']))
 
+      logging.info('Calculating all HD Distances')
+      dist_hd = {}
+      dist_ld = {}
+      for key in hcube_global.keys():
+        T = hcube_global[key]['alpha'].xyz
+        N = len(T)
+        dist_hd[key] = np.zeros(shape=(N, N))
+        dist_ld[key] = {}
+        for A in range(0, N):
+          dist_hd[key][A][A] = 0
+          for B in range(A+1, N):
+            dist_hd[key][A][B] = dist_hd[key][B][A] = LA.norm(T[A] - T[B])
+        
 
       # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
       reservoir = ReservoirSample('rms', self.catalog)
@@ -401,7 +417,47 @@ class reweightJob(object):
             overlap_hcube[key][tbin][hcube]['num_projected'] += 1
           for k, v in sorted(overlap_hcube[key][tbin].items()):
             logging.debug('          to ==> Local HCube `%-9s`: %6d points', k, v['num_projected'])
+          logging.info('Calculating Lower Dimensional Distances')
+          N = len(cov_proj_pca)
+          dist_ld[key][tbin] = np.zeros(shape=(N, N))
+          print('LD Dist for: ', tbin, key)
+          for A in range(0, N):
+            for B in range(A+1, N):
+              dist_ld[key][tbin][A][B] = dist_ld[key][tbin][B][A] = LA.norm(cov_proj_pca[A] - cov_proj_pca[B])
 
+      def maxcount(x):
+        y={}
+        for i in x:
+          y[i] = 1 if i not in y else y[i]+1
+        return max(y.values())
+
+      print('%% of Points Per HCube with same NN subspaces (e.g. 20%% of points have same NN in 5 sub-spaces')
+      argmin_nonzero = lambda x: np.argmin([(i if i>0 else np.inf) for i in x])
+      for key in hcube_global.keys():
+        # logging.info('Showing MIN / MAX for points from HCube %s:', key)
+        minA = {}; maxA={}
+        for n in range(len(dist_hd[key])) :
+          minA[n]=[] ; maxA[n]=[]
+          for tbin in TEST_TBIN:
+            if tbin not in dist_ld[key].keys():
+              continue
+              minA[n].append(0)
+              maxA[n].append(0)          
+            else:
+              minA[n].append(argmin_nonzero(dist_ld[key][tbin][n]))
+              maxA[n].append(np.argmax(dist_ld[key][tbin][n]))          
+        numsame = np.zeros(len(dist_ld[key].keys())+1)
+        for n in range(len(dist_hd[key][n])):
+          minH = argmin_nonzero(dist_hd[key][n])
+          maxH = np.argmax(dist_hd[key][n])
+          minmax = ['%2d/%-2d'%i for i in zip(minA[n], maxA[n])]
+          numsamepair = maxcount(minA[n])
+          numsame[numsamepair] += 1
+          # print('%3d'%n, '%2d/%-2d  '%(minH, maxH), '%s' % ' '.join(minmax), '   [%d]'%numsamepair)
+        print(' '.join(['%4.1f%%'%i for i in (100* (numsame/np.sum(numsame)))]))
+
+      print('Stopping HERE!')
+      sys.exit(0)
       #  GAMMA FUNCTION EXPR # 8
       gamma1 = lambda a, b : (a * b)
       gamma2 = lambda a, b : (a + b) / 2

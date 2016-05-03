@@ -5,7 +5,9 @@ import sys
 import os
 import sys
 import math
+
 import json
+from datetime import datetime as dt
 from random import choice, randint
 from collections import namedtuple, deque, OrderedDict
 from threading import Thread
@@ -109,8 +111,12 @@ class controlJob(macrothread):
 
 
     def term(self):
-      # For now
-      return False
+      numobs = self.catalog.llen('label:rms')
+      if numobs > 150000:
+        logging.info('Terminating at %d observations at %s', numobs, str(dt.now()))
+        return True
+      else:
+        return False
 
     def split(self):
 

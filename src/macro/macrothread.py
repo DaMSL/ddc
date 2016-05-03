@@ -313,7 +313,7 @@ class macrothread(object):
     # Check for termination  
     if self.term():
       logging.info('TERMINATION condition for ' + self.name)
-      # sys.exit(0)
+      return 0
 
     # Set Elasticity Policy
     self.configElasPolicy()
