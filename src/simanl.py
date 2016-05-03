@@ -104,7 +104,7 @@ class simulationJob(macrothread):
   def term(self):
     numobs = self.catalog.llen('label:rms')
     if numobs > 150000:
-      logging.info('Terminating at %d observations at %s', numobs, str(dt.now()))
+      logging.info('Terminating at %d observations', numobs)
       return True
     else:
       return False

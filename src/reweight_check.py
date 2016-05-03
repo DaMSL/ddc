@@ -51,16 +51,20 @@ class reweightJob(object):
       self.cache_miss = 0
       self.catalog = redis.StrictRedis(host=host, port=port, decode_responses=True)
 
-      self.filelog = logging.getLogger(name)
-      self.filelog.setLevel(logging.INFO)
-      filename = 'ctl.log'
-      fh = logging.FileHandler(filename)
-      fh.setLevel(logging.INFO)
-      fmt = logging.Formatter('%(message)s')
-      fh.setFormatter(fmt)
-      self.filelog.addHandler(fh)
-      self.filelog.propagate = False
-      logging.info("File Logging is enabled. Logging some output to: %s", filename)
+      FILELOG = True
+      if FILELOG:
+        self.filelog = logging.getLogger(name)
+        self.filelog.setLevel(logging.INFO)
+        filename = 'ctl.log'
+        fh = logging.FileHandler(filename)
+        fh.setLevel(logging.INFO)
+        fmt = logging.Formatter('%(message)s')
+        fh.setFormatter(fmt)
+        self.filelog.addHandler(fh)
+        self.filelog.propagate = False
+        logging.info("File Logging is enabled. Logging some output to: %s", filename)
+      else:
+        self.filelog = None
 
 
     def backProjection(self, index_list):
@@ -212,6 +216,13 @@ class reweightJob(object):
       num_pts = len(labeled_pts_rms)
       logging.debug('##NUM_OBS: %d', num_pts)
 
+      TEST_TBIN = [(i,j) for i in range(2,5) for j in range(5)]
+      MAX_SAMPLE_SIZE   = 30   # Max # of cov "pts" to back project
+      COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
+      MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
+
+
+
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
 
@@ -314,10 +325,6 @@ class reweightJob(object):
       s = sorted(hcube_global.items(), key=lambda x: x[1]['count'])
       hcube_global = {x[0]: x[1] for x in s}
 
-      MAX_SAMPLE_SIZE   = 100   # Max # of cov "pts" to back project
-      COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
-      MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
-
 
       counter = 0
       for key in hcube_global.keys():
@@ -367,7 +374,11 @@ class reweightJob(object):
       logging.info("=======================================================\n")
       projected_bin = []
       overlap_hcube = {k: {} for k in hcube_global.keys()}
-      TEST_TBIN = [(i,j) for i in range(2,5) for j in range(0,5)]
+
+      projlist = []
+      for key in sorted(hcube_global.keys()):
+        for i in range(len(hcube_global[key]['alpha'].xyz)):
+          projlist.append([])
       for tbin in TEST_TBIN:
         logging.info("Project Global HCubes into local subspace for %s", str(tbin))
         # Load Vectors
@@ -401,20 +412,27 @@ class reweightJob(object):
 
         n_total = 0
         logging.debug('Global Hcubes to Project (%d):  %s', len(hcube_global.keys()), str(hcube_global.keys()))
-        for key, hc in hcube_global.items():
+        
+        pnum = 0
+        for key in sorted(hcube_global.keys()):
           overlap_hcube[key][tbin] = {}
-          cov_proj_pca = kpca.project(hc['alpha'].xyz)
+          cov_proj_pca = kpca.project(hcube_global[key]['alpha'].xyz)
+
           logging.debug('PROJECT: Global HCube `%-9s` (%d pts) ==> Local KDTree %s  ', 
             key, len(cov_proj_pca), str(tbin))
           for i, pt in enumerate(cov_proj_pca):
             hcube = kdtree.probe(pt, probedepth=9)
-            # NOTE: Retaining count of projected pts. Should we track individual pts???
+            # NOTE: Retaining count of projected pts. Should we track individual pts -- YES (trying)
             if hcube not in overlap_hcube[key][tbin]:
               overlap_hcube[key][tbin][hcube] = {
                   'idxlist': hcube_local[tbin][hcube]['elm'],
                   'wgt': hcube_local[tbin][hcube]['density'], 
                   'num_projected': 0}
             overlap_hcube[key][tbin][hcube]['num_projected'] += 1
+
+            projlist[pnum].append(hcube)
+            pnum += 1
+
           for k, v in sorted(overlap_hcube[key][tbin].items()):
             logging.debug('          to ==> Local HCube `%-9s`: %6d points', k, v['num_projected'])
           logging.info('Calculating Lower Dimensional Distances')
@@ -425,36 +443,108 @@ class reweightJob(object):
             for B in range(A+1, N):
               dist_ld[key][tbin][A][B] = dist_ld[key][tbin][B][A] = LA.norm(cov_proj_pca[A] - cov_proj_pca[B])
 
-      def maxcount(x):
-        y={}
-        for i in x:
-          y[i] = 1 if i not in y else y[i]+1
-        return max(y.values())
+      sets = {}
+      proj_bin_list = []
+      for tbin in TEST_TBIN:
+        if tbin not in hcube_local:
+          continue
+        proj_bin_list.append(tbin)
+        sets[tbin] = {k: set() for k in hcube_local[tbin].keys()}
+      for n, proj in enumerate(projlist):
+        for i, tbin in enumerate(proj_bin_list):
+          sets[tbin][proj[i]].add(n)
+          if self.filelog:
+            self.filelog.info('%d,%s', n, ','.join(proj))
 
-      print('%% of Points Per HCube with same NN subspaces (e.g. 20%% of points have same NN in 5 sub-spaces')
-      argmin_nonzero = lambda x: np.argmin([(i if i>0 else np.inf) for i in x])
-      for key in hcube_global.keys():
-        # logging.info('Showing MIN / MAX for points from HCube %s:', key)
-        minA = {}; maxA={}
-        for n in range(len(dist_hd[key])) :
-          minA[n]=[] ; maxA[n]=[]
-          for tbin in TEST_TBIN:
-            if tbin not in dist_ld[key].keys():
-              continue
-              minA[n].append(0)
-              maxA[n].append(0)          
-            else:
-              minA[n].append(argmin_nonzero(dist_ld[key][tbin][n]))
-              maxA[n].append(np.argmax(dist_ld[key][tbin][n]))          
-        numsame = np.zeros(len(dist_ld[key].keys())+1)
-        for n in range(len(dist_hd[key][n])):
-          minH = argmin_nonzero(dist_hd[key][n])
-          maxH = np.argmax(dist_hd[key][n])
-          minmax = ['%2d/%-2d'%i for i in zip(minA[n], maxA[n])]
-          numsamepair = maxcount(minA[n])
-          numsame[numsamepair] += 1
-          # print('%3d'%n, '%2d/%-2d  '%(minH, maxH), '%s' % ' '.join(minmax), '   [%d]'%numsamepair)
-        print(' '.join(['%4.1f%%'%i for i in (100* (numsame/np.sum(numsame)))]))
+      print('Checking all 2-Way Joins')
+      join2 = []
+      for a in range(0, len(proj_bin_list)-1):
+        tA = proj_bin_list[a]
+        for b in range(a+1, len(proj_bin_list)):
+          tB = proj_bin_list[b]
+          join_ss = set((tA, tB))
+          for kA, vA in sets[tA].items():
+            for kB, vB in sets[tB].items():
+              join_hc = set((kA, kB))
+              inter = vA & vB
+              if len(inter) > 0:
+                join2.append((join_ss, join_hc, inter))
+
+      print('Checking all 3-Way Joins')
+      join3 = []
+      checked = []
+      for a in range(0, len(join2)-1):
+        sA, hA, vA = join2[a]
+        for b in range(a+1, len(join2)):
+          sB, hB, vB = join2[b]
+          if sA == sB:
+            continue
+          ss, hc = sA | sB, hA | hB
+          if (ss, hc) in checked[-10:]:
+            continue
+          checked.append((ss, hc))
+          inter = vA & vB
+          if len(inter) > 0:
+            join3.append((ss, hc, inter))
+
+
+      print('Checking all 4-Way Joins')
+      join4 = []
+      checked = []
+      for a in range(0, len(join3)-1):
+        sA, hA, vA = join3[a]
+        for b in range(a+1, len(join3)):
+          sB, hB, vB = join3[b]
+          if sA == sB:
+            continue
+          ss, hc = sA | sB, hA | hB
+          if (ss, hc) in checked[-10:]:
+            continue
+          checked.append((ss, hc))
+          inter = vA & vB
+          if len(inter) > 0:
+            join4.append((ss, hc, inter))
+
+      if self.filelog:
+        for i in join2:
+          self.filelog.info('%s', str(i))
+        for i in join3:
+          self.filelog.info('%s', str(i))
+        for i in join4:
+          self.filelog.info('%s', str(i))
+
+      DO_MIN_CHECK = False
+      if DO_MIN_CHECK:
+        def maxcount(x):
+          y={}
+          for i in x:
+            y[i] = 1 if i not in y else y[i]+1
+          return max(y.values())
+
+        print('%% of Points Per HCube with same NN subspaces (e.g. 20%% of points have same NN in 5 sub-spaces')
+        argmin_nonzero = lambda x: np.argmin([(i if i>0 else np.inf) for i in x])
+        for key in hcube_global.keys():
+          # logging.info('Showing MIN / MAX for points from HCube %s:', key)
+          minA = {}; maxA={}
+          for n in range(len(dist_hd[key])) :
+            minA[n]=[] ; maxA[n]=[]
+            for tbin in TEST_TBIN:
+              if tbin not in dist_ld[key].keys():
+                continue
+                minA[n].append(0)
+                maxA[n].append(0)          
+              else:
+                minA[n].append(argmin_nonzero(dist_ld[key][tbin][n]))
+                maxA[n].append(np.argmax(dist_ld[key][tbin][n]))          
+          numsame = np.zeros(len(dist_ld[key].keys())+1)
+          for n in range(len(dist_hd[key][n])):
+            minH = argmin_nonzero(dist_hd[key][n])
+            maxH = np.argmax(dist_hd[key][n])
+            minmax = ['%2d/%-2d'%i for i in zip(minA[n], maxA[n])]
+            numsamepair = maxcount(minA[n])
+            numsame[numsamepair] += 1
+            # print('%3d'%n, '%2d/%-2d  '%(minH, maxH), '%s' % ' '.join(minmax), '   [%d]'%numsamepair)
+          print(' '.join(['%4.1f%%'%i for i in (100* (numsame/np.sum(numsame)))]))
 
       print('Stopping HERE!')
       sys.exit(0)
@@ -535,9 +625,12 @@ class reweightJob(object):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('name')
+  parser.add_argument('name', default='reweight4')
   args = parser.parse_args()
 
   mt = reweightJob(args.name)
   mt.execute()
+
+
+
 

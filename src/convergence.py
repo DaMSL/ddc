@@ -48,7 +48,11 @@ u = redis.StrictRedis(port=6383, decode_responses=True)
 b = redis.StrictRedis(port=6384, decode_responses=True)
 r = redis.StrictRedis(port=6385, decode_responses=True)
 
+
+
 elas = {label: redis.StrictRedis(port=6390+i, decode_responses=True) for i, label in enumerate(['elas_base', 'elas_500', 'elas_250'])}
+el2 = {label: redis.StrictRedis(port=6401+i, decode_responses=True) \
+  for i, label in enumerate(['elas5', 'elas10', 'elas15', 'elas25', 'elas50'])}
 
 
 # r = redis.StrictRedis(host=HOST, decode_responses=True)
@@ -302,7 +306,8 @@ def plot_bootstraps(data, ts, prefix, subdir='.'):
   print('All Done!')
 
 colormap = {'uniform': "r",'biased': 'b','parallel':'g', 'serial':'k', 'reweight':'y',
-              'elas_base': "r", 'elas_500': "g", 'elas_250': "b"}
+              'elas_base': "r", 'elas_500': "g", 'elas_250': "b",
+              'elas5': "r", 'elas10': "g", 'elas15': "c", 'elas25': "b", 'elas50': "k"}
 pathmap = {'uniform': "uniform2",'biased': 'biased1','naive':'naive'}
 
 def bystate(slist=None, cumulative=False, STEPSIZE=50):
@@ -394,7 +399,7 @@ def plot_conv_tw(data, STEPSIZE=25):
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
     plt.title('Convergence for State %d (WELL)'% A)
     plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
-    ax.set_xlim(75,600)
+    # ax.set_xlim(75,600)
     plt.legend()
     plt.savefig(SAVELOC + 'conv-well-%s.png' % (A))
     plt.close()
@@ -405,7 +410,7 @@ def plot_conv_tw(data, STEPSIZE=25):
       X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
     plt.title('Convergence for State %d (Transitions)'% A)
-    ax.set_xlim(75,600)
+    # ax.set_xlim(75,600)
     plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
     plt.legend()
     plt.savefig(SAVELOC + 'conv-tran-%s.png' % (A))
@@ -471,13 +476,19 @@ def Convergence5(stepsize):
   data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
   return convtw(data, STEPSIZE=stepsize)
 
-def Elasticity():
-  data = {k: {} for k in elas.keys()}
-  for k in data.keys():
-    data[k]['obs'] = elas[k].lrange('label:rms', 0, -1)[400000:]
-  return convtw(data)
+def Elasticity(step=25):
+  data = {}
+  for k in el2.keys():
+    if k == 'elas15':
+      continue
+    data[k] = {'obs': el2[k].lrange('label:rms', 0, -1)}
+  return convtw(data, STEPSIZE=step)
 
 
+def showconvlist(data):
+  for run in data.keys():
+    for k, v in data[run]['wtcnt'].items():
+      print('%s,%s,%s' % (run, k, ','.join(['%4.2f'%i for i in v[1:]])))
 
 # STEPSIZE = 50
 # obs = u.lrange('label:rms', 0, -1)

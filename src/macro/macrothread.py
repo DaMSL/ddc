@@ -470,6 +470,7 @@ class macrothread(object):
 
 
   def start_local_catalog(self, isaggressive=False):
+      settings = systemsettings()
       service = RedisService(settings.name, isaggressive=False)
       self.localcatalogserver = service.start()
       logging.info("Catalog service started as a background thread. Waiting on it...")
