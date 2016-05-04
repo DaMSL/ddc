@@ -78,10 +78,7 @@ def incremental_posterior_prob (histdata, batch):
     probility_est[v_i] = mu
   return probility_est
 
-
-
-
-def bootstrap_sampler (source, samplesize=.1, N=50, interval=.90):
+def bootstrap_sampler (source, samplesize=1, N=50, interval=.90):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
   """
@@ -123,6 +120,38 @@ def bootstrap_sampler (source, samplesize=.1, N=50, interval=.90):
     ciLO = delta[round(N*ci_lo)]
     ciHI = delta[math.floor(N*ci_hi)]
     probility_est[v_i] = (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i)
+  return probility_est
+
+def bootstrap_iter (source, size=None, interval=.90):
+  """
+  Bootstrap algorithm for sampling and confidence interval estimation
+  """
+  # Get unique label/category/hcube ID's
+  Z = 1.645  # .9 CI
+  V = set()
+  for i in source:
+    V.add(i)
+
+  if size is None:
+    step = len(source) / 10
+  else:
+    step = size
+  boot = {i : [] for i in V}
+  for i in range(0, len(source), step):
+    L = min(i+step, len(source))
+    strap   = source[i:L]
+    groupby = {v_i: 0 for v_i in V}
+    for s in strap:
+      groupby[s] += 1
+    for v_i in V:
+      boot[v_i].append(groupby[v_i]/L)
+  probility_est = {}
+  for k, v in boot.items():
+    mean = np.mean(v)
+    stddev = np.std(v)
+    err = stddev / math.sqrt(len(v))
+    CI = Z * err
+    probility_est[k] = (mean, CI, stddev, err)
   return probility_est
 
 

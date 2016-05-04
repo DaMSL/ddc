@@ -6,7 +6,12 @@ import numpy as np
 import redis
 import math
 
+from dateutil import parser as du
+import datetime as dt
+
 from datatools.datacalc import *
+
+import bench.db as db
 
 def bootstrap_std (series, interval=.9):
   """
@@ -491,6 +496,93 @@ def showconvlist(data):
   for run in data.keys():
     for k, v in data[run]['wtcnt'].items():
       print('%s,%s,%s' % (run, k, ','.join(['%4.2f'%i for i in v[1:]])))
+
+
+
+def getobs(name):
+  eid = db.get_expid(name)
+  t = db.runquery('select idx, obs from obs where expid=%d order by idx'%eid)
+  return [i[1] for i in t]
+
+def getdistinct(obslist):
+  V = set()
+  for i in obslist:
+    V.add(i)
+  return list(V)
+
+def calc_conv(obs, step=5000):
+  binlist = [(a,b) for a in range(5) for b in range(5)]
+  V = getdistinct(obs)
+  results = {v: [] for v in V}
+  N = len(obs)
+  for m in range(step, N, step):
+    conv = bootstrap_sampler(obs[:min(m,N)], samplesize=.2, N=100)
+    for key in results.keys():
+      if key in conv.keys():
+        results[key].append(min(conv[key][3], 1.))
+      else:
+        results[key].append(1.)
+  return results
+
+
+def show_conv(conv):
+  for k,v in sorted(conv.items()): 
+    print(k, ['%4.2f'%i for i in v])
+
+
+def obs2tw(obslist):
+  out = []
+  for obs in obslist:
+    A,B = eval(obs)
+    out.append(('well' if A==B else 'tran') + '-%d'%A)
+  return out
+
+
+
+def graphexpr(elist):
+  obslist = {name: getobs(name) for name in elist}
+  convlist = {k: calc_conv(v) for k,v in obslist.items()}
+
+
+
+def conv_over_time(name, step=10000):
+  eid = db.get_expid(name)
+  obs = obs2tw(getobs(name))
+  V = getdistinct(obs)
+  N = len(obs)
+  plotlists = {v: [] for v in V}
+  sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+  ts_0 = du.parse(sw_list[0][0]).timestamp()
+  sw = sorted([dict(start=x[0], time=x[1], numobs=x[2], end=end_ts(x)-ts_0) for x in sw_list], key=lambda i: i['end'])
+  n = 0
+  snum = 0
+  nextcalc = step
+  while n < N and snum < len(sw):
+      n += sw[snum]['numobs']
+      if n > nextcalc:
+        t = sw[snum]['end'] / 3600.
+        c = bootstrap_sampler(obs[:min(n,N)], samplesize=.25)
+        for v in V:
+          if v in c.keys():
+            plotlists[v].append((t, min(c[v][3], 1.)))
+          else:
+            plotlists[v].append((t, 1.))
+        nextcalc += step
+      snum += 1
+  return plotlists
+
+
+def time_comp(elist, step=10000):
+  conv = {}
+  for e in elist:
+    conv[e] = conv_over_time(e, step=step)
+  results = {}
+  for k in conv[e].keys():
+    results[k] = {e: conv[e][k] for e in elist}
+  return results
+
+
 
 # STEPSIZE = 50
 # obs = u.lrange('label:rms', 0, -1)

@@ -2,6 +2,7 @@ import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.patches as mpatches
 
 from collections import OrderedDict
 import numpy as np
@@ -41,6 +42,31 @@ def scatter3D(X, Y, Z, title, L=None):
   plt.close() 
 
 
+def scats (series, title, size=10, xlabel=None):
+  if isinstance(series, dict):
+    labelList = sorted(series.keys())
+    seriesList = [series[key] for key in labelList]
+  else:
+    print("Series must be either a list of lists or a mapping to lists")
+    return
+  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  plt.clf()
+  ax = plt.subplot(111)
+  for D, C, L in zip(seriesList, colorList, labelList):
+    X, Y = zip(*D)
+    plt.scatter(X, Y, s=size, c=C, lw=0)
+  plt.title(title)
+
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+
+  patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
+  plt.legend(handles=patches, loc='upper right')  
+
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
+
+
 #####   LINE Graph
 
 def line(X, title):
@@ -64,6 +90,31 @@ def linegraphcsv(X, title, nolabel=False):
   """ Plots line series for a csv list
   """
 
+def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
+  if isinstance(series, list):
+    seriesList = series
+    if labelList is None:
+      labelList = ['Series %d' % (i+1) for i in range(len(seriesList))]
+  elif isinstance(series, dict):
+    labelList = sorted(series.keys())
+    seriesList = [series[key] for key in labelList]
+  else:
+    print("Series must be either a list of lists or a mapping to lists")
+    return
+  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  plt.clf()
+  ax = plt.subplot(111)
+  for X, C, L in zip(seriesList, colorList, labelList):
+    print('Plotting: ', L, C)
+    plt.plot(np.arange(len(X))*(step), X, color=C, label=L)
+  plt.title(title)
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+  if xlim is not None:
+    ax.set_xlim(xlim)
+  plt.legend()
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
 
 
 ###### BAR PLOTS

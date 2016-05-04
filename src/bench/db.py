@@ -17,6 +17,13 @@ def namedtuple_factory(cursor, row):
     Row = namedtuple("Row", fields)
     return Row(*row)
 
+
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d
+
 HOME = os.environ['HOME']
 DB_FILE = os.path.join(HOME, 'ddc', 'results', 'ddc_data.db')
 GRAPH_LOC = os.path.join(HOME, 'ddc', 'graph')
@@ -140,8 +147,7 @@ conn = sqlite3.connect(DB_FILE)
 
 
 def getConn():
-  global conn
-  return conn
+  return sqlite3.connect(DB_FILE)
 
 def close():
   global conn
@@ -198,6 +204,7 @@ def runquery(query, withheader=False):
   try:
     cur = conn.cursor()
     cur.execute(query)
+    conn.commit()
     if withheader:
       names = [d[0] for d in cur.description]
       materialized = [names]
@@ -205,9 +212,35 @@ def runquery(query, withheader=False):
       return materialized
     else:
       return cur.fetchall()
+
   except Exception as inst:
     print("Ad Hoc Query Failed:" )
     traceback.print_exc()
+
+
+def qryd(query):
+  conn = getConn()
+  conn.row_factory = dict_factory
+  try:
+    cur = conn.cursor()
+    cur.execute(query)
+    return cur.fetchall()
+  except Exception as inst:
+    print("Ad Hoc Query Failed:" )
+    traceback.print_exc()
+
+
+def qryr(query):
+  conn = getConn()
+  conn.row_factory = sqlite3.Row
+  try:
+    cur = conn.cursor()
+    cur.execute(query)
+    return cur.fetchall()
+  except Exception as inst:
+    print("Ad Hoc Query Failed:" )
+    traceback.print_exc()
+
 
 def insert(table, *values):
   try:
@@ -480,6 +513,8 @@ def sw_file_parser(sourcedir):
       elif 'SLURM_JOB_ID' in l:
         _, jobid = l.split(':')
         jobid = int(jobid.strip())
+      elif 'numpts' in l:
+        info['numobs'] = int(l.split(',')[-1])
     if jobid is None or 'jobname' not in info.keys():
       print('ERROR. Failed to retrieve jobid for ', info['swname'])
       continue
@@ -497,7 +532,7 @@ def sw_file_parser(sourcedir):
   print('Inserting %d rows into database' % len(jobdata))
   for job in jobinfo.values():
     try:
-      query = """INSERT INTO sw VALUES (%(expid)d, '%(swname)s', '%(jobname)s', %(jobid)d, '%(src_bin)s', %(src_index)d, '%(src_hcube)s', '%(submit)s', '%(start)s', %(time)d, '%(cpu)s', '%(exitcode)s', '%(node)s');""" % job
+      query = """INSERT INTO sw VALUES (%(expid)d, '%(swname)s', '%(jobname)s', %(jobid)d, '%(src_bin)s', %(src_index)d, '%(src_hcube)s', '%(submit)s', '%(start)s', %(time)d, '%(cpu)s', '%(exitcode)s', '%(node)s', %(numobs)d);""" % job
       cur = conn.cursor()
       cur.execute(query)
     except Exception as inst:
@@ -524,6 +559,32 @@ def insert_obs(r, name=None, key='label:rms'):
         print("Failed to insert index # %d" % i)
         print(inst)
   conn.commit()
+
+
+def update_num_obs(name):
+  global conn
+  eid=get_expid(name)
+  fname = "../results/stat_sim_%s.log" % name
+  with open(fname) as src:
+    log = src.read().strip().split('\n')
+  try:
+    cur = conn.cursor()
+    for l in log:
+      v = l.split(',')
+      if len(v) < 4:
+        continue
+      if v[2] != 'numpts':
+        continue
+      sw, n = v[0], int(v[3])
+      sname = 'sw-%04d.%02d' % (int(sw[:4]), int(sw[-2:]))
+      cur.execute("UPDATE sw SET numobs=%d WHERE expid=%d and swname='%s';" % (n,eid,sname))
+    conn.commit()
+  except Exception as inst:
+    print("Ad Hoc Query Failed:" )
+    traceback.print_exc()
+
+
+
 
 # Queries to run:
 
