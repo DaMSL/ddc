@@ -55,8 +55,11 @@ el2 = {label: redis.StrictRedis(port=6401+i, decode_responses=True) \
   for i, label in enumerate(['elas5', 'elas10', 'elas15', 'elas25', 'elas50'])}
 
 
-# r = redis.StrictRedis(host=HOST, decode_responses=True)
-
+colormap = {'uniform': "r",'biased': 'b','parallel':'g', 'serial':'k', 'reweight':'y',
+              'runtime_1000': "r", 'runtime_250': "b", 
+              'elas_base': "r", 'elas_500': "g", 'elas_250': "b",
+              'elas5': "r", 'elas10': "g", 'elas15': "c", 'elas25': "b", 'elas50': "k"}
+pathmap = {'uniform': "uniform2",'biased': 'biased1','naive':'naive'}
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
 OBS_PER_NS = 1000
 
@@ -305,10 +308,6 @@ def plot_bootstraps(data, ts, prefix, subdir='.'):
     plt.close()
   print('All Done!')
 
-colormap = {'uniform': "r",'biased': 'b','parallel':'g', 'serial':'k', 'reweight':'y',
-              'elas_base': "r", 'elas_500': "g", 'elas_250': "b",
-              'elas5': "r", 'elas10': "g", 'elas15': "c", 'elas25': "b", 'elas50': "k"}
-pathmap = {'uniform': "uniform2",'biased': 'biased1','naive':'naive'}
 
 def bystate(slist=None, cumulative=False, STEPSIZE=50):
   data = {'naive':{}, 'biased':{}, 'uniform':{}}
@@ -388,7 +387,7 @@ def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
   return data
 
 
-def plot_conv_tw(data, STEPSIZE=25):
+def plot_conv_tw(data, STEPSIZE=25, xlim=None):
   for A in [0, 1, 2, 3, 4]:
     print('Plotting graphs for state %d' % A)
     plt.clf()
@@ -399,7 +398,8 @@ def plot_conv_tw(data, STEPSIZE=25):
       plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
     plt.title('Convergence for State %d (WELL)'% A)
     plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
-    # ax.set_xlim(75,600)
+    if xlim is not None:
+      ax.set_xlim(xlim)
     plt.legend()
     plt.savefig(SAVELOC + 'conv-well-%s.png' % (A))
     plt.close()
@@ -412,6 +412,8 @@ def plot_conv_tw(data, STEPSIZE=25):
     plt.title('Convergence for State %d (Transitions)'% A)
     # ax.set_xlim(75,600)
     plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
+    if xlim is not None:
+      ax.set_xlim(xlim)
     plt.legend()
     plt.savefig(SAVELOC + 'conv-tran-%s.png' % (A))
     plt.close()

@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from collections import namedtuple
+from core.slurm import slurm
 
 def namedtuple_factory(cursor, row):
     """
@@ -60,7 +61,7 @@ tables = {
 """,
 'ctl':
 """CREATE TABLE IF NOT EXISTS ctl (
-  cid PRIMARY KEY AUTOINCREMENT,
+  cid integer PRIMARY KEY AUTOINCREMENT,
   expid integer,
   ctlid integer,
   npts integer,
@@ -83,10 +84,38 @@ tables = {
 """,
 'kmeans':
 """CREATE TABLE IF NOT EXISTS kmeans (
-  cid PRIMARY KEY AUTOINCREMENT,
+  cid integer PRIMARY KEY AUTOINCREMENT,
   st integer,
   cnt integer,
   totstate integer
+);
+""",
+'sw':
+"""CREATE TABLE IF NOT EXISTS sw (
+  expid integer NOT NULL,
+  swname text NOT NULL,
+  jobname text NOT NULL, 
+  jobid integer NOT NULL,    
+  src_bin text default 'D',
+  src_index integer default -1,    
+  src_hcube text default 'D',    
+  submit timestamp default '0',
+  start timestamp default '0',
+  time integer default 0,     
+  cpu text default '0',     
+  exitcode text default '0',
+  node text default 'None',
+  CONSTRAINT PK_sw PRIMARY KEY (jobid),
+  CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
+);
+""",
+'obs':
+"""CREATE TABLE IF NOT EXISTS obs (
+  expid integer NOT NULL,
+  idx integer NOT NULL,
+  obs text NOT NULL,
+  CONSTRAINT PK_sw PRIMARY KEY (expid, idx),
+  CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
 );
 """
 
@@ -294,9 +323,6 @@ def removebrace(s):
 
 
 
-
-
-
 def scrape_bench_ctl(name):
   eid = get_expid(name)
   with open((HOME + '/ddc/results/benchcons/ctl_%s.txt' % name)) as sfile:
@@ -406,6 +432,98 @@ def scrape_bench_sim(name):
       else:
         data = []
 
+
+def time2sec(timestr):
+  x = timestr.split(':')
+  if '-' in x[0]:
+    d, h = x[0].split('-')
+    daysec = int(d) * (3600*24)
+    hr = int(h)
+    d = int(d)
+  else:
+    d = 0
+    hr = int(x[0])
+  mn = int(x[1])
+  sc = int(x[2])
+  return d + hr*3600 + mn*60 +sc
+
+def sw_file_parser(sourcedir):
+  global conn
+  jobinfo={}
+  ls = [i for i in os.listdir(sourcedir) if (i.startswith('sw'))]
+  appl =  os.path.basename(sourcedir)
+  expid = get_expid(appl)
+  print('Processing %d files' % len(ls))
+  for filename in sorted(ls):
+    info = {}
+    info['expid'] = expid
+    info['swname'] = os.path.splitext(filename)[0]
+    if not info['swname'].startswith('sw'):
+      print('Only processing sw files in this method')
+      continue
+    # exists = runquery("Select count(swname) from sw where expid=%(expid)d and swname='%(swname)s';" % (info))
+    # if exists:
+    #   print('File %s already parsed for experiment %s' % (info['swname'], appl))
+    #   return
+    with open(os.path.join(sourcedir, filename)) as src:
+      log = src.read().split('\n')
+    jobid = None
+    for l in log:
+      if 'name:' in l:
+        info['jobname'] = l.split()[2].strip()
+      elif 'src_bin:' in l:
+        info['src_bin'] = l[-6:]
+      elif 'src_index:' in l:
+        info['src_index'] = int(l.split()[2].strip())
+      elif 'src_hcube:' in l:
+        info['src_hcube'] = l.split()[2].strip()
+      elif 'SLURM_JOB_ID' in l:
+        _, jobid = l.split(':')
+        jobid = int(jobid.strip())
+    if jobid is None or 'jobname' not in info.keys():
+      print('ERROR. Failed to retrieve jobid for ', info['swname'])
+      continue
+    jobinfo[jobid] = info
+  print('Retrieving data from slurm for %d jobs' % len(jobinfo.keys()))
+  jobdata = slurm.jobexecinfo(list(jobinfo.keys()))
+  for job in jobdata:
+    job['time'] = time2sec(job['time'])
+    jobinfo[job['jobid']].update(job)
+    if 'src_index' not in jobinfo[job['jobid']].keys():
+      jobinfo[job['jobid']]['src_index'] = -1
+    if 'src_hcube' not in jobinfo[job['jobid']].keys():
+      jobinfo[job['jobid']]['src_hcube'] = 'D'
+
+  print('Inserting %d rows into database' % len(jobdata))
+  for job in jobinfo.values():
+    try:
+      query = """INSERT INTO sw VALUES (%(expid)d, '%(swname)s', '%(jobname)s', %(jobid)d, '%(src_bin)s', %(src_index)d, '%(src_hcube)s', '%(submit)s', '%(start)s', %(time)d, '%(cpu)s', '%(exitcode)s', '%(node)s');""" % job
+      cur = conn.cursor()
+      cur.execute(query)
+    except Exception as inst:
+        print("Failed to insert jobid %(jobid)d  (%(swname)s): " % job)
+        print(inst)
+  conn.commit()
+
+
+def insert_obs(r, name=None, key='label:rms'):
+  global conn
+  if name is None:
+    name = r.get('name')
+  if name is None:
+    print('Cannot ID name, provide it')
+    return
+  expid = get_expid(name)
+  obs = r.lrange(key, 0, -1)
+  for i, o in enumerate(obs):
+    try:
+      query = """INSERT INTO obs VALUES (%d, %d, '%s');""" % (expid,i,o)
+      cur = conn.cursor()
+      cur.execute(query)
+    except Exception as inst:
+        print("Failed to insert index # %d" % i)
+        print(inst)
+  conn.commit()
 
 # Queries to run:
 
