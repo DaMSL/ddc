@@ -10,8 +10,10 @@ from dateutil import parser as du
 import datetime as dt
 
 from datatools.datacalc import *
+from collections import OrderedDict
 
 import bench.db as db
+import plot as P
 
 def bootstrap_std (series, interval=.9):
   """
@@ -538,16 +540,18 @@ def obs2tw(obslist):
   return out
 
 
-
 def graphexpr(elist):
   obslist = {name: getobs(name) for name in elist}
   convlist = {k: calc_conv(v) for k,v in obslist.items()}
 
 
 
-def conv_over_time(name, step=10000):
+def conv_over_time(name, step=10000, tw=False):
   eid = db.get_expid(name)
-  obs = obs2tw(getobs(name))
+  obs = getobs(name)
+  if tw:
+    obs = obs2tw(obs)
+
   V = getdistinct(obs)
   N = len(obs)
   plotlists = {v: [] for v in V}
@@ -562,10 +566,12 @@ def conv_over_time(name, step=10000):
       n += sw[snum]['numobs']
       if n > nextcalc:
         t = sw[snum]['end'] / 3600.
-        c = bootstrap_sampler(obs[:min(n,N)], samplesize=.25)
+        # c = bootstrap_sampler(obs[:min(n,N)], samplesize=.25)
+        c = bootstrap_iter(obs[:min(n,N)], size=step)
         for v in V:
           if v in c.keys():
-            plotlists[v].append((t, min(c[v][3], 1.)))
+            # plotlists[v].append((t, min(c[v][3], 1.)))
+            plotlists[v].append((t, min(c[v][1]/c[v][0], 1.)))
           else:
             plotlists[v].append((t, 1.))
         nextcalc += step
@@ -583,51 +589,53 @@ def time_comp(elist, step=10000):
   return results
 
 
-
-# STEPSIZE = 50
-# obs = u.lrange('label:rms', 0, -1)
-# boots = GP.postgen_bootstraps(obs, STEPSIZE, cumulative=False)
-# bs_u = GP.postcalc_bootstraps(boots)
-# GP.plot_bootstrap_graphs(bs_u, STEPSIZE, 'iter', 'naive', samp_type='NAIVE')
-
-# boots = GP.postgen_bootstraps(obs, STEPSIZE, cumulative=True)
-# bs_u = GP.postcalc_bootstraps(boots)
-# GP.plot_bootstrap_graphs(bs_u, STEPSIZE, 'cuml', 'naive', samp_type='NAIVE')
-
-
-# obs = b.lrange('label:rms', 0, -1)
-# boots = GP.postgen_bootstraps(obs, STEPSIZE, cumulative=False)
-# bs_b = GP.postcalc_bootstraps(boots)
-# GP.plot_bootstrap_graphs(bs_b, STEPSIZE, 'iter', 'biased1', samp_type='BIASED')
+def total_time(name):
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+  eid = db.get_expid(name)
+  sw_list=db.runquery('select start,time from sw where expid=%d order by start'%eid)
+  start = du.parse(sw_list[0][0]).timestamp()
+  sw = sorted([dict(start=x[0], time=x[1], end=end_ts(x)-start) for x in sw_list], key=lambda i: i['end'])
+  return sw[-1]['end']
 
 
 
-# stats=recheckStats_separate(50)
+def do_histogram():
+  # obs = {n: c for n,c in db.runquery('select expname, count(obs) from expr e, obs where e.expid=obs.expid group by expname')}
+  data = OrderedDict()
+  raw = OrderedDict()
+  rawb = getobs('biased3_5')[47000:160000] + getobs('biased3_10')[47000:165000] + \
+     getobs('biased3_25')[47000:190000] +getobs('biased3_50')[47000:173000]
 
 
+  raw['Serial']   = getobs('serial')[50000:550000]
+  raw['Parallel'] = getobs('uncontrol')[:500000]
+  raw['Uniform']  = getobs('uniform2')[50000:550000]
+  raw['Biased']   = rawb
+  raw['Reweight'] = getobs('reweight4')[50000:550000]
+  for key, obslist in raw.items():
+    groupby = {}
+    for i in obslist:
+      if i not in groupby:
+        groupby[i] = 0
+      groupby[i] += 1
+    data[key] = groupby
+  P.histogram(data, 'Histogram_Event_Counts', ylim=(0,200000))
+  
 
-    # for b in ab[i*5:i*5+5]:
-    #   plt.plot(np.arange(len(bs_ci[b]))*(TIMESTEP/1000), bs_ci[b], label=str(b))
-    # plt.xlabel('Conf Interval (total time in ns)')
-    # plt.legend()
-    # plt.savefig(SAVELOC + '/%s_%dns_ci_%d.png'%(prefix, ts, i))
-    # plt.close()
-    # for b in ab[i*5:i*5+5]:
-    #   plt.plot(np.arange(len(bs_mn[b]))*(ts), bs_mn[b], label=str(b))
-    # plt.xlabel(title_pre + 'Mean (total time in ns)')
-    # plt.legend()
-    # plt.savefig(SAVELOC + '/boot_%dns_mn_%d.png'%(ts, i))
-    # plt.close()
-    # for b in ab[i*5:i*5+5]:
-    #   plt.plot(np.arange(len(bs_sd[b]))*(ts), bs_sd[b], label=str(b))
-    # plt.xlabel(title_pre +'StdDev (total time in ns)')
-    # plt.legend()
-    # plt.savefig(SAVELOC + '/boot_%dns_std_%d.png'%(ts, i))
-    # plt.close()
+def plot_elas():
+  rlist=['rtime100_20', 'rtime100_100', 'rtime250_10', 'rtime250_20', 'rtime250_50', 'rtime250_100', 'rtime250_200']
+  costlabels={'rtime100_100': '100ps/100/%d'%(1367+32),
+  'rtime100_20':  '100ps/20/%d'%(1315+32),
+  'rtime250_10':  '250ps/10/%d'%(1351+95),
+  'rtime250_100': '250ps/100/%d'%(1711+40),
+  'rtime250_20':  '250ps/20/%d'% (825+109),
+  'rtime250_200': '250ps/200/%d'%(1561+29),
+  'rtime250_50':  '250ps/50/%d'%(1555+52)}
 
-    # for b in ab[i*5:i*5+5]:
-    #   plt.plot(np.arange(len(bs_sd[b]))*(ts), (bs_ci[b]/bs_mn[b]), label=str(b))
-    # plt.xlabel(title_pre +'Total Convergence (total time in ns)')
-    # plt.legend()
-    # plt.savefig(SAVELOC + '/cuml_conv_%dns_tc_%d.png'%(ts, i))
-    # plt.close()
+  data = time_comp(rlist, step=1000)
+  for k,v in data.items():
+    P.scats(v, 'ElasticityCost-'+k, xlim=(0,5), labels=costlabels, xlabel='Time (in hours)  Legend= SimTime/#Jobs/TotalCost')
+
+
+if __name__=='__main__':
+  do_histogram()

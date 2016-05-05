@@ -124,8 +124,25 @@ tables = {
   CONSTRAINT PK_sw PRIMARY KEY (expid, idx),
   CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
 );
+""",
+'obs_uniform':
+"""CREATE TABLE IF NOT EXISTS obs (
+  expid integer NOT NULL,
+  idx integer NOT NULL,
+  obs text NOT NULL,
+  CONSTRAINT PK_sw PRIMARY KEY (expid, idx),
+  CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
+);
+""",
+'obs_naive':
+"""CREATE TABLE IF NOT EXISTS obs (
+  expid integer NOT NULL,
+  idx integer NOT NULL,
+  obs text NOT NULL,
+  CONSTRAINT PK_sw PRIMARY KEY (expid, idx),
+  CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
+);
 """
-
 }
 
 insertion = {
@@ -193,6 +210,7 @@ def adhoc(query):
   try:
     cur = conn.cursor()
     cur.execute(query)
+    conn.commit()
     for row in cur.fetchall():
       print(','.join(str(elm) for elm in row))
   except Exception as inst:
@@ -513,8 +531,8 @@ def sw_file_parser(sourcedir):
       elif 'SLURM_JOB_ID' in l:
         _, jobid = l.split(':')
         jobid = int(jobid.strip())
-      elif 'numpts' in l:
-        info['numobs'] = int(l.split(',')[-1])
+      elif 'mdtraj.Trajectory' in l:
+        info['numobs'] = int(l.split()[6])
     if jobid is None or 'jobname' not in info.keys():
       print('ERROR. Failed to retrieve jobid for ', info['swname'])
       continue
@@ -584,7 +602,13 @@ def update_num_obs(name):
     traceback.print_exc()
 
 
-
+def adjust_time():
+  x = db.runquery('select swname,start from sw where expid=23')
+  for swname,start in x:
+    if swname > 'sw-0001':
+      continue
+    nt = (du.parse(start)+dt.timedelta(minutes=85)).isoformat()
+    _ = db.runquery("update sw set start='%s' where swname='%s';" % (nt,swname))
 
 # Queries to run:
 

@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.patches as mpatches
+import matplotlib.lines as mlines
 
 from collections import OrderedDict
 import numpy as np
@@ -42,10 +43,14 @@ def scatter3D(X, Y, Z, title, L=None):
   plt.close() 
 
 
-def scats (series, title, size=10, xlabel=None):
+def scats (series, title, size=10, xlabel=None, xlim=None, labels=None):
   if isinstance(series, dict):
-    labelList = sorted(series.keys())
-    seriesList = [series[key] for key in labelList]
+    keys = sorted(series.keys())
+    if labels is None:
+      labelList = keys
+    else:
+      labelList = [labels[i] for i in keys]
+    seriesList = [series[key] for key in keys]
   else:
     print("Series must be either a list of lists or a mapping to lists")
     return
@@ -59,12 +64,45 @@ def scats (series, title, size=10, xlabel=None):
 
   if xlabel is not None:
     plt.xlabel(xlabel)
+  if xlim is not None:
+    plt.xlim(xlim)
 
   patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
   plt.legend(handles=patches, loc='upper right')  
 
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
+
+
+
+def scat_layered (series, title, size=10, xlabel=None, xlim=None):
+  marker_list = ('o', 'v', '*', 'H', 'D', '^', '<', '>', '8', 's', 'p', 'h', 'd')
+  keys = sorted(series.keys())
+  labelList1 = keys
+  labelList2 = sorted(series[keys[0]].keys())
+  seriesList = [series[key] for key in keys]
+  colorList = plt.cm.brg(np.linspace(0, 1, len(labelList1)))
+  markerList = marker_list[:len(labelList2)]
+  plt.clf()
+  ax = plt.subplot(111)
+  for S, C in zip(seriesList, colorList):
+    seriesList2 = [S[k] for k in sorted(S.keys())]
+    for D, M in zip(seriesList2, markerList):
+      X, Y = zip(*D)
+      plt.scatter(X, Y, s=size, c=C, marker=M, lw=0)
+  plt.title(title)
+
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+  if xlim is not None:
+    plt.xlim(xlim)
+
+  markers = [mlines.Line2D([], [], color='k', marker=M, markersize=5, label=L) for M,L in zip(markerList, labelList2)]
+  patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList1)]
+  plt.legend(handles=patches+markers, loc='upper right')  
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
+
 
 
 #####   LINE Graph
@@ -157,6 +195,39 @@ def bargraph_simple(data, title):
   plt.savefig(SAVELOC + '/bar_' + title + '.png')
   plt.close()  
   plt.show()
+
+
+
+def histogram(data, title, ylim=None):
+  colorList = plt.cm.brg(np.linspace(0, 1, len(data)))
+  seriesList = list(data.keys())
+  nseries = len(seriesList)
+  nbars  = len(data[seriesList[0]])
+
+  pad = .3
+  X = np.arange(nbars)
+  sets   = sorted(data[seriesList[0]].keys())
+  bw = (1-pad) / nseries
+
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+
+  for x, S, C in zip(np.arange(nseries), seriesList, colorList):
+    Y = [data[S][i] for i in sets]
+    offset = x*bw+(pad/2)
+    plt.bar(X+offset, Y, bw, color=C, label=S)
+
+  ax.set_xlim(0, nbars)
+  if ylim is not None:
+    ax.set_ylim(ylim)
+  plt.xticks(X+.5, sets)
+  plt.legend()
+  fig.suptitle(title)
+  fig.set_size_inches(16,6)
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/bar_' + title + '.png')
+  plt.close()  
 
 
 

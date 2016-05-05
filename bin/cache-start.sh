@@ -5,7 +5,7 @@
 #SBATCH --time=18:00:0
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --output=/home-1/bring4@jhu.edu/ddc/osvc-cache-%j.log
+#SBATCH --output=/home-1/bring4@jhu.edu/ddc/log/osvc-cache-%j.log
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
 #SBATCH --partition=lrgmem,unlimited
 

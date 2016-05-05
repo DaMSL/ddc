@@ -5,7 +5,7 @@
 #SBATCH --time=12:0:0
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=6
-#SBATCH --output=/home-1/bring4@jhu.edu/ddc/osvc-redis-%j.out
+#SBATCH --output=/home-1/bring4@jhu.edu/ddc/log/osvc-redis-%j.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
 #SBATCH --partition=shared,parallel
 

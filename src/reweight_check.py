@@ -456,6 +456,29 @@ class reweightJob(object):
           if self.filelog:
             self.filelog.info('%d,%s', n, ','.join(proj))
 
+      def collapse(C):
+        a = 0
+        b = 0
+        N = []
+        while a < len(C) and b < len(C):
+          A = sorted(C[a])
+          B = sorted(C[b])
+          if A == B:
+            b += 1
+          elif A[0] == B[0]:
+            N.append(set(A)|set(B))
+            b += 1
+          else:
+            a += 1
+        if len(N) <= 1:
+          return []
+        else:
+          return N + collapse(N)
+
+      q=collapse(t1)
+      for i in q: print(sorted(i))
+
+
       print('Checking all 2-Way Joins')
       join2 = []
       for a in range(0, len(proj_bin_list)-1):
