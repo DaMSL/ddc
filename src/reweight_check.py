@@ -7,6 +7,7 @@ import sys
 import math
 import json
 import redis
+import itertools
 from random import choice, randint
 from collections import namedtuple, deque, OrderedDict
 from threading import Thread
@@ -40,6 +41,61 @@ __status__ = "Development"
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=5, suppress=True)
 
+# views:  mapping tuple => list
+def collapse_join(origin_keys, views, height=2):
+  THETA = 2
+  print('\nCOLLAPSE JOIN at LEVEL ', height)
+  print('Source Views: ')
+  print(views)
+  if height == len(origin_keys) or len(views) <= 1:
+    return []
+  domain_list = [set(c) for c in (itertools.combinations(origin_keys, height))]
+  print('Domain List: ',domain_list)
+  domain_candidates = {}
+  for source  in views.keys():
+    print('  Checking source: ', source)
+    subset = set(source)
+    for domain in domain_list:
+      print('  Checking ', subset, ' vs ', domain)
+      if subset < domain:
+        # map key <--- set(c)
+        d_key = tuple(domain)
+        if d_key not in domain_candidates.keys():
+          domain_candidates[d_key] = set()
+        domain_candidates[d_key].add(source)
+  print('Domain Candidates: ')
+  for k, v in domain_candidates.items():
+    print('  ', k, '    ', len(v))
+  merge_candidates = {}
+  for domain, sources in domain_candidates.items():
+    # re-map set(c) <-- key
+    if len(sources) <= 1:
+      continue
+    # Additional Pruning here
+    # Query Optimization Here (to ID optimal L & R sources)
+    source_list = list(sources)
+    merge_candidates[domain] = tuple(source_list[:2])
+  print('Merge Candidates: ')
+  for k, v in merge_candidates.items():
+    print('  ', k, '    ', v)
+  target_views = {}
+  for domain, pair in merge_candidates.items():
+    target_setlist = []
+    # Perform 2-way join
+    print('2-Way Join on: ', pair)
+    L, R = tuple(pair)
+    for idxL, valL in views[L]:
+      for idxR, valR in views[R]:
+        # Final Pruning Here
+        idx_set = idxL | idxR
+        intersection = valL & valR
+        if len(intersection) > THETA:
+          target_setlist.append((idx_set, intersection))
+    if len(target_setlist) > 0:
+      superset = tuple(set(L) | set(R))
+      target_views[superset] = target_setlist
+  return target_views.update(collapse_join(origin_keys, target_views, height+1))
+
 class reweightJob(object):
     def __init__(self, name, host='localhost', port=6385):
 
@@ -51,7 +107,7 @@ class reweightJob(object):
       self.cache_miss = 0
       self.catalog = redis.StrictRedis(host=host, port=port, decode_responses=True)
 
-      FILELOG = True
+      FILELOG = False
       if FILELOG:
         self.filelog = logging.getLogger(name)
         self.filelog.setLevel(logging.INFO)
@@ -216,8 +272,9 @@ class reweightJob(object):
       num_pts = len(labeled_pts_rms)
       logging.debug('##NUM_OBS: %d', num_pts)
 
-      TEST_TBIN = [(i,j) for i in range(2,5) for j in range(5)]
-      MAX_SAMPLE_SIZE   = 30   # Max # of cov "pts" to back project
+      # TEST_TBIN = [(i,j) for i in range(2,5) for j in range(5)]
+      TEST_TBIN = [(2,0), (4,2), (2,2), (4,1)]
+      MAX_SAMPLE_SIZE   = 10   # Max # of cov "pts" to back project
       COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
       MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
 
@@ -305,7 +362,7 @@ class reweightJob(object):
       for k, v in hcube_global_ALL.items():
         hcube_global[k] = v
         num += 1
-        if num == 5:
+        if num == 4:
           break
 
       # hcube_global = global_kdtree.getleaves()
@@ -339,7 +396,6 @@ class reweightJob(object):
         for cov in cov_index:
           selected_hd_idx = np.random.choice(COVAR_SIZE, MAX_PT_PER_MATRIX).tolist()
           hcube_global[key]['idxlist'].extend([int(covar_index[cov]) + i for i in selected_hd_idx])
-          # cov_weights[L].extend([cov_wght[cov] for i in range(MAX_SAMPLE_SIZE)])
         logging.info('Back Projecting Global HCube `%s`  (%d out of %d)', key, counter, len(hcube_global.keys()))
         source_cov = self.backProjection(hcube_global[key]['idxlist'])
         hcube_global[key]['alpha'] = datareduce.filter_alpha(source_cov)
@@ -434,14 +490,15 @@ class reweightJob(object):
             pnum += 1
 
           for k, v in sorted(overlap_hcube[key][tbin].items()):
-            logging.debug('          to ==> Local HCube `%-9s`: %6d points', k, v['num_projected'])
+            logging.debug('   Project ==> Local HCube `%-9s`: %5d points', k, v['num_projected'])
           logging.info('Calculating Lower Dimensional Distances')
           N = len(cov_proj_pca)
           dist_ld[key][tbin] = np.zeros(shape=(N, N))
-          print('LD Dist for: ', tbin, key)
           for A in range(0, N):
             for B in range(A+1, N):
               dist_ld[key][tbin][A][B] = dist_ld[key][tbin][B][A] = LA.norm(cov_proj_pca[A] - cov_proj_pca[B])
+
+
 
       sets = {}
       proj_bin_list = []
@@ -453,88 +510,109 @@ class reweightJob(object):
       for n, proj in enumerate(projlist):
         for i, tbin in enumerate(proj_bin_list):
           sets[tbin][proj[i]].add(n)
-          if self.filelog:
-            self.filelog.info('%d,%s', n, ','.join(proj))
+        if self.filelog:
+          self.filelog.info('%d,%s', n, ','.join(proj))
+        logging.info('%d,%s', n, ','.join(proj))
 
-      def collapse(C):
-        a = 0
-        b = 0
-        N = []
-        while a < len(C) and b < len(C):
-          A = sorted(C[a])
-          B = sorted(C[b])
-          if A == B:
-            b += 1
-          elif A[0] == B[0]:
-            N.append(set(A)|set(B))
-            b += 1
-          else:
-            a += 1
-        if len(N) <= 1:
-          return []
-        else:
-          return N + collapse(N)
+      set_list = {}
+      for tbin, view in sets.items():
+        set_list[(tbin,)] = []
+        for hcube, idxlist in view.items():
+          print(tbin, hcube, idxlist)
+          set_list[(tbin,)].append((set((hcube,)), idxlist))
 
-      q=collapse(t1)
-      for i in q: print(sorted(i))
+      print("Trying Collapse Join")
+      out = collapse_join(set_list.keys(), set_list)
+      for view in out:
+        print(view)
 
+      # def collapse(C):
+      #   a = 0
+      #   b = 0
+      #   N = []
+      #   while a < len(C) and b < len(C):
+      #     A = sorted(C[a])
+      #     B = sorted(C[b])
+      #     if A == B:
+      #       b += 1
+      #     elif A[0] == B[0]:
+      #       N.append(set(A)|set(B))
+      #       b += 1
+      #     else:
+      #       a += 1
+      #   if len(N) <= 1:
+      #     return []
+      #   else:
+      #     return N + collapse(N)
 
-      print('Checking all 2-Way Joins')
-      join2 = []
-      for a in range(0, len(proj_bin_list)-1):
-        tA = proj_bin_list[a]
-        for b in range(a+1, len(proj_bin_list)):
-          tB = proj_bin_list[b]
-          join_ss = set((tA, tB))
-          for kA, vA in sets[tA].items():
-            for kB, vB in sets[tB].items():
-              join_hc = set((kA, kB))
-              inter = vA & vB
-              if len(inter) > 0:
-                join2.append((join_ss, join_hc, inter))
-
-      print('Checking all 3-Way Joins')
-      join3 = []
-      checked = []
-      for a in range(0, len(join2)-1):
-        sA, hA, vA = join2[a]
-        for b in range(a+1, len(join2)):
-          sB, hB, vB = join2[b]
-          if sA == sB:
-            continue
-          ss, hc = sA | sB, hA | hB
-          if (ss, hc) in checked[-10:]:
-            continue
-          checked.append((ss, hc))
-          inter = vA & vB
-          if len(inter) > 0:
-            join3.append((ss, hc, inter))
+      # q=collapse(t1)
+      # for i in q: print(sorted(i))
 
 
-      print('Checking all 4-Way Joins')
-      join4 = []
-      checked = []
-      for a in range(0, len(join3)-1):
-        sA, hA, vA = join3[a]
-        for b in range(a+1, len(join3)):
-          sB, hB, vB = join3[b]
-          if sA == sB:
-            continue
-          ss, hc = sA | sB, hA | hB
-          if (ss, hc) in checked[-10:]:
-            continue
-          checked.append((ss, hc))
-          inter = vA & vB
-          if len(inter) > 0:
-            join4.append((ss, hc, inter))
+      # print('Checking all 2-Way Joins')
+      # join2 = {}
+      # for a in range(0, len(proj_bin_list)-1):
+      #   tA = proj_bin_list[a]
+      #   for b in range(a+1, len(proj_bin_list)):
+      #     tB = proj_bin_list[b]
+      #     join_ss = tuple(set((tA, tB)))
+      #     set_list = []
+      #     for kA, vA in sets[tA].items():
+      #       for kB, vB in sets[tB].items():
+      #         join_hc = set((kA, kB))
+      #         inter = vA & vB
+      #         if len(inter) > 0:
+      #           set_list.append((join_hc, inter))
+      #     if len(set_list) > 0:
+      #       join2[join_ss] = set_list
+      # print('2-Way Join Results:')
+      # for ss, set_list in join2.items():
+      #   for hc, idxlist in set_list:
+      #     print(ss, hc, idxlist)
 
-      if self.filelog:
-        for i in join2:
-          self.filelog.info('%s', str(i))
-        for i in join3:
-          self.filelog.info('%s', str(i))
-        for i in join4:
-          self.filelog.info('%s', str(i))
+
+      # print('Checking all 3-Way Joins')
+      # join3 = []
+      # checked = []
+      # for a in range(0, len(join2)-1):
+      #   sA, hA, vA = join2[a]
+      #   for b in range(a+1, len(join2)):
+      #     sB, hB, vB = join2[b]
+      #     if sA == sB:
+      #       continue
+      #     ss, hc = sA | sB, hA | hB
+      #     if (ss, hc) in checked[-10:]:
+      #       continue
+      #     checked.append((ss, hc))
+      #     inter = vA & vB
+      #     if len(inter) > 0:
+      #       join3.append((ss, hc, inter))
+
+
+      # print('Checking all 4-Way Joins')
+      # join4 = []
+      # checked = []
+      # for a in range(0, len(join3)-1):
+      #   sA, hA, vA = join3[a]
+      #   for b in range(a+1, len(join3)):
+      #     sB, hB, vB = join3[b]
+      #     if sA == sB:
+      #       continue
+      #     ss, hc = sA | sB, hA | hB
+      #     if (ss, hc) in checked[-10:]:
+      #       continue
+      #     checked.append((ss, hc))
+      #     inter = vA & vB
+      #     if len(inter) > 0:
+      #       join4.append((ss, hc, inter))
+
+      # if self.filelog:
+      #   for i in join2:
+      #     self.filelog.info('%s', str(i))
+      #   for i in join3:
+      #     self.filelog.info('%s', str(i))
+      #   for i in join4:
+      #     self.filelog.info('%s', str(i))
 
       DO_MIN_CHECK = False
       if DO_MIN_CHECK:
