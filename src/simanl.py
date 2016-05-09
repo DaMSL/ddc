@@ -22,7 +22,7 @@ import redis
 from core.common import *
 from core.slurm import slurm
 from core.kvadt import kv2DArray
-from core.kdtree import KDTree
+
 from macro.macrothread import macrothread
 import mdtools.deshaw as deshaw
 import datatools.datareduce as dr
@@ -50,7 +50,7 @@ PARALLELISM = 24
 SIM_STEP_SIZE = 2
 
 # Factor used to "simulate" long running jobs using shorter sims
-SIMULATE_RATIO = 1
+SIMULATE_RATIO = 50
 
 class simulationJob(macrothread):
   """Macrothread to run MD simuation. Each worker runs one simulation
@@ -66,7 +66,6 @@ class simulationJob(macrothread):
     self.addImmut('simSplitParam')
     self.addImmut('simDelay')
     self.addImmut('centroid')
-    self.addImmut('pcaVectors')
     self.addImmut('numLabels')
     self.addImmut('terminate')
     self.addImmut('sim_conf_template')
@@ -74,6 +73,7 @@ class simulationJob(macrothread):
     self.addImmut('runtime')
     self.addImmut('obs_noise')
     self.addImmut('sim_step_size')
+    self.addImmut('max_observations')    
     self.addAppend('xid:filelist')
 
     # Local Data to this running instance
@@ -103,14 +103,13 @@ class simulationJob(macrothread):
 
   def term(self):
     numobs = self.catalog.llen('label:rms')
-    if numobs > 150000:
+    if numobs >= self.data['max_observations']:
       logging.info('Terminating at %d observations', numobs)
       return True
     else:
       return False
 
   def split(self):
-
     if len(self.data['jcqueue']) == 0:
       return [], None
     split = int(self.data['simSplitParam'])
@@ -132,7 +131,7 @@ class simulationJob(macrothread):
 
   def execute(self, job):
 
-  # PRE-PREOCESS ---------------------------------------------------------
+  # PRE-PREOCESS ----------------------------------------------------------
     settings = systemsettings()
     bench = microbench('sim_%s' % settings.name, self.seqNumFromID())
     bench.start()
@@ -145,15 +144,21 @@ class simulationJob(macrothread):
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
     USE_SHM = True
 
+    SIMULATE_RATIO = settings.SIMULATE_RATIO
+    if SIMULATE_RATIO > 1:
+      logging.warning(" USING SIMULATION RATIO OF %d -- THis is ONLY for debugging", SIMULATE_RATIO)
     frame_size = (SIMULATE_RATIO * int(job['interval'])) / (1000)
     logging.info('Frame Size is %f  Using Sim Ratio of 1:%d', \
       frame_size, SIMULATE_RATIO)
 
     EXPERIMENT_NUMBER = settings.EXPERIMENT_NUMBER
-    logging.info('Running Experiment #%d', EXPERIMENT_NUMBER)
+    logging.info('Running Experiment Configuration #%d', EXPERIMENT_NUMBER)
 
     # TODO: FOR LINEAGE
-    # srcA, srcB = eval(job['src_bin'])
+    srcA, srcB = eval(job['src_bin'])
+    stat.collect('src_bin', [str(srcA), str(srcB)])
+
+    traj = None
 
   # EXECUTE SIMULATION ---------------------------------------------------------
     if self.skip_simulation:
@@ -167,6 +172,7 @@ class simulationJob(macrothread):
 
     else:
       logging.info('1. Run Simulation')
+
       # Prepare & source to config file
       with open(self.data['sim_conf_template'], 'r') as template:
         source = template.read()
@@ -220,12 +226,27 @@ class simulationJob(macrothread):
       # logging.debug('Ramdisk contents (should be empty) : %s', str(shm_contents))
       # bench.show()
 
-
-      logging.debug("Executing Simulation:\n   %s\n", cmd)
-
-      stdout = executecmd(cmd)
-
-      logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
+      max_expected_obs = int(job['runtime']) // int(job['dcdfreq'])
+      # Retry upto 3 attempts if the sim fails
+      MAX_TRY = 3
+      for i in range(MAX_TRY, 0, -1):
+        min_required_obs = int(max_expected_obs * ((i-1)/(MAX_TRY)))
+        logging.debug("Executing Simulation:\n   %s\n", cmd)
+        logging.debug('# Obs Expected to see: %d', max_expected_obs)
+        stdout = executecmd(cmd)
+        logging.info("SIMULATION Complete! STDOUT/ERR Follows:")
+        # Check file for expected data
+        if USE_SHM:
+          traj = md.load(dcd_ramfile, top=job['pdb'])
+        else:
+          traj = md.load(dcdFile, top=job['pdb'])
+        logging.info("Obs Threshold  = %4d", min_required_obs)
+        logging.info("#Obs This Traj = %4d", traj.n_frames)
+        if traj.n_frames >= min_required_obs:
+          logging.info('Full (enough) Sim Completed')
+          break
+        logging.info('Detected a failed Simulation. Retrying the same sim.')
+      
       bench.mark('SimExec:%s' % job['name'])
 
       # Internal stats
@@ -282,10 +303,11 @@ class simulationJob(macrothread):
 
     # Load full higher dim trajectory
     # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
-    if USE_SHM:
-      traj = md.load(dcd_ramfile, top=job['pdb'])
-    else:
-      traj = md.load(dcdFile, top=job['pdb'])
+    if traj is None:
+      if USE_SHM:
+        traj = md.load(dcd_ramfile, top=job['pdb'])
+      else:
+        traj = md.load(dcdFile, top=job['pdb'])
     bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
@@ -317,16 +339,16 @@ class simulationJob(macrothread):
     # 4. Account for noise : Simple spatial mean filter over a small window
     #    Where size of window captures extent of noise 
     #    (e.g. 10000fs window => motions under 10ps are considered "noisy")
-    # noise = self.data['obs_noise']
-    # stepsize = 500 if 'interval' not in job else int(job['interval'])
-    # nwidth = noise//(2*stepsize)
-    # noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
-    # rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
+    noise = self.data['obs_noise']
+    stepsize = 500 if 'interval' not in job else int(job['interval'])
+    nwidth = noise//(2*stepsize)
+    noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+    rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
 
     # 5. Calculate the RMSD for each filtered point to 5 pre-determined centroids
     # Notes: Delta_S == rmslist
-    # rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
-    rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)
+    rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
+    # rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', \
       numConf, numLabels)
 
@@ -364,7 +386,7 @@ class simulationJob(macrothread):
 
       # Add this index to the set of indices for this respective label
       #  TODO: Should we evict if binsize is too big???
-      logging.debug('Label for observation #%3d: %s', i, str((A, B)))
+      # logging.debug('Label for observation #%3d: %s', i, str((A, B)))
       label_count[(A, B)] += 1
 
       # Group high-dim point by state
@@ -444,6 +466,7 @@ class simulationJob(macrothread):
           if EXPERIMENT_NUMBER > 5:
             logging.debug('Update Covar Subspace')
             for i, si in enumerate(covar):
+              logging.debug('Update COVAR Pt #%d', i)
               local_index = int(i * frame_size * SLIDE_AMT_NS)
               pipe.rpush('subspace:covar:pts', bytes(si))
               pipe.rpush('subspace:covar:xid', global_index[local_index])

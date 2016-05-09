@@ -96,6 +96,7 @@ class systemsettings:
 
     # Redis Service specific settings
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
+    self.CATALOG_PORT = ini.get('catalog_port', 6379)
 
     # CACHE SERVICE PARAMS  (in GB)
     self.CACHE_CAPACITY = 80
@@ -112,12 +113,12 @@ class systemsettings:
     self.MAX_RESERVOIR_SIZE = 1000
 
     # Controller Settings
+    self.SIMULATE_RATIO = ini.get('simulation_ratio', 1)
     # self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
     # self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
     # self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
   
     # Potentailly Dynamic
-    # self.MANAGER_RERUN_DELAY = ini.get('manager_rerun_delay', 60)
     self.PARTITION = ini.get('partition', 'shared')
 
     #  PARAMS TO BE SET:

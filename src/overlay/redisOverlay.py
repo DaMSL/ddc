@@ -44,26 +44,27 @@ EXPERIMENT_NUMBER = 2   # OVERLAP (let it die)
 class RedisService(OverlayService):
   """
   """
-
-
   # REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
 
   def __init__(self, name, port=6379, **kwargs):
     """
     """
-    OverlayService.__init__(self, name, port, **kwargs)
-    self.connection = None
-
     config = systemsettings()
     if not config.configured():
       # For now assume JSON file
       config.applyConfig(name + '.json')
 
-    self.workdir   = config.WORKDIR  #ini.get('workdir', '.')
+    self.workdir             = config.WORKDIR  #ini.get('workdir', '.')
     self.redis_conf_template =  config.REDIS_CONF_TEMPLATE #init.get('redis_conf_template', 'templates/redis.conf.temp')
     self.MONITOR_WAIT_DELAY    = config.MONITOR_WAIT_DELAY #ini.get('monitor_wait_delay', 30)
     self.CATALOG_IDLE_THETA    = config.CATALOG_IDLE_THETA #ini.get('catalog_idle_theta', 300)
     self.CATALOG_STARTUP_DELAY = config.CATALOG_STARTUP_DELAY #ini.get('catalog_startup_delay', 10)
+
+    port = config.CATALOG_PORT
+
+    OverlayService.__init__(self, name, port, **kwargs)
+    self.connection = None
+
 
     # Check if a connection exists to do an immediate shutdown request
     # if os.path.exists(self.lockfile):
@@ -385,6 +386,10 @@ class RedisService(OverlayService):
         time.sleep(1)
         continue
       break
+
+    # Gather stats prior to handing over
+    meminfo = self.connection.info()['used_memory']
+    self.stat.collect('MEMSIZE', meminfo)
 
     logging.info("[Overlay - %s] No active clients releasing Master authority.", self._name_svc)    
     self.connection.slaveof(next_master['ip'], self._port)

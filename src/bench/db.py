@@ -276,6 +276,7 @@ def insert(table, *values):
       print(inst)
 
 def get_expid(name):
+  global conn
   cur = conn.cursor()
   qry = "SELECT expid FROM expr WHERE expname='%s';" % name
   print(qry)
@@ -498,8 +499,10 @@ def time2sec(timestr):
   sc = int(x[2])
   return d + hr*3600 + mn*60 +sc
 
-def sw_file_parser(sourcedir):
+def sw_file_parser(name, source_dir=None):
   global conn
+  home = os.getenv('HOME')
+  sourcedir=home + '/work/log/' + name if source_dir is None else source_dir
   jobinfo={}
   ls = [i for i in os.listdir(sourcedir) if (i.startswith('sw'))]
   appl =  os.path.basename(sourcedir)

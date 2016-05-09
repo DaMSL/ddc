@@ -7,7 +7,7 @@
     a 3D space will subdivide the 2nd (or Y-) axis. 
 """
 
-from collections import deque
+from collections import deque, OrderedDict
 import sys
 import json
 import logging
@@ -388,7 +388,7 @@ class KDTree(object):
     Density => mass / volume, where mass=# points in leaf node
     """
     enc = self.encode()
-    leaves = {}
+    leaves = OrderedDict()
     klist = [k for k in sorted(enc.keys()) if k.startswith('1') or k.startswith('0')]
     for k in klist: 
       tot = 0 if enc[k]['elm'] is None else len(enc[k]['elm'])

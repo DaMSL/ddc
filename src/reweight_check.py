@@ -46,55 +46,65 @@ def collapse_join(origin_keys, views, height=2):
   THETA = 2
   print('\nCOLLAPSE JOIN at LEVEL ', height)
   print('Source Views: ')
-  print(views)
-  if height == len(origin_keys) or len(views) <= 1:
+  # Re-Index View list into a map (Or just pass a map???)
+  original_children = set()
+  child_views = {}
+  for source_children, view in views:
+    # Only process immdiate child views
+    if len(source_children) < (height-1):
+      continue
+    # Dynamically create list of all "original" views feeding this level
+    print('Processing child view: ', source_children, '  containnig %d sets of indices' % len(view))
+    original_children |= source_children
+    c_key = tuple(source_children)
+    # Re-index views to child-node map
+    child_views[c_key] = view
+  print("Souce Children feeding this level: ", original_children)
+  if height > len(origin_keys) or len(child_views) <= 1:
+    print('No More views to process. Max Level collapsed=', len(origin_keys))
     return []
-  domain_list = [set(c) for c in (itertools.combinations(origin_keys, height))]
-  print('Domain List: ',domain_list)
-  domain_candidates = {}
-  for source  in views.keys():
-    print('  Checking source: ', source)
-    subset = set(source)
-    for domain in domain_list:
-      print('  Checking ', subset, ' vs ', domain)
-      if subset < domain:
+  parent_domain = [set(c) for c in (itertools.combinations(original_children, height))]
+  print('Parent Domain List: ',parent_domain)
+  parent_candidates = {}
+  # MAP:  Match each child nodes to all potential parents for merging
+  for child in child_views:
+    print('  Mapping child view: ', child)
+    for parent in parent_domain:
+      print('  Checking ', child, ' vs ', parent)
+      if set(child) < parent:
         # map key <--- set(c)
-        d_key = tuple(domain)
-        if d_key not in domain_candidates.keys():
-          domain_candidates[d_key] = set()
-        domain_candidates[d_key].add(source)
-  print('Domain Candidates: ')
-  for k, v in domain_candidates.items():
+        p_key = tuple(parent)
+        if p_key not in parent_candidates.keys():
+          parent_candidates[p_key] = set()
+        parent_candidates[p_key].add(child)
+  print('Parent Candidates: ')
+  for k, v in parent_candidates.items():
     print('  ', k, '    ', len(v))
-  merge_candidates = {}
-  for domain, sources in domain_candidates.items():
-    # re-map set(c) <-- key
-    if len(sources) <= 1:
+  target_views = []
+  # NOTE: could shuffle parents to process each 2-way join (IF DISTRIBUTED)
+  for parent, children in parent_candidates.items():
+    # Need at least 2 child nodes to perform a 2-way join
+    if len(children) <= 1:
       continue
     # Additional Pruning here
-    # Query Optimization Here (to ID optimal L & R sources)
-    source_list = list(sources)
-    merge_candidates[domain] = tuple(source_list[:2])
-  print('Merge Candidates: ')
-  for k, v in merge_candidates.items():
-    print('  ', k, '    ', v)
-  target_views = {}
-  for domain, pair in merge_candidates.items():
-    target_setlist = []
-    # Perform 2-way join
-    print('2-Way Join on: ', pair)
-    L, R = tuple(pair)
-    for idxL, valL in views[L]:
-      for idxR, valR in views[R]:
+    # Query Optimization Goes Here (to ID optimal L & R sources)
+    L = children.pop()
+    R = children.pop()
+    print('Merging Children ', L, ' & ', R, ' ====> ', parent)
+
+    joined_view = []
+    # REDUCE: Perform 2-way join
+    for idxL, valL in child_views[L]:
+      for idxR, valR in child_views[R]:
         # Final Pruning Here
         idx_set = idxL | idxR
         intersection = valL & valR
         if len(intersection) > THETA:
-          target_setlist.append((idx_set, intersection))
-    if len(target_setlist) > 0:
-      superset = tuple(set(L) | set(R))
-      target_views[superset] = target_setlist
-  return target_views.update(collapse_join(origin_keys, target_views, height+1))
+          joined_view.append((idx_set, intersection))
+    if len(joined_view) > 0:
+      target_views.append((set(parent), joined_view))
+  print('RESULTS:  %d-Way-Joins,  #Views Created=%d' %(height, len(target_views)))
+  return target_views + collapse_join(origin_keys, target_views, height+1)
 
 class reweightJob(object):
     def __init__(self, name, host='localhost', port=6385):
@@ -273,11 +283,11 @@ class reweightJob(object):
       logging.debug('##NUM_OBS: %d', num_pts)
 
       # TEST_TBIN = [(i,j) for i in range(2,5) for j in range(5)]
-      TEST_TBIN = [(2,0), (4,2), (2,2), (4,1)]
-      MAX_SAMPLE_SIZE   = 10   # Max # of cov "pts" to back project
+      TEST_TBIN = [(2,0), (4,2), (2,2), (4,1), (3,1), (4,4), (0,4), (0,2), (0,1)]
+      MAX_SAMPLE_SIZE   =  100   # Max # of cov traj to back project per HCube
+      MAX_PT_PER_MATRIX =  100   # Num points to sample from each cov traj
       COVAR_SIZE        = 200   # Ea Cov "pt" is 200 HD pts. -- should be static based on user query
-      MAX_PT_PER_MATRIX =  3   # 5% of points from Source Covariance matrix
-
+      MAX_HCUBE         = 6      # Max Num HCubes to process
 
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
@@ -353,17 +363,18 @@ class reweightJob(object):
       global_kdtree = KDTree(250, maxdepth=8, data=subspace_covar_pts, method='middle')
   
 
-      # hcube_global = global_kdtree.getleaves()
-
+      if MAX_HCUBE <= 0:
+        hcube_global = global_kdtree.getleaves()
+      else:
       # FOR DEBUGGING -- USE ONLY 3 GLOBAL HCUBES
-      hcube_global_ALL = global_kdtree.getleaves()
-      hcube_global = {}
-      num = 0
-      for k, v in hcube_global_ALL.items():
-        hcube_global[k] = v
-        num += 1
-        if num == 4:
-          break
+        hcube_global_ALL = global_kdtree.getleaves()
+        hcube_global = {}
+        num = 0
+        for k, v in hcube_global_ALL.items():
+          hcube_global[k] = v
+          num += 1
+          if num == MAX_HCUBE:
+            break
 
       # hcube_global = global_kdtree.getleaves()
       logging.info('Global HCubes: Key  Count  Volume  Density  (NOTE DEBUGGING ONLY 3 USED)')
@@ -402,21 +413,21 @@ class reweightJob(object):
         logging.debug('Back Projected %d points to HD space: %s', 
           len(hcube_global[key]['idxlist']), str(hcube_global[key]['alpha']))
 
-      logging.info('Calculating all HD Distances')
-      dist_hd = {}
-      dist_ld = {}
-      for key in hcube_global.keys():
-        T = hcube_global[key]['alpha'].xyz
-        N = len(T)
-        dist_hd[key] = np.zeros(shape=(N, N))
-        dist_ld[key] = {}
-        for A in range(0, N):
-          dist_hd[key][A][A] = 0
-          for B in range(A+1, N):
-            dist_hd[key][A][B] = dist_hd[key][B][A] = LA.norm(T[A] - T[B])
+      # logging.info('Calculating all HD Distances')
+      # dist_hd = {}
+      # dist_ld = {}
+      # for key in hcube_global.keys():
+      #   T = hcube_global[key]['alpha'].xyz
+      #   N = len(T)
+      #   dist_hd[key] = np.zeros(shape=(N, N))
+      #   dist_ld[key] = {}
+      #   for A in range(0, N):
+      #     dist_hd[key][A][A] = 0
+      #     for B in range(A+1, N):
+      #       dist_hd[key][A][B] = dist_hd[key][B][A] = LA.norm(T[A] - T[B])
         
 
-      # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
+    # KD Tree for states from Reservoir Sample of RMSD labeled HighDim
       reservoir = ReservoirSample('rms', self.catalog)
 
       logging.info("=====  BUILD HCube Tree(s) Using Smallest State(s) (FROM RMSD Obsevations) ")
@@ -428,14 +439,17 @@ class reweightJob(object):
       logging.info("=======================================================")
       logging.info("   PROJECT Global HCubes into Per-Bin HCube KD Tree(s)")
       logging.info("=======================================================\n")
-      projected_bin = []
+
       overlap_hcube = {k: {} for k in hcube_global.keys()}
 
-      projlist = []
+      projection_map = {}
+
+
+      pt_projection_list = []
       for key in sorted(hcube_global.keys()):
         for i in range(len(hcube_global[key]['alpha'].xyz)):
-          projlist.append([])
-      for tbin in TEST_TBIN:
+          pt_projection_list.append([])
+      for bin_idx, tbin in enumerate(TEST_TBIN):
         logging.info("Project Global HCubes into local subspace for %s", str(tbin))
         # Load Vectors
         logging.info('Loading subspace and kernel for bin %s', str(tbin))
@@ -449,7 +463,8 @@ class reweightJob(object):
         if len(data) == 0:
           logging.error('No Raw PCA data points for bin %s.... Going to next bin', str(tbin))
           continue
-        projected_bin.append(tbin)
+
+
         logging.info('Building KDtree over local %s bin from observations matrix of size: %s', str(tbin), str(data.shape))
         kdtree = KDTree(200, maxdepth=8, data=data, method='middle')
         hcube_local[tbin] = kdtree.getleaves()
@@ -468,6 +483,7 @@ class reweightJob(object):
 
         n_total = 0
         logging.debug('Global Hcubes to Project (%d):  %s', len(hcube_global.keys()), str(hcube_global.keys()))
+        projection_map[bin_idx] = {k: set() for k in hcube_local[tbin].keys()}
         
         pnum = 0
         for key in sorted(hcube_global.keys()):
@@ -486,45 +502,78 @@ class reweightJob(object):
                   'num_projected': 0}
             overlap_hcube[key][tbin][hcube]['num_projected'] += 1
 
-            projlist[pnum].append(hcube)
+            # Index this point in corresponding local HCube projection view
+            projection_map[bin_idx][hcube].add(pnum)
+
+            pt_projection_list[pnum].append(hcube)
             pnum += 1
 
           for k, v in sorted(overlap_hcube[key][tbin].items()):
             logging.debug('   Project ==> Local HCube `%-9s`: %5d points', k, v['num_projected'])
-          logging.info('Calculating Lower Dimensional Distances')
-          N = len(cov_proj_pca)
-          dist_ld[key][tbin] = np.zeros(shape=(N, N))
-          for A in range(0, N):
-            for B in range(A+1, N):
-              dist_ld[key][tbin][A][B] = dist_ld[key][tbin][B][A] = LA.norm(cov_proj_pca[A] - cov_proj_pca[B])
+          # logging.info('Calculating Lower Dimensional Distances')
+          # N = len(cov_proj_pca)
+          # dist_ld[key][tbin] = np.zeros(shape=(N, N))
+          # for A in range(0, N):
+          #   for B in range(A+1, N):
+          #     dist_ld[key][tbin][A][B] = dist_ld[key][tbin][B][A] = LA.norm(cov_proj_pca[A] - cov_proj_pca[B])
+
+
+    # Re-Index projected points -- could make this a list too
+
+      next_index = 0
+      view_list = []
+      for bin_idx, hcube_map in projection_map.items():
+        hcube_list = []
+        for hcube_key, pt_list in hcube_map.items():
+          hcube_list.append((set((hcube_key,)), set(pt_list)))
+        view_list.append((set((bin_idx,)), hcube_list))
+
+      print("CALLING: Collapse Join")
+      joined_subspaces = collapse_join(projection_map.keys(), view_list)
+      for subspace_list, correlated_hcubes in joined_subspaces:
+        tbin_list = [TEST_TBIN[bin_idx] for bin_idx in subspace_list]
+        for hcube_list, pt_list in correlated_hcubes:
+          print(tbin_list, hcube_list, pt_list)
+          # TODO: Corrlate Back to Global 
+      print('Visualize HERE')
 
 
 
-      sets = {}
-      proj_bin_list = []
-      for tbin in TEST_TBIN:
-        if tbin not in hcube_local:
-          continue
-        proj_bin_list.append(tbin)
-        sets[tbin] = {k: set() for k in hcube_local[tbin].keys()}
-      for n, proj in enumerate(projlist):
-        for i, tbin in enumerate(proj_bin_list):
-          sets[tbin][proj[i]].add(n)
-        if self.filelog:
-          self.filelog.info('%d,%s', n, ','.join(proj))
-        logging.info('%d,%s', n, ','.join(proj))
+      # for idx, tbin in enumerate(TEST_TBIN):
+      #   # Only process substates with data
+      #   if tbin not in hcube_local:
+      #     logging.warning('Local KD Tree not created for %s', str(tbin))
+      #     continue
+      #   projection_map[(idx,)] = {k: set() for k in hcube_local[tbin].keys()}
+      # for n, proj in enumerate(pt_projection_list):
+      #   for i, tbin in enumerate(proj_bin_list):
+      #     sets[tbin][proj[i]].add(n)
+      #   if self.filelog:
+      #     self.filelog.info('%d,%s', n, ','.join(proj))
+      #   logging.info('%d,%s', n, ','.join(proj))
 
-      set_list = {}
-      for tbin, view in sets.items():
-        set_list[(tbin,)] = []
-        for hcube, idxlist in view.items():
-          print(tbin, hcube, idxlist)
-          set_list[(tbin,)].append((set((hcube,)), idxlist))
 
-      print("Trying Collapse Join")
-      out = collapse_join(set_list.keys(), set_list)
-      for view in out:
-        print(view)
+      # sets = {}
+      # proj_bin_list = []
+      # for tbin in TEST_TBIN:
+      #   if tbin not in hcube_local:
+      #     continue
+      #   proj_bin_list.append(tbin)
+      #   sets[tbin] = {k: set() for k in hcube_local[tbin].keys()}
+      # for n, proj in enumerate(pt_projection_list):
+      #   for i, tbin in enumerate(proj_bin_list):
+      #     sets[tbin][proj[i]].add(n)
+      #   if self.filelog:
+      #     self.filelog.info('%d,%s', n, ','.join(proj))
+      #   logging.info('%d,%s', n, ','.join(proj))
+
+      # set_list = {}
+      # for tbin, view in sets.items():
+      #   set_list[(tbin,)] = []
+      #   for hcube, idxlist in view.items():
+      #     print(tbin, hcube, idxlist)
+      #     set_list[(tbin,)].append((set((hcube,)), idxlist))
+
 
       # def collapse(C):
       #   a = 0

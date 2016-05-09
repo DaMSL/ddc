@@ -83,9 +83,10 @@ class OverlayService(object):
     settings = systemsettings()
     settings.applyConfig(name + '.json')
 
+    # For Stat Collection
+    self.stat = StatCollector('Overlay')
+
     # DEBUG
-    with open('envtest.json', 'w') as js:
-      json.dump(dict(os.environ), js)
     self._host = socket.gethostname()
     self._port = port
 
@@ -112,10 +113,14 @@ class OverlayService(object):
       # Not running as a Slurm Job (set default TTL)
       self.ttl = dt.now().timestamp() + DEFAULT_TTL
       self.jobinfo = None
+      self.stat.collect("slurmid","None")
     else:
+      logging.info("SLURM JOB:  %s", str(self.slurm_id))
       self.jobinfo = slurm.jobinfo(int(self.slurm_id))
       endtime = dtparser.parse(self.jobinfo['EndTime'])
       self.ttl = endtime.timestamp()
+      self.stat.collect("slurmid",self.slurm_id)
+    self.stat.collect("ttl",self.ttl)
 
 
     # TODO: All services' nodes assume to run on same port (different hosts)
@@ -140,8 +145,6 @@ class OverlayService(object):
     signal.signal(signal.SIGQUIT, self.halt)
     signal.signal(signal.SIGHUP, self.halt)
 
-    # For Stat Collection
-    self.stat = StatCollector('Overlay')
 
 
   @abc.abstractmethod
@@ -196,7 +199,6 @@ class OverlayService(object):
   def start(self):
     """
     """
-
     logging.info('Overlay Service is Starting: %s', self._name_svc)
     logging.info('  SERVICE_STARTUP_DELAY  = %d', self.SERVICE_STARTUP_DELAY)
     logging.info('  SERVICE_HEARTBEAT_DELAY  = %d\n', self.SERVICE_HEARTBEAT_DELAY)

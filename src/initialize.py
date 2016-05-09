@@ -25,6 +25,7 @@ import mdtools.deshaw as deshaw
 
 DO_COV_MAT = False
 
+DESHAW_LABEL_FILE = 'data/deshaw_labeled_bins.txt'
 
 # For changes to schema
 def updateschema(catalog):
@@ -68,29 +69,13 @@ def initializecatalog(catalog):
   for k, v in initvals.items():
     logging.debug("Initializing data elm %s  =  %s", k, str(v))
 
-  # Initialize Candidate Pools
-  numLabels  = int(catalog.get('numLabels'))
-
-  logging.info("Updating Catalog")
-
-  pipe = catalog.pipeline()  
-  logging.info("Deleting existing candidates and controids")
-  pipe.delete('centroid')
-  pipe.delete('pcaVectors')
-  pipe.execute()
-
   # New distance space based centroids
+  catalog.delete('centroid')
   centfile = settings.RMSD_CENTROID_FILE
-
   logging.info("Loading centroids from %s", centfile)
   centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
 
-  # Initialize observations matrix
-  # logging.info('Initializing observe and runtime matrices')
-  # observe = kv2DArray(catalog, 'observe', mag=numLabels, init=0)
-  # launch  = kv2DArray(catalog, 'launch',  mag=numLabels, init=0)
-  # runtime = kv2DArray(catalog, 'runtime', mag=numLabels, init=settings.init['runtime'])
 
 def load_PCA_Subspace(catalog):
 
@@ -128,7 +113,7 @@ def load_PCA_Subspace(catalog):
   catalog.set('hcube:pca', encoded)
   logging.info('PCA Complete')
 
-def labelDEShaw_rmsd():
+def labelDEShaw_rmsd(store_to_disk=False):
   """label ALL DEShaw BPTI observations by state & secondary state (A, B)
   Returns frame-by-frame labels  (used to seed jobs)
   """
@@ -136,7 +121,7 @@ def labelDEShaw_rmsd():
   logging.info('Loading Pre-Calc RMSD Distances from: %s   (For initial seeding)','bpti-rmsd-alpha-dspace.npy')
   rms = np.load('bpti-rmsd-alpha-dspace.npy')
   prox = np.array([np.argsort(i) for i in rms])
-  theta = 0.25
+  theta = 0.27
   logging.info('Labeling All DEShaw Points.')
   rmslabel = []
   # Only use N-% of all points
@@ -146,9 +131,13 @@ def labelDEShaw_rmsd():
     proximity = abs(rms[i][prox[i][1]] - rms[i][A])    #abs
     B = prox[i][1] if proximity < theta else A
     rmslabel.append((A, B))
+  if store_to_disk:
+    with open(DESHAW_LABEL_FILE, 'w') as lfile:
+      for label in rmslabel:
+        lfile.write('%s\n' % str(label))
   return rmslabel
 
-def seedJob_Uniform(catalog, num=1):
+def seedJob_Uniform(catalog, num=1, exact=None):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
   Selects equal `num` of randomly start frames from each bin
@@ -165,8 +154,17 @@ def seedJob_Uniform(catalog, num=1):
 
   if catalog.exists('label:deshaw'):
     rmslabel = [eval(x) for x in catalog.lrange('label:deshaw', 0, -1)]
+  elif os.path.exists(DESHAW_LABEL_FILE):
+    with open(DESHAW_LABEL_FILE) as lfile:
+      rmslabel = [eval(label) for label in lfile.read().strip().split('\n')]
+    logging.info('Loaded DEShaw %d Labels from file, %s', len(rmslabel), DESHAW_LABEL_FILE)
+    pipe = catalog.pipeline()
+    for rms in rmslabel:
+      pipe.rpush('label:deshaw', rms)
+    pipe.execute()
+    logging.info('DEShaw Labels stored in the catalog.')
   else:
-    rmslabel = labelDEShaw_rmsd()
+    rmslabel = labelDEShaw_rmsd(store_to_disk=True)
     pipe = catalog.pipeline()
     for rms in rmslabel:
       pipe.rpush('label:deshaw', rms)
@@ -174,6 +172,7 @@ def seedJob_Uniform(catalog, num=1):
     logging.info('DEShaw Labels stored in the catalog.')
   logging.info('Grouping all prelabeled Data:')
   groupby = {b:[] for b in binlist}
+
   for i, b in enumerate(rmslabel):
     groupby[b].append(i)
 
@@ -181,14 +180,35 @@ def seedJob_Uniform(catalog, num=1):
     v = groupby[k]
     logging.info('%s %7d %4.1f', str(k), len(v), (100*len(v)/len(rmslabel)))
 
-  for binlabel in sorted(groupby.keys()):
+  if exact is None:
+    source_list = sorted(groupby.keys())
+  else:
+    bin_list = list(groupby.keys())
+    if exact <= 25:
+      idx_list = np.random.choice(len(bin_list), exact, replace=False)
+    else:
+      idx_list = np.random.choice(len(bin_list), exact, replace=True)
+    source_list = [bin_list[i] for i in idx_list]
+
+  for binlabel in source_list:
     clist = groupby[binlabel]
+    A, B = binlabel
 
     # No candidates
     if len(clist) == 0:
-      continue
+      logging.info('NO Candidates for %s', str(binlabel))
+      if binlabel == (1, 3):
+        logging.info('Swapping (1,2) for (1,3)')
+        clist = groupby[(1,2)]
+        B = 2
+      elif binlabel == (3, 1):
+        logging.info('Swapping (3,0) for (3,1)')
+        clist = groupby[(3,0)]
+        B = 0
+      else:
+        logging.info('Not sampling this bin')
+        continue
 
-    A, B = binlabel
     for k in range(num):
       logging.debug('\nSeeding Job #%d for bin (%d,%d) ', k, A, B)
       index = np.random.choice(clist)
@@ -212,6 +232,7 @@ def seedJob_Uniform(catalog, num=1):
           origin  = 'deshaw',
           src_index = index,
           src_bin  = (A, B),
+          src_hcube = 'D',
           application   = settings.APPL_LABEL)
       logging.info("New Simulation Job Created: %s", jcID)
       for k, v in config.items():
@@ -313,7 +334,7 @@ def resetAnalysis(catalog):
 
     
 
-#############################
+#############################  OLDER
 DESHAW_PTS_FILE =  os.getenv('HOME') + '/work/data/debug/bpti_10p.npy'
 DESHAW_SAMPLE_FACTOR = 10  # As in 1/10th of full data set
 
@@ -593,6 +614,7 @@ if __name__ == '__main__':
   parser.add_argument('--initpca', action='store_true')
   parser.add_argument('--reset', action='store_true')
   parser.add_argument('--all', action='store_true')
+  parser.add_argument('--exact', action='store_true')
 
   # parser.add_argument('--initarchive', action='store_true')
   # parser.add_argument('--seeddata', action='store_true')
@@ -623,7 +645,10 @@ if __name__ == '__main__':
   if args.seedjob or args.all:
     numresources = int(catalog.get('numresources'))
     initialJobPerBin = max(1, numresources//25)
-    seedJob_Uniform(catalog, num=initialJobPerBin)
+    if args.exact:
+      seedJob_Uniform(catalog, num=initialJobPerBin, exact=numresources)
+    else:
+      seedJob_Uniform(catalog, num=initialJobPerBin)
 
   if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)

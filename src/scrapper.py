@@ -14,11 +14,28 @@ from core.kdtree import KDTree
 # For scraping in the ctl log file (post-parsed) and pre-processing data
 
 #  FOR SCRAPPING post-processed BiPartite Output (TODO: Pull direct from log)
-def get_local():
+def get_global():
   with open('../ctl.log') as ctllog:
     lines = ctllog.read().strip().split('\n')
   raw = [k.split(',') for k in lines]
   gkeys = raw[0][2:]
+  gcounts = raw[1][2:]
+  return {gk: gc for gk, gc in zip(gkeys, gcounts)}
+
+def get_global_full():
+  with open('../ctl.log') as ctllog:
+    lines = ctllog.read().strip().split('\n')
+  raw = [k.split(',') for k in lines]
+  glob={}
+  for i in raw[:4]:
+    if i[0] =='global':
+      glob[i[1]] = i[2:]
+  return glob
+
+def get_local():
+  with open('../ctl.log') as ctllog:
+    lines = ctllog.read().strip().split('\n')
+  raw = [k.split(',') for k in lines]
   local = {}
   for r in raw:
     if r[0] == 'local':
@@ -27,8 +44,23 @@ def get_local():
       local[r[1]][r[2]] = r[3:]
   return local
 
+def get_local_full():
+  with open('../ctl.log') as ctllog:
+    lines = ctllog.read().strip().split('\n')
+  raw = [k.split(',') for k in lines]
+  local={}
+  for i in raw:
+    if i[0] !='local':
+      continue
+    if i[1] not in local:
+      local[i[1]] = {}
+    local[i[1]][i[2]] = i[3:]
+  return local
+
+
 
 def get_edges():
+  local = get_local()
   with open('../ctl.log') as ctllog:
     lines = ctllog.read().strip().split('\n')
   raw = [k.split(',') for k in lines]
@@ -46,16 +78,33 @@ def get_edges():
       data[b][gmap[g]][lmap[b][l]] += int(n)
   return data
 
-def rowcol_heatmaps(data):
+def plotheatmaps(data, title=''):
+  local = get_local_full()
+  glob = get_global_full()
+  gden = [('%4.0f'%float(i)).lstrip('0') for i in glob['density']]
+  gcnt = [int(i) for i in glob['count']]
+  max_gden = max([float(i) for i in glob['density']])
   for tbin in data.keys():
     c = np.array(data[tbin])
-    gcnt = np.sum(c, axis=1)
-    lcnt = np.sum(c, axis=0)
-    norm = np.nan_to_num(c / np.linalg.norm(c, axis=-1)[:, np.newaxis])
-    P.heatmap(norm.T, gcnt, lcnt, tbin+'_Norm_by_Col')
+    # gcnt = np.sum(c, axis=1)
+    # lcnt = np.sum(c, axis=0)
+    lcnt = [int(i) for i in local[tbin]['count']]
+    lden = [float(i) for i in local[tbin]['density']]
+    lden_norm = [i / sum(lden) for i in lden]
+    lden_scaled = [i * max_gden for i in lden_norm]
+    denlab = [('%3.0f'%i) for i in lden_scaled]
+    print(local[tbin]['volume'])
+    glabels = ['%4d/%4s' % i for i in zip(gcnt,gden)]
+    llabels = ['%4d/%4s' % i for i in zip(lcnt,denlab)]
+    norm_c = np.nan_to_num(c / np.linalg.norm(c, axis=-1)[:, np.newaxis]).T
+    P.heatmap(norm_c, glabels, llabels, title+tbin+'_col')
     d = c.T
-    norm = np.nan_to_num(d / np.linalg.norm(d, axis=-1)[:, np.newaxis])
-    P.heatmap(norm, gcnt, lcnt, tbin+'_Norm_by_Row')
+    norm_r = np.nan_to_num(d / np.linalg.norm(d, axis=-1)[:, np.newaxis])
+    P.heatmap(norm_r, glabels, llabels, title+tbin+'_row')
+
+    combined = (norm_c + norm_r) / 2
+    P.heatmap(combined, glabels, llabels, title+tbin+'_combined')
+    print(combined)
 
 
 # To reproject previous sampled data points onto newer reweighted graphs
@@ -135,8 +184,8 @@ def reproj_distro():
     rowlist = tuple(gcnt) + ('localKPCA', 'biased',)
     P.bargraph((np.mean(norm, axis=0), d), tkey, ['Reweight', 'Biased'])
 
-imp.reload(P); 
-P.heatmap(arr, rowlist, lcnt, tkey+'_reproj')
-P.heatmap(norm.T, gcnt, lcnt, tbin+'_Norm_by_Col')
-P.heatmap(d.reshape(53,1), ['biased'], local['2_0']['count'], 'testbiased')
+def plot_heatmaps():
+  P.heatmap(arr, rowlist, lcnt, tkey+'_reproj')
+  P.heatmap(norm.T, gcnt, lcnt, tbin+'_Norm_by_Col')
+  P.heatmap(d.reshape(53,1), ['biased'], local['2_0']['count'], 'testbiased')
 
