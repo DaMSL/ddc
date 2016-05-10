@@ -4,6 +4,24 @@
 from collections import OrderedDict
 import bench.db as db
 import plot as P
+import os
+import logging
+import numpy as np
+import mdtools.deshaw as deshaw
+import datatools.datareduce as datareduce
+import mdtraj as md
+import redis
+
+from datatools.pca import PCAnalyzer, PCAKernel
+from core.kdtree import KDTree
+import datatools.datareduce as datareduce
+import datatools.datacalc as datacalc
+import mdtools.deshaw as deshaw
+
+
+
+
+logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
 binlist = [(a, b) for a in range(5) for b in range(5)]
 sbinlist = [str(i) for i in binlist]
@@ -81,6 +99,44 @@ def print_hc_table(DD):
     print(s, ' '.join(['%5d'%DD[e]['0_4'][s] for e in elist]))
 
 
+def high_low_check(r, tbin='(0, 4)'):
+  print('Pulling data...')
+  obslist=rb.lrange('label:rms', 0, -1)
+  ob04 = [i for i, o in enumerate(obslist) if o == tbin]
+  traj = backProjection(r, ob04)
+  alpha = datareduce.filter_alpha(traj)
+  print('Kpca')
+  kpca1 = PCAKernel(6, 'sigmoid')
+  kpca1.solve(alpha.xyz)
+  X = kpca1.project(alpha.xyz)
+  print('KDTree1')
+  kdtree1 = KDTree(50, maxdepth=4, data=X, method='median')
+  hc1 = kdtree1.getleaves()
+  print('KDTree2')
+  Y = alpha.xyz.reshape(alpha.n_frames, 174)
+  kdtree2 = KDTree(50, maxdepth=4, data=Y, method='median')
+  hc2 = kdtree2.getleaves()
+  hc1k = sorted(hc1.keys())
+  hc2k = sorted(hc2.keys())
+  s1 = [set(hc1[k]['elm']) for k in hc1k]
+  s2 = [set(hc2[k]['elm']) for k in hc2k]
+  dd = np.zeros(shape=(len(s1), len(s2)))
+  print('     ', ' '.join(hc1k))
+  for i, a in enumerate(s1):
+    print('  ' +hc1k[i], end=' ')
+    for j, b in enumerate(s2):
+      n = len(a & b)
+      print('%4d'%n, end=' ')
+      dd[i][j] = n
+    print('\n', end=' ')
+  
+P.heatmap(dd, hc1k, hc2k, title='High_Low_unif_unbal2', xlabel='High Dim (x,y,z) KD Tree Leaves', ylabel='Low Dim (KPCA) KD Tree Leaves')
+
+  return dd
+
+
+
+
 def microb():
   traj = OrderedDict()
   trans = OrderedDict()
@@ -111,3 +167,68 @@ def microb():
         # trans[job].append((i-n, n, last, obs))
       n = 0
       last=obs
+
+
+def backProjection(r, index_list):
+        """Perform back projection function for a list of indices. Return a list 
+        of high dimensional points (one per index). Check cache for each point and
+        condolidate file I/O for all cache misses.
+        """
+
+        logging.debug('--------  BACK PROJECTION:  %d POINTS ---', len(index_list))
+
+        # reverse_index = {index_list[i]: i for i in range(len(index_list))}
+
+        source_points = []
+
+        pipe = r.pipeline()
+        for idx in index_list:
+          # Negation indicates  historical index:
+          index = int(idx)
+          if index < 0:
+            continue
+          else:
+            pipe.lindex('xid:reference', index)
+
+        # Load higher dim point indices from catalog
+        generated_framelist = pipe.execute()
+
+        ref = deshaw.topo_prot  # Hard coded for now
+
+        # Group all Generated indidces by file index 
+        groupbyFileIdx = {}
+        for i, idx in enumerate(generated_framelist):
+          file_index, frame = eval(idx)
+          if file_index not in groupbyFileIdx:
+            groupbyFileIdx[file_index] = []
+          groupbyFileIdx[file_index].append(frame)
+
+        # Dereference File index to filenames
+        generated_frameMask = {}
+        generated_filemap = {}
+        for file_index in groupbyFileIdx.keys():
+          filename = r.lindex('xid:filelist', file_index)
+          if filename is None:
+            logging.error('Error file not found in catalog: %s', filename)
+          else:
+            key = os.path.splitext(os.path.basename(filename))[0]
+            generated_frameMask[key] = groupbyFileIdx[file_index]
+            generated_filemap[key] = filename
+
+        # Check cache for generated data points
+        bplist = []
+        for filename, frames in generated_frameMask.items():
+          bplist.append(('sim', generated_filemap[filename], frames))
+
+        source_points = []
+        logging.debug('Sequentially Loading %d trajectories', len(bplist))
+        for ftype, fileno, framelist in bplist:
+          traj = datareduce.load_trajectory(fileno)
+          selected_frames = traj.slice(framelist)
+          source_points.extend(selected_frames.xyz)
+
+        logging.debug('All Uncached Data collected Total # points = %d', len(source_points))
+        source_traj = md.Trajectory(np.array(source_points), ref.top)
+
+        logging.info('--------  Back Projection Complete ---------------')
+        return source_traj

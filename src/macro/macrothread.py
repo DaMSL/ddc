@@ -361,6 +361,7 @@ class macrothread(object):
     # Dispatch Workers
     else:
       workernum = 1
+      delay = 1800 + self.delay  
 
       # Set baseline slurm params and modules (to allow for dynamic disatching)
       baseline_param = copy.deepcopy(self.slurmParams)
@@ -385,7 +386,6 @@ class macrothread(object):
 
 
     # Elas Policy to control manager rescheduling
-    delay = self.delay  
     self.slurmParams['begin'] = 'now+%d' % delay
     self.slurmParams['job-name'] = self.toMID(nextid)
     self.slurmParams['cpus-per-task'] = 1

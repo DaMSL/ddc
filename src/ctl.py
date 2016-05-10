@@ -1387,7 +1387,7 @@ class controlJob(macrothread):
           sampled_distro_perbin[tbin] += 1
           if bincounts[selected_bin] is not None and bincounts[selected_bin] > 0:
   
-            if selected_bin not in hcube_local.keys():
+            if tbin not in hcube_local.keys():
               sample_num = np.random.randint(bincounts[selected_bin])
               logging.info("No SubSpace for %s. Reverting to Uniform [Still Incubating] selecting sample #%d", 
                 str(tbin), sample_num)
@@ -1395,14 +1395,17 @@ class controlJob(macrothread):
               # REWEIGHT SAMPLING: Secondary Sampling is either explore/exploit from Reweight Op 
               exploit = np.random.random(1) < self.data['exploit_factor']
               if exploit:
+                expl_scheme = 'Exploit'
                 hcube_idx = np.random.choice(len(exploit_pdf[tbin]), p=exploit_pdf)
               else:
+                expl_scheme = 'Explore'
                 hcube_idx = np.random.choice(len(explore_pdf[tbin]), p=explore_pdf)
               selected_hcube = loc_idx[hcube_idx]
 
               # Uniform sample within the chosen bin
               sample_num = np.random.choice(hcube_local[tbin][selected_hcube]['elm'])
-              logging.debug('REWEIGHT SAMPLER: selecting sample #%d from bin %s', sample_num, str(tbin))
+              logging.debug('REWEIGHT SAMPLER [%s]: selecting sample #%d from bin %s', 
+                expl_scheme, sample_num, str(tbin))
 
             index = self.catalog.lindex('varbin:rms:%d_%d' % tbin, sample_num)
             selected_index_list.append(index)

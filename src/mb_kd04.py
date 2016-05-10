@@ -17,6 +17,11 @@ import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
 
+import redis
+import dhist as dh
+from datatools.pca import PCAnalyzer, PCAKernel
+
+
 from core.common import *
 from core.kdtree import KDTree
 import datatools.datareduce as datareduce
@@ -222,7 +227,7 @@ class reweightJob(object):
             jcID, params = generateNewJC(traj)
             jcConfig = dict(params,
                   name    = jcID,
-                  runtime = 100000,     # In timesteps
+                  runtime = 50000,     # In timesteps
                   dcdfreq = 500,           # Frame save rate
                   interval = 1000,                       
                   temp    = 310,
@@ -254,6 +259,9 @@ class reweightJob(object):
       return []
 
 
+
+
+P.heatmap(dd, hc1k, hc2k, title='High_Low_unif_sig_kpca', xlabel='High Dim (x,y,z) KD Tree Leaves', ylabel='Low Dim (KPCA) KD Tree Leaves')
 
 if __name__ == '__main__':
   # parser = argparse.ArgumentParser()
