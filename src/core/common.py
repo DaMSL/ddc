@@ -154,14 +154,29 @@ class systemsettings:
 
     self._configured = True
 
-
-
-  # INDEX_LOCKFILE = os.path.join(WORKDIR, 'index.lock')
-
-
-  # Catalog Params
-  # TODO: Move this from a file to the archive!
   
+
+  def manualConfig(self, application):
+    if self.configured():
+      return
+
+    logging.info("Applying System Settings from local map")   
+    # System Environment Settings
+    self.EXPERIMENT_NUMBER    = -1
+
+    #  READ & SET for EACH 
+    self.APPL_LABEL  = application
+    self.name = application   #Alias
+    self.WORKDIR     = os.path.join(os.getenv('HOME'), 'work')
+
+    self.LOGDIR = os.path.join(self.WORKDIR, 'log', application)
+    self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
+    self.DATADIR = os.path.join(self.WORKDIR, 'data', application)
+
+    # Redis Service specific settings
+    self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
+    self._configured = True
+
   
 
   def setnum_pc(self, n=3):

@@ -230,6 +230,20 @@ def histogram(data, title, ylim=None):
   plt.close()  
 
 
+##### PIE CHARTS
+def pie(data, title):
+  labelList = data.keys()
+  vals = [data[k] for k in labelList]
+  plt.clf()
+  ax = plt.subplot(111)
+  plt.pie(vals, labels=labelList, autopct='%1.1f%%', startangle=90)
+  plt.title(title)
+  plt.savefig(SAVELOC + '/pie_' + title + '.png')
+  plt.close()
+
+
+
+
 
 #### BIPARTITE GRAPH
 
@@ -352,9 +366,7 @@ cdict = {
 mycmap = LinearSegmentedColormap('mycmap', cdict)
 plt.register_cmap(cmap=mycmap)
 
-def heatmap(data, rows, cols, title, vmax=None):
-  # print("ROWS:", rows)
-  # print("COLS:", cols)
+def heatmap(data, rows, cols, title, vmax=None, xlabel=None, ylabel=None):
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.cla()
   plt.clf()
@@ -362,7 +374,7 @@ def heatmap(data, rows, cols, title, vmax=None):
   # heatmap = ax.matshow(data, interpolation='nearest')
   # fig.colorbar(heatmap)
   # heatmap = ax.pcolor(data, cmap='YlGnBu', vmin=0, vmax=300)
-  heatmap = ax.pcolormesh(data, cmap='YlGnBu')
+  heatmap = ax.pcolormesh(data, cmap='OrRd')
   fig.colorbar(heatmap)
 
   # # put the major ticks at the middle of each cell
@@ -377,12 +389,18 @@ def heatmap(data, rows, cols, title, vmax=None):
   ax.set_yticklabels(cols, fontsize='x-small')
   ax.set_xlim(0, len(rows))
   ax.set_ylim(0, len(cols))
-  plt.xlabel("Pts Projected FROM each Global HCube")
-  plt.ylabel("Pts Projected INTO each HCube for %s"% title[-3:])
-  # plt.legend()
+  if xlabel is None:
+    plt.xlabel("SOURCE")
+  else:
+    plt.xlabel(xlabel)
+
+  if xlabel is None:
+    plt.ylabel("DESTINATION")
+  else:
+    plt.ylabel(ylabel)
+
   fig.suptitle('Heatmap: '+title)
   plt.tight_layout()
-  # fig.set_size_inches(3,6)
   plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
   plt.close()  
   plt.show()

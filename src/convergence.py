@@ -70,6 +70,27 @@ pathmap = {'uniform': "uniform2",'biased': 'biased1','naive':'naive'}
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
 OBS_PER_NS = 1000
 
+
+# DATA CONVERTING
+def obs2tw(obslist):
+  out = []
+  for obs in obslist:
+    A,B = eval(obs)
+    out.append(('well' if A==B else 'tran') + '-%d'%A)
+  return out
+
+def getobs(name):
+  eid = db.get_expid(name)
+  t = db.runquery('select idx, obs from obs where expid=%d order by idx'%eid)
+  return [i[1] for i in t]
+
+
+def getdistinct(obslist):
+  V = set()
+  for i in obslist:
+    V.add(i)
+  return list(V)
+
 def recheckStats_cumulative(ts, cumulative=False):
   TIMESTEP = ts * OBS_PER_NS
   cuml = {b: [] for b in ab}
@@ -164,7 +185,6 @@ def postgen_bootstraps(all_obs, strap_size_ns, transonly=False, cumulative=False
       bootstrap[b].append(cnts[b]/total[A])
   return bootstrap
 
-
 def postcalc_bootstraps(data, burnin=0):
   print('Calculating Convergence...')
   stats = {b: [bootstrap_std(data[b][burnin:i], interval=.9) for i in range(burnin, len(data[b]))]  for b in ab}
@@ -197,6 +217,335 @@ def get_bootstrap_data(r, burnin=0):
   return bs
     # Plot
 
+
+
+def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
+  for e in data.keys():
+    print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
+    # data[e]['conv'] = [[] for i in range(5)]
+    data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
+    data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
+    bootstrap = postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
+    data[e]['boot'] = postcalc_bootstraps(bootstrap)
+    for A in range(5):
+      aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      for B in range(5):
+        for k in range(len(data[e]['boot']['ci'][(A, B)])):
+          if data[e]['boot']['ci'][(A, B)][k] == 0:
+            value = 1.
+          elif data[e]['boot']['mn'][(A, B)][k] == 0:
+            value = 1.
+          else:
+            value = min(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k], 1.)
+          if A == B:
+            aggW[k].append(value)
+          else:
+            aggT[k].append(value)
+      # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
+      data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
+      data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
+  return data
+
+
+def plotconv_tw(data, STEPSIZE=5, xlim=None):
+  colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
+  for A in [0, 1, 2, 3, 4]:
+    print('Plotting graphs for state %d' % A)
+    plt.clf()
+    ax = plt.subplot(111)
+    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
+    for e, C in zip(data.keys(), colorList):
+      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=C, label=e)
+    plt.title('Convergence for State %d (WELL)'% A)
+    plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
+    if xlim is not None:
+      ax.set_xlim(xlim)
+    plt.legend()
+    plt.savefig(SAVELOC + 'convA-well-%s.png' % (A))
+    plt.close()
+    plt.clf()
+    ax = plt.subplot(111)
+    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
+    for e, C in zip(data.keys(), colorList):
+      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=C, label=e)
+    plt.title('Convergence for State %d (Transitions)'% A)
+    # ax.set_xlim(75,600)
+    plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
+    if xlim is not None:
+      ax.set_xlim(xlim)
+    plt.legend()
+    plt.savefig(SAVELOC + 'convA-tran-%s.png' % (A))
+    plt.close()
+
+
+def convtw_binary(data, slist=None, cumulative=False, STEPSIZE=25):
+  for e in data.keys():
+    print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
+    # data[e]['conv'] = [[] for i in range(5)]
+    data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
+    data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
+    bootstrap = postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
+    data[e]['boot'] = postcalc_bootstraps(bootstrap)
+    for A in range(5):
+      aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
+      for B in range(5):
+        for k in range(len(data[e]['boot']['ci'][(A, B)])):
+          if A == B:
+            aggW[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+          else:
+            aggT[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
+      # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
+      data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
+      data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
+  statelist = [0, 1, 2, 3, 4] if slist is None else slist
+
+  for A in [0, 1, 2, 3, 4]:
+    print('Plotting graphs for state %d' % A)
+    plt.clf()
+    ax = plt.subplot(111)
+    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+    plt.title('Convergence for State %d (WELL)'% A)
+    plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
+    ax.set_xlim(75,600)
+    plt.legend()
+    plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
+    plt.close()
+    plt.clf()
+    ax = plt.subplot(111)
+    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
+    for e in data.keys():
+      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
+    plt.title('Convergence for State %d (Transitions)'% A)
+    ax.set_xlim(75,600)
+    plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
+    plt.legend()
+    plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
+    plt.close()
+  return data
+
+def Convergence5(stepsize):
+  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
+  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[25000:]
+  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
+  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
+  data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
+  return convtw(data, STEPSIZE=stepsize)
+
+def showconvlist(data):
+  for run in data.keys():
+    for k, v in data[run]['wtcnt'].items():
+      print('%s,%s,%s' % (run, k, ','.join(['%4.2f'%i for i in v[1:]])))
+
+
+
+
+
+def calc_conv(obs, step=5000, Nsamp=10):
+  V = getdistinct(obs)
+  results = {v: [] for v in V}
+  N = len(obs)
+  for m in range(step, N, step):
+    conv = bootstrap_sampler(obs[:min(m,N)], samplesize=.2, N=Nsamp)
+    for key in results.keys():
+      if key in conv.keys():
+        results[key].append(min(conv[key][3], 1.))
+      else:
+        results[key].append(1.)
+  return results
+
+
+def show_conv(conv):
+  for k,v in sorted(conv.items()): 
+    print(k, ['%4.2f'%i for i in v])
+
+
+def graphexprA(elist, step=5):
+  data = {name: {'obs': getobs(name)} for name in elist}
+  data = convtw(data, STEPSIZE=step)
+  plotconv_tw(data, STEPSIZE=step)
+
+
+def graphexprB(elist, step=5, tw=True):
+  obsbin = {name: getobs(name) for name in elist}
+  if tw:
+    obslist = {k: obs2tw(v) for k, v in obsbin.items()}
+  else:
+    obslist = obsbin
+  convlist = {k: calc_conv(v, step=step*1000) for k,v in obslist.items()}
+  series = {}
+  for k, v in convlist.items():
+    for tw, data in v.items():
+      if tw not in series:
+        series[tw] = {}
+      series[tw][k] = data
+  for k, v in series.items():
+    P.lines(v, 'convB-'+k, step=step)
+
+
+def graphexprC(elist, step=5, tw=True):
+  obsbin = {name: getobs(name) for name in elist}
+  if tw:
+    obslist = {k: obs2tw(v) for k, v in obsbin.items()}
+  else:
+    obslist = obsbin
+  seriesList = getdistinct(obslist[elist[0]])
+  series = {k: {} for k in seriesList}
+  for name in elist:
+    print('Bootstrapping on ', name)
+    for k in seriesList:
+      series[k][name] = []
+    N = len(obslist[name])
+    for n in range(0, N, step*1000):
+      c = bootstrap_iter(obslist[name][:min(n,N)], size=step)
+      for k in seriesList:
+        if k in c.keys():
+          series[k][name].append(min(c[k][1]/c[k][0], 1.))
+        else:
+          series[k][name].append(1.)
+  for k, v in series.items():
+    P.lines(v, 'convC-'+k, step=step)
+
+
+
+#####  ELASTICITY
+
+def Elasticity(step=25):
+  data = {}
+  for k in el2.keys():
+    if k == 'elas15':
+      continue
+    data[k] = {'obs': el2[k].lrange('label:rms', 0, -1)}
+  return convtw(data, STEPSIZE=step)
+
+
+
+def plot_elas():
+  rlist=['rtime100_20', 'rtime100_100', 'rtime250_10', 'rtime250_20', 'rtime250_50', 'rtime250_100', 'rtime250_200']
+  costlabels={'rtime100_100': '100ps/100/%d'%(1367+32),
+  'rtime100_20':  '100ps/20/%d'%(1315+32),
+  'rtime250_10':  '250ps/10/%d'%(1351+95),
+  'rtime250_100': '250ps/100/%d'%(1711+40),
+  'rtime250_20':  '250ps/20/%d'% (825+109),
+  'rtime250_200': '250ps/200/%d'%(1561+29),
+  'rtime250_50':  '250ps/50/%d'%(1555+52)}
+
+  data = time_comp(rlist, step=1000)
+  for k,v in data.items():
+    P.scats(v, 'ElasticityCost-'+k, xlim=(0,5), labels=costlabels, xlabel='Time (in hours)  Legend= SimTime/#Jobs/TotalCost')
+
+
+
+def conv_over_time(name, step=10000, tw=False):
+  eid = db.get_expid(name)
+  obs = getobs(name)
+  if tw:
+    obs = obs2tw(obs)
+
+  V = getdistinct(obs)
+  N = len(obs)
+  plotlists = {v: [] for v in V}
+  sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+  ts_0 = du.parse(sw_list[0][0]).timestamp()
+  sw = sorted([dict(start=x[0], time=x[1], numobs=x[2], end=end_ts(x)-ts_0) for x in sw_list], key=lambda i: i['end'])
+  n = 0
+  snum = 0
+  nextcalc = step
+  while n < N and snum < len(sw):
+      n += sw[snum]['numobs']
+      if n > nextcalc:
+        t = sw[snum]['end'] / 3600.
+        # c = bootstrap_sampler(obs[:min(n,N)], samplesize=.25)
+        c = bootstrap_iter(obs[:min(n,N)], size=step)
+        for v in V:
+          if v in c.keys():
+            # plotlists[v].append((t, min(c[v][3], 1.)))
+            plotlists[v].append((t, min(c[v][1]/c[v][0], 1.)))
+          else:
+            plotlists[v].append((t, 1.))
+        nextcalc += step
+      snum += 1
+  return plotlists
+
+
+def time_comp(elist, step=10000):
+  conv = {}
+  for e in elist:
+    conv[e] = conv_over_time(e, step=step)
+  results = {}
+  for k in conv[e].keys():
+    results[k] = {e: conv[e][k] for e in elist}
+  return results
+
+
+def total_time(name):
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+  eid = db.get_expid(name)
+  sw_list=db.runquery('select start,time from sw where expid=%d order by start'%eid)
+  start = du.parse(sw_list[0][0]).timestamp()
+  sw = sorted([dict(start=x[0], time=x[1], end=end_ts(x)-start) for x in sw_list], key=lambda i: i['end'])
+  return sw[-1]['end']
+
+
+####  HISTOGRAM FOR TOTAL # OBSERVATIONS
+
+def do_histogram():
+  # obs = {n: c for n,c in db.runquery('select expname, count(obs) from expr e, obs where e.expid=obs.expid group by expname')}
+  data = OrderedDict()
+  raw = OrderedDict()
+  raw['Serial']     = obs2tw(getobs('serial'))
+  raw['Parallel']   = obs2tw(getobs('parallel')[:600000])
+  raw['Uniform']    = obs2tw(getobs('uniform3')[50000:650000])
+  raw['Biased']     = obs2tw(getobs('biased4')[50000:650000])
+  raw['RW-Explore'] = obs2tw(getobs('reweight5_epr')[50000:650000])
+  raw['RW-Exploit'] = obs2tw(getobs('reweight5_xlt')[50000:650000])
+  for key, obslist in raw.items():
+    groupby = {}
+    for i in obslist:
+      if i not in groupby:
+        groupby[i] = 0
+      groupby[i] += 1
+    data[key] = groupby
+  P.histogram(data, 'Histogram_Event_Counts', ylim=(0,200000))
+  
+
+# Older Historgram
+def histogram(slist=None, cumulative=False, STEPSIZE=50):
+  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
+  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
+  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
+  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
+  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
+  data['reweight']['obs'] = r.lrange('label:rms', 0, -1)
+  for e in ['parallel']:
+    for b in ab:
+      data[e][b] = 0
+    for i in range(5):
+      data[e]['%dt'%i] = 0
+      data[e]['%dw'%i] = 0
+    maxlen = min(1999000, len(data[e]['obs']))
+    for o in data[e]['obs'][:maxlen]:
+      A, B = eval(o)
+      data[e][(A,B)] += 1
+      if A == B:
+        data[e]['%dw'%A] +=1
+      else:
+        data[e]['%dt'%A] +=1
+  for b in ab:
+    print('%s|%d|%d|%d|%d|%d' % (b,data['serial'][b],data['parallel'][b],data['uniform'][b],data['biased'][b],data['reweight'][b]))
+
+
+
+### OLDER
 def plot_bootstrap_graphs(bs, ts, prefix, subdir='.', samp_type=''):
   bootmethod = 'Iterative' if prefix=='iter' else 'Cumulative'
   for i in range(5):
@@ -346,295 +695,7 @@ def bystate(slist=None, cumulative=False, STEPSIZE=50):
     plt.close()
   return data
 
-def histogram(slist=None, cumulative=False, STEPSIZE=50):
-  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
-  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
-  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[300000:]
-  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
-  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
-  data['reweight']['obs'] = r.lrange('label:rms', 0, -1)
-  for e in ['parallel']:
-    for b in ab:
-      data[e][b] = 0
-    for i in range(5):
-      data[e]['%dt'%i] = 0
-      data[e]['%dw'%i] = 0
-    maxlen = min(1999000, len(data[e]['obs']))
-    for o in data[e]['obs'][:maxlen]:
-      A, B = eval(o)
-      data[e][(A,B)] += 1
-      if A == B:
-        data[e]['%dw'%A] +=1
-      else:
-        data[e]['%dt'%A] +=1
-  for b in ab:
-    print('%s|%d|%d|%d|%d|%d' % (b,data['serial'][b],data['parallel'][b],data['uniform'][b],data['biased'][b],data['reweight'][b]))
 
-
-def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
-  for e in data.keys():
-    print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
-    # data[e]['conv'] = [[] for i in range(5)]
-    data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
-    data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
-    bootstrap = postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
-    data[e]['boot'] = postcalc_bootstraps(bootstrap)
-    for A in range(5):
-      aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-      aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-      for B in range(5):
-        for k in range(len(data[e]['boot']['ci'][(A, B)])):
-          if A == B:
-            aggW[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-          else:
-            aggT[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-      # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
-      data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
-      data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
-  return data
-
-
-def plot_conv_tw(data, STEPSIZE=25, xlim=None):
-  for A in [0, 1, 2, 3, 4]:
-    print('Plotting graphs for state %d' % A)
-    plt.clf()
-    ax = plt.subplot(111)
-    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
-    for e in data.keys():
-      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    plt.title('Convergence for State %d (WELL)'% A)
-    plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
-    if xlim is not None:
-      ax.set_xlim(xlim)
-    plt.legend()
-    plt.savefig(SAVELOC + 'conv-well-%s.png' % (A))
-    plt.close()
-    plt.clf()
-    ax = plt.subplot(111)
-    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
-    for e in data.keys():
-      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    plt.title('Convergence for State %d (Transitions)'% A)
-    # ax.set_xlim(75,600)
-    plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
-    if xlim is not None:
-      ax.set_xlim(xlim)
-    plt.legend()
-    plt.savefig(SAVELOC + 'conv-tran-%s.png' % (A))
-    plt.close()
-
-
-def convtw_binary(data, slist=None, cumulative=False, STEPSIZE=25):
-  for e in data.keys():
-    print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
-    # data[e]['conv'] = [[] for i in range(5)]
-    data[e]['wtcnt'] = {'%d-Well' %A: 0 for A in range(5)}
-    data[e]['wtcnt'] = {'%d-Tran' %A: 0 for A in range(5)}
-    bootstrap = postgen_bootstraps(data[e]['obs'], STEPSIZE, cumulative=cumulative)
-    data[e]['boot'] = postcalc_bootstraps(bootstrap)
-    for A in range(5):
-      aggW = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-      aggT = [[] for i in range(len(data[e]['boot']['ci'][(A, 0)]))]
-      for B in range(5):
-        for k in range(len(data[e]['boot']['ci'][(A, B)])):
-          if A == B:
-            aggW[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-          else:
-            aggT[k].append(data[e]['boot']['ci'][(A, B)][k] / data[e]['boot']['mn'][(A, B)][k])
-      # data[e]['conv'][A] = [sum(k)/len(k) for k in agg]
-      data[e]['wtcnt']['%d-Well' %A] = [sum(k)/len(k) for k in aggW]
-      data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
-  statelist = [0, 1, 2, 3, 4] if slist is None else slist
-
-  for A in [0, 1, 2, 3, 4]:
-    print('Plotting graphs for state %d' % A)
-    plt.clf()
-    ax = plt.subplot(111)
-    maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
-    for e in data.keys():
-      X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    plt.title('Convergence for State %d (WELL)'% A)
-    plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
-    ax.set_xlim(75,600)
-    plt.legend()
-    plt.savefig(SAVELOC + 'TC_Comparison_Well-%s.png' % (A))
-    plt.close()
-    plt.clf()
-    ax = plt.subplot(111)
-    maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
-    for e in data.keys():
-      X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[e], label=e)
-    plt.title('Convergence for State %d (Transitions)'% A)
-    ax.set_xlim(75,600)
-    plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
-    plt.legend()
-    plt.savefig(SAVELOC + 'TC_Comparison_Tran-%s.png' % (A))
-    plt.close()
-  return data
-
-def Convergence5(stepsize):
-  data = {'serial': {}, 'parallel':{}, 'biased':{}, 'uniform':{}, 'reweight': {}}
-  data['uniform']['obs'] = u.lrange('label:raw:lg', 0, -1)[150000:]
-  data['biased']['obs'] = b.lrange('label:rms', 0, -1)[25000:]
-  data['serial']['obs'] = s.lrange('label:rms', 0, -1)
-  data['parallel']['obs'] = p.lrange('label:rms', 0, -1)
-  data['reweight']['obs'] = r.lrange('label:raw:lg', 0, -1)
-  return convtw(data, STEPSIZE=stepsize)
-
-def Elasticity(step=25):
-  data = {}
-  for k in el2.keys():
-    if k == 'elas15':
-      continue
-    data[k] = {'obs': el2[k].lrange('label:rms', 0, -1)}
-  return convtw(data, STEPSIZE=step)
-
-
-def showconvlist(data):
-  for run in data.keys():
-    for k, v in data[run]['wtcnt'].items():
-      print('%s,%s,%s' % (run, k, ','.join(['%4.2f'%i for i in v[1:]])))
-
-
-
-def getobs(name):
-  eid = db.get_expid(name)
-  t = db.runquery('select idx, obs from obs where expid=%d order by idx'%eid)
-  return [i[1] for i in t]
-
-def getdistinct(obslist):
-  V = set()
-  for i in obslist:
-    V.add(i)
-  return list(V)
-
-def calc_conv(obs, step=5000):
-  binlist = [(a,b) for a in range(5) for b in range(5)]
-  V = getdistinct(obs)
-  results = {v: [] for v in V}
-  N = len(obs)
-  for m in range(step, N, step):
-    conv = bootstrap_sampler(obs[:min(m,N)], samplesize=.2, N=100)
-    for key in results.keys():
-      if key in conv.keys():
-        results[key].append(min(conv[key][3], 1.))
-      else:
-        results[key].append(1.)
-  return results
-
-
-def show_conv(conv):
-  for k,v in sorted(conv.items()): 
-    print(k, ['%4.2f'%i for i in v])
-
-
-def obs2tw(obslist):
-  out = []
-  for obs in obslist:
-    A,B = eval(obs)
-    out.append(('well' if A==B else 'tran') + '-%d'%A)
-  return out
-
-
-def graphexpr(elist):
-  obslist = {name: getobs(name) for name in elist}
-  convlist = {k: calc_conv(v) for k,v in obslist.items()}
-
-
-
-def conv_over_time(name, step=10000, tw=False):
-  eid = db.get_expid(name)
-  obs = getobs(name)
-  if tw:
-    obs = obs2tw(obs)
-
-  V = getdistinct(obs)
-  N = len(obs)
-  plotlists = {v: [] for v in V}
-  sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
-  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
-  ts_0 = du.parse(sw_list[0][0]).timestamp()
-  sw = sorted([dict(start=x[0], time=x[1], numobs=x[2], end=end_ts(x)-ts_0) for x in sw_list], key=lambda i: i['end'])
-  n = 0
-  snum = 0
-  nextcalc = step
-  while n < N and snum < len(sw):
-      n += sw[snum]['numobs']
-      if n > nextcalc:
-        t = sw[snum]['end'] / 3600.
-        # c = bootstrap_sampler(obs[:min(n,N)], samplesize=.25)
-        c = bootstrap_iter(obs[:min(n,N)], size=step)
-        for v in V:
-          if v in c.keys():
-            # plotlists[v].append((t, min(c[v][3], 1.)))
-            plotlists[v].append((t, min(c[v][1]/c[v][0], 1.)))
-          else:
-            plotlists[v].append((t, 1.))
-        nextcalc += step
-      snum += 1
-  return plotlists
-
-
-def time_comp(elist, step=10000):
-  conv = {}
-  for e in elist:
-    conv[e] = conv_over_time(e, step=step)
-  results = {}
-  for k in conv[e].keys():
-    results[k] = {e: conv[e][k] for e in elist}
-  return results
-
-
-def total_time(name):
-  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
-  eid = db.get_expid(name)
-  sw_list=db.runquery('select start,time from sw where expid=%d order by start'%eid)
-  start = du.parse(sw_list[0][0]).timestamp()
-  sw = sorted([dict(start=x[0], time=x[1], end=end_ts(x)-start) for x in sw_list], key=lambda i: i['end'])
-  return sw[-1]['end']
-
-
-
-def do_histogram():
-  # obs = {n: c for n,c in db.runquery('select expname, count(obs) from expr e, obs where e.expid=obs.expid group by expname')}
-  data = OrderedDict()
-  raw = OrderedDict()
-  rawb = getobs('biased3_5')[47000:160000] + getobs('biased3_10')[47000:165000] + \
-     getobs('biased3_25')[47000:190000] +getobs('biased3_50')[47000:173000]
-
-
-  raw['Serial']   = getobs('serial')[50000:550000]
-  raw['Parallel'] = getobs('uncontrol')[:500000]
-  raw['Uniform']  = getobs('uniform2')[50000:550000]
-  raw['Biased']   = rawb
-  raw['Reweight'] = getobs('reweight4')[50000:550000]
-  for key, obslist in raw.items():
-    groupby = {}
-    for i in obslist:
-      if i not in groupby:
-        groupby[i] = 0
-      groupby[i] += 1
-    data[key] = groupby
-  P.histogram(data, 'Histogram_Event_Counts', ylim=(0,200000))
-  
-
-def plot_elas():
-  rlist=['rtime100_20', 'rtime100_100', 'rtime250_10', 'rtime250_20', 'rtime250_50', 'rtime250_100', 'rtime250_200']
-  costlabels={'rtime100_100': '100ps/100/%d'%(1367+32),
-  'rtime100_20':  '100ps/20/%d'%(1315+32),
-  'rtime250_10':  '250ps/10/%d'%(1351+95),
-  'rtime250_100': '250ps/100/%d'%(1711+40),
-  'rtime250_20':  '250ps/20/%d'% (825+109),
-  'rtime250_200': '250ps/200/%d'%(1561+29),
-  'rtime250_50':  '250ps/50/%d'%(1555+52)}
-
-  data = time_comp(rlist, step=1000)
-  for k,v in data.items():
-    P.scats(v, 'ElasticityCost-'+k, xlim=(0,5), labels=costlabels, xlabel='Time (in hours)  Legend= SimTime/#Jobs/TotalCost')
 
 
 if __name__=='__main__':

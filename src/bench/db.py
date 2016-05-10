@@ -116,6 +116,20 @@ tables = {
   CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
 );
 """,
+'jc':
+"""CREATE TABLE IF NOT EXISTS jc (
+  expid integer NOT NULL,
+  jobname text NOT NULL, 
+  bin text default 'D',
+  idx integer default -1,    
+  hcube text default 'D',    
+  start integer,
+  end integer,
+  CONSTRAINT PK_jc PRIMARY KEY (jobname),
+  CONSTRAINT FK_jobname FOREIGN KEY (jobname) REFERENCES expr (sw),
+  CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
+);
+""",
 'obs':
 """CREATE TABLE IF NOT EXISTS obs (
   expid integer NOT NULL,
@@ -489,15 +503,14 @@ def time2sec(timestr):
   x = timestr.split(':')
   if '-' in x[0]:
     d, h = x[0].split('-')
-    daysec = int(d) * (3600*24)
+    day = int(d) * (3600*24)
     hr = int(h)
-    d = int(d)
   else:
-    d = 0
+    day = 0
     hr = int(x[0])
   mn = int(x[1])
   sc = int(x[2])
-  return d + hr*3600 + mn*60 +sc
+  return day + hr*3600 + mn*60 +sc
 
 def sw_file_parser(name, source_dir=None):
   global conn
@@ -580,6 +593,34 @@ def insert_obs(r, name=None, key='label:rms'):
         print("Failed to insert index # %d" % i)
         print(inst)
   conn.commit()
+
+
+def insert_jc(r, name=None):
+  global conn
+  if name is None:
+    name = r.get('name')
+  if name is None:
+    print('Cannot ID name, provide it')
+    return
+  expid = get_expid(name)
+  seq = r.hgetall('anl_sequence')
+  jobseq=[i[0] for i in sorted(seq.items(), key=lambda x: x[1])]
+  for job in jobseq:
+    conf = r.hgetall('jc_'+job)
+    try:
+      query = """INSERT INTO jc VALUES (%d, '%s', '%s', %d, '%s', %d, %d);""" % \
+       (expid,job,'%d_%d'%eval(conf['src_bin']), int(conf['src_index']), conf['src_hcube'], 
+        int(conf['xid:start']), int(conf['xid:end']))
+      cur = conn.cursor()
+      cur.execute(query)
+    except Exception as inst:
+        print("Failed to insert index # %d" % i)
+        print(inst)
+  check = 'SELECT count(*) from jc WHERE expid=%d'%expid
+  print(check)
+  adhoc(check)
+  conn.commit()
+
 
 
 def update_num_obs(name):
