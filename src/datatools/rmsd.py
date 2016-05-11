@@ -134,3 +134,50 @@ def check_bpti_rms_trans(traj_list, centroid, skip=40):
         total_miss += 1
       total += 1
 
+
+def transplot(r, StateA, StateB):
+  if StateA == StateB:
+    print("Transitions ONLY")
+    return
+  if StateA > StateB:
+    print("SANITY CHECK: A < B")
+    tmp = StateA
+    StateA = StateB
+    StateB = tmp
+  rmslist = [np.fromstring(i) for i in r.lrange('subspace:rms', 0, -1)]
+  obslist = r.lrange('label:rms', 0, -1)
+  translist=[str((a,b)) for a in [StateA, StateB] for b in [StateA, StateB]]
+  plotlist = {t: [] for t in translist}
+  potential_trans = []
+  # diff = []
+  # ratio = []
+  # invrat = []
+  # adjrat = []
+  for rms, obs in zip(rmslist, obslist):
+    if obs not in translist:
+      continue
+    proxA, proxB = np.argsort(rms)[:2]
+    d = rms[StateA] - rms[StateB]
+    if proxA in [StateA, StateB] and proxB in [StateA, StateB]:
+      potential_trans.append(d)      
+    # diff.append(d)
+    # a = min(rms[StateA],rms[StateB])
+    # b = max(rms[StateA],rms[StateB])
+    # polarity = -1 if d < 0 else 1
+    # ratio.append(rms[StateA]/rms[StateB])
+    # adjrat.append(polarity * (a/b))
+    # invrat.append(polarity * (b/a))
+    # plotlist[obs].append((rms[StateA], rms[StateB]))
+  return sorted(potential_trans)
+
+  # P.line(np.array(sorted(ratio)), 'trans_2_3_ratio')
+  # P.line(np.array(sorted(adjrat)), 'trans_2_3_adjrat')
+  # P.line(np.array(sorted(invrat)), 'trans_2_3_invrat')
+  # P.line(np.array(sorted(diff)), 'trans_2_3_diff')
+
+  # P.scats(plotlist, 'RMSD_2_3')    
+
+# for a in range(4):
+#   for b in range(a+1, 5):
+#     D = rmsd.transplot(r, a, b)
+#     P.transition_line(np.array(D), a, b)

@@ -24,7 +24,7 @@ import mdtools.deshaw as deshaw
 logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
 binlist = [(a, b) for a in range(5) for b in range(5)]
-sbinlist = [str(i) for i in binlist]
+slist = [str(i) for i in binlist]
 sslist = ['%d_%d'%i for i in binlist]
 
 def getobs(name):
@@ -51,6 +51,17 @@ def by_src_hcube(name):
           continue
         D[k][h][i] += 1
   return D
+
+
+def traj_results(name):
+  expid = db.get_expid(name)
+  obslist = getobs(name)
+  tlist = []
+  jc = db.runquery('select bin, start, end from jc where expid=%d order by start'%expid)
+  for b, s, e in jc:
+    tlist.append((b, obslist[s:e]))
+  return tlist
+
 
 
 def by_src_bin(name):
@@ -106,7 +117,7 @@ def high_low_check(r, tbin='(0, 4)'):
   traj = backProjection(r, ob04)
   alpha = datareduce.filter_alpha(traj)
   print('Kpca')
-  kpca1 = PCAKernel(6, 'sigmoid')
+  kpca1 = PCAKernel(6, 'rbf')
   kpca1.solve(alpha.xyz)
   X = kpca1.project(alpha.xyz)
   print('KDTree1')
@@ -129,11 +140,112 @@ def high_low_check(r, tbin='(0, 4)'):
       print('%4d'%n, end=' ')
       dd[i][j] = n
     print('\n', end=' ')
-  
-P.heatmap(dd, hc1k, hc2k, title='High_Low_unif_unbal2', xlabel='High Dim (x,y,z) KD Tree Leaves', ylabel='Low Dim (KPCA) KD Tree Leaves')
-
   return dd
 
+
+
+
+def deidx_cutlist(idx, cutlist):
+  off = 0
+  for i, cut in enumerate(cutlist):
+    if idx < cut + off:
+      return (i, idx + off)
+    off += cut
+  return None
+
+
+def kpca_check(red_db, tbin='(0, 4)'):
+  if isinstance(red_db, list):
+    rlist = red_db
+  else:
+    rlist = [red_db]
+
+  trajlist = []
+  for r in rlist:
+    print('Pulling data...')
+    obslist = r.lrange('label:rms', 0, -1)
+    idxlist = [i for i, o in enumerate(obslist) if o == tbin]
+    traj = dh.backProjection(r, idxlist)
+    alpha = datareduce.filter_alpha(traj)
+    trajlist.append(alpha)
+
+  deidx = lambda i: deidx_cutlist(i, [t.n_frames for t in trajlist])
+
+  print('Kpca')
+  kpca1 = PCAKernel(6, 'rbf')
+  kpca1.solve(alpha.xyz)
+  X = kpca1.project(alpha.xyz)
+  print('KDTree1')
+  kdtree1 = KDTree(50, maxdepth=4, data=X, method='median')
+  hc1 = kdtree1.getleaves()
+
+  srcidx = [[i[0] \
+    for i in db.runquery("select idx from jc where bin='0_4' and expid=%d"%e)] \
+    for e in range(32, 36)]
+
+  src_traj = [dh.backProjection(r, i) for r, i in zip(rlist, srcidx)]
+  src_xyz = [datareduce.filter_alpha(t).xyz for t in src_traj]
+  probe_res = [[kdtree1.project(i.reshape(174,)) for i in xyz] for xyz in src_xyz]
+
+  grp_src = []
+  for p, s in zip(probe_res, srcidx):
+      grp = {}
+      for h, i in zip(p, s):
+        if h not in grp:
+          grp[h] = []
+        grp[h].append(i)
+      grp_src.append(grp)
+
+  idx_se_map = [{i: (s, e) for i, s, e in db.runquery("select idx, start, end from jc where bin='0_4' and expid=%d"%eid)} for eid in range(32, 36)]
+
+hc_obs = {}
+for n, r, g in zip(range(len(rlist)), rlist, grp_src):
+    for h, ilist in g.items():
+      if h not in hc_obs:
+        hc_obs[h] = []
+      for idx in ilist:
+        s, e =  idx_se_map[n][idx]
+        hc_obs[h].append(r.lrange('label:rms', s, e))
+
+hc_pdf = {}
+for hc, olist in hc_obs.items():
+  hc_pdf[hc] = {s: [] for s in slist}
+  for obs in olist:
+    pd = {s: 0 for s in slist}
+    for o in obs:
+      pd[o] += 1
+    for s, v in pd.items():
+      hc_pdf[hc][s].append(v)
+
+mn04 = {hc: {s: np.mean(i) for s, i in x.items()} for hc, x in hc_pdf.items()}
+er04 = {hc: {s: np.std(i) for s, i in x.items()} for hc, x in hc_pdf.items()}
+
+mn04_n = {e: {k: v/np.sum(list(l.values())) for k,v in l.items()} for e, l in mn04.items()}
+er04_n = {e: {k: v/np.sum(list(l.values())) for k,v in l.items()}  for e, l in er04.items()}
+
+
+  print('KDTree2')
+  Y = alpha.xyz.reshape(alpha.n_frames, 174)
+  kdtree2 = KDTree(50, maxdepth=4, data=Y, method='median')
+  hc2 = kdtree2.getleaves()
+  hc1k = sorted(hc1.keys())
+  hc2k = sorted(hc2.keys())
+  s1 = [set(hc1[k]['elm']) for k in hc1k]
+  s2 = [set(hc2[k]['elm']) for k in hc2k]
+  dd = np.zeros(shape=(len(s1), len(s2)))
+  print('     ', ' '.join(hc1k))
+  for i, a in enumerate(s1):
+    print('  ' +hc1k[i], end=' ')
+    for j, b in enumerate(s2):
+      n = len(a & b)
+      print('%4d'%n, end=' ')
+      dd[i][j] = n
+    print('\n', end=' ')
+  return dd
+
+
+  
+# P.heatmap(dd, hc1k, hc2k, title='High_Low_unif_unbal2', xlabel='High Dim (x,y,z) KD Tree Leaves', ylabel='Low Dim (KPCA) KD Tree Leaves')
 
 
 
@@ -191,7 +303,7 @@ def backProjection(r, index_list):
             pipe.lindex('xid:reference', index)
 
         # Load higher dim point indices from catalog
-        generated_framelist = pipe.execute()
+        generated_framelist = [i for i in pipe.execute() if i is not None]
 
         ref = deshaw.topo_prot  # Hard coded for now
 
@@ -232,3 +344,74 @@ def backProjection(r, index_list):
 
         logging.info('--------  Back Projection Complete ---------------')
         return source_traj
+
+
+
+def groupby (src):
+  dest = {}
+  for key, val in src.items():
+    if key not in dest:
+      dest[key] = []
+    dest[key].append(val)
+  return dest
+
+def groupby_pair (src):
+  dest = {}
+  for key, val in src:
+    if key not in dest:
+      dest[key] = []
+    dest[key].append(val)
+  return dest
+
+def groupby_cnt (src):
+  dest = {}
+  for val in src:
+    if val not in dest:
+      dest[val] = 0
+    dest[val] += 1
+  return dest
+
+def result_pdf(src):
+  pdf = {s: [] for s in slist}
+  for seq in src:
+    counts = groupby_cnt(seq)
+    for s in slist:
+      if s in counts:
+        pdf[s].append(counts[s])
+      else:
+        pdf[s].append(0)
+  return pdf
+
+def calc_post_pdf(elist):
+  tr_src = {e: dh.traj_results(e) for e in elist}
+  tr_all = {s: [] for s in sslist}
+  for k,v in tr_src.items():
+      for a, b in v:
+        tr_all[a].append(b)
+  pdf_all  = {e:  dh.result_pdf(v) for e, v in tr_all.items()}
+  mn = {e: {s: np.mean(i) for s, i in x.items()} for e, x in pdf_all.items()}
+  er = {e: {s: np.std(i) for s, i in x.items()} for e, x in pdf_all.items()}
+  mn_n = {e: {k: v/np.sum(list(l.values())) for k,v in l.items()} for e, l in mn.items()}
+  er_n = {e: {k: v/np.sum(list(l.values())) for k,v in l.items()}  for e, l in er.items()}
+  return mn_n, er_n
+
+def conv_ndarr(src):
+  ka = list(src.keys())
+  kb = src[ka[0]].keys()
+  dest = np.zeros(shape=(len(ka), len(kb)))
+  for i, a in enumerate(ka):
+    for j, b in enumerate(kb):
+      dest[i][j] = src[a][b]
+  return dest
+
+
+
+def deidx(idx):
+  off = 0
+  for i, cut in enumerate([4768, 5653, 4580, 6246]):
+    if idx < cut + off:
+      return (i, idx + off)
+    off += cut
+  return None
+  
+  

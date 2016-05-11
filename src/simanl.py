@@ -346,6 +346,21 @@ class simulationJob(macrothread):
     rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
 
     # 5. Calculate the RMSD for each filtered point to 5 pre-determined centroids
+
+    #  Centroids Will be pulled & updated. 
+    logging.info('CENTROID Retrieval & Updating')
+    self.wait_catalog()
+
+    logging.info('Acquiring a Lock on the Centroids')
+    centroids = self.catalog.
+    lock = self.catalog.lock_acquire(kpca_key)
+    if lock is None:
+      logging.info('Could not lock the Centroid. Will use cached (possibly stale) data.')
+    else:
+      kpca.store(self.catalog, kpca_key)
+      lock = self.catalog.lock_release(kpca_key, lock)
+    bench.mark('ConcurrPCAWrite_%d_%d'%(A,B))
+
     # Notes: Delta_S == rmslist
     rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
     # rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)

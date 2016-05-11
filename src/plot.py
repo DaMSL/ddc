@@ -155,6 +155,63 @@ def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
   plt.close()
 
 
+
+
+def transition_line(X, A, B, trans_factor=.33):
+  plt.clf()
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.plot(np.arange(len(X)), X)
+
+  # Find Crossover Point
+  crossover = 0
+  hgt = max(X) - min(X)
+  for i, x in enumerate(X):
+    if x > 0:
+      crossover = i
+      break
+  print('Crossover at Index #', crossover)
+
+  # Find local max gradient  (among 50% of points)
+  zoneA = int((1-trans_factor) * crossover)
+  zoneB = crossover + int(trans_factor * (len(X) - crossover))
+  gradA = zoneA + np.argmax(np.gradient(X[zoneA:crossover]))
+  gradB = crossover + np.argmax(np.gradient(X[crossover:zoneB]))
+  thetaA = X[gradA]
+  thetaB = X[gradB]
+  print('states',A,B, sep=',')
+  print('idxlist',zoneA, gradA, gradB, zoneB, sep=',')
+  print('theta',thetaA, thetaB, sep=',')
+
+  # ID # Pts in each
+  a_pts  = gradA
+  ab_pts = crossover - gradA
+  ba_pts = gradB - crossover
+  b_pts  = len(X) - gradB
+
+  print('numpts',a_pts,ab_pts,ba_pts, b_pts,sep=',')
+
+  plt.scatter(crossover, X[crossover], color='r', s=30, marker='o', label='Crossover')
+  plt.scatter(gradA, X[gradA], color='g', s=30, marker='o', label='LocalMax (%d,%d)'%(A,B))
+  plt.scatter(gradB, X[gradB], color='g', s=30, marker='o', label='LocalMax (%d,%d)'%(B,A))
+
+  plt.axvline(crossover, color='r')
+  plt.axvline(gradA, color='g')
+  plt.axvline(gradB, color='g')
+  plt.annotate('# A = %d' % a_pts, xy=(len(X)*.1, min(X)+hgt*.75))
+  plt.annotate('# B = %d' % b_pts, xy=(len(X)*.8, min(X)+hgt*.25))
+  plt.annotate('(A, B) = %d\nT=%4.2f' % (ab_pts, thetaA), xy=(crossover-ab_pts, 0), ha='right')
+  plt.annotate('(B, A) = %d\nT=%4.2f' % (ba_pts, thetaB), xy=(crossover+ba_pts, 0))
+  plt.title('Transitions: %d , %d  (Transition Factor = %4.2f' % (A, B, trans_factor))
+  plt.xlim(0, len(X))
+  plt.ylim(min(X), max(X))
+  plt.legend()
+  plt.xlabel('Observations')
+  plt.ylabel('Delta of Distances to Centoids %d & %d' % (A,B))
+  plt.savefig(loc + '/transition_%d_%d'%(A,B) + '.png')
+  plt.close()  
+
+
+
 ###### BAR PLOTS
 def bargraph(data, title, label=None):
   colors = ['r','g','b','m','k']
@@ -185,12 +242,34 @@ def bargraph(data, title, label=None):
   plt.show()
 
 
-def bargraph_simple(data, title):
+def bargraph_simple(data, title, err=None):
   plt.cla()
   plt.clf()
   fig, ax = plt.subplots()
-  plt.bar(np.arange(len(data)), data)
+  labels = None
+  if isinstance(data, list):
+    Y = data
+    if err is not None:
+      error = err
+  elif isinstance(data, dict):
+    labels = sorted(data.keys())
+    Y = [data[i] for i in labels]
+    if err is not None:
+      error = [err[i] for i in labels]
+  X = np.arange(len(Y))
+  if err is None:
+    plt.bar(X, Y)
+  else:
+    plt.bar(X, Y, yerr=error, error_kw=dict(ecolor='red'))
   plt.legend()
+  if labels is not None:
+      plt.xticks(X+.5, labels, rotation='vertical')
+  # vmax = 1. if np.max(Y) <= 1. else np.max(Y)
+  vmax = np.max(Y)
+  if err is not None:
+    vmax += np.max(error)
+  ax.set_ylim(0, vmax)
+  fig.suptitle(title)
   plt.tight_layout()
   plt.savefig(SAVELOC + '/bar_' + title + '.png')
   plt.close()  
