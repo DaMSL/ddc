@@ -376,7 +376,47 @@ class controlJob(macrothread):
 
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
       logging.debug(" Start_index=%d,  thru_index=%d,   ctlIndexHead=%d", start_index, thru_index, self.data['ctlIndexHead'])
-      labeled_pts_rms = self.catalog.lrange('label:rms', start_index, thru_index)
+
+      # To update Thetas
+      rmslist = [np.fromstring(i) for i in r.lrange('subspace:rms', 0, -1)]
+      obslist = r.lrange('label:rms', 0, -1)
+      thetas  = self.catalog.loadNPArray('thetas')
+      thetas_updated = np.zeros(shape=(numLabels, numLabels))
+      # translist=[str((a,b)) for a in [StateA, StateB] for b in [StateA, StateB]]
+
+      # Map diff's to matrix list
+      diffM = [[[] for a in range(numLabels)] for b in range(numLabels)]
+      for rms, obs in zip(rmslist, obslist):
+        A, B = np.argsort(rms)[:2]
+        diffM[A][B].append = rms[A] - rms[B]
+
+      # reduce to transition distributions
+      trans_factor = self.data['transition_sensitivity']
+      for A in range(0, numLabels-1):
+        for B in range(A+1, numLabels):
+          X = sorted(diff[A][B] + diff[B][A])
+          crossover = 0
+          for i, x in enumerate(X):
+            if x > 0:
+              crossover = i
+              break
+          print('Crossover at Index #', crossover)
+
+          # Find local max gradient  (among 50% of points)
+          zoneA = int((1-trans_factor) * crossover)
+          zoneB = crossover + int(trans_factor * (len(X) - crossover))
+          gradA = zoneA + np.argmax(np.gradient(X[zoneA:crossover]))
+          gradB = crossover + np.argmax(np.gradient(X[crossover:zoneB]))
+          thetaA = X[gradA]
+          thetaB = X[gradB]
+          thetas_updated[A][B] = thetaA
+          thetas_updated[B][A] = thetaB
+
+      # Push Updated Thetas -- should this be transactional?
+      self.catalog.storeNPArray('thetas', thetas_updated)
+
+      # labeled_pts_rms = self.catalog.lrange('label:rms', start_index, thru_index)
+      labeled_pts_rms = obslist[start_index:thru_index]
       
       num_pts = len(labeled_pts_rms)
       self.data['ctlIndexHead'] = thru_index
@@ -385,7 +425,7 @@ class controlJob(macrothread):
       logging.debug('##NUM_RMS_THIS_ROUND: %d', num_pts)
       stat.collect('numpts', len(labeled_pts_rms))
 
-      # # Load Previous count by bin
+      # # Load Previous count by bin  -- can make this more efficient
       pipe = self.catalog.pipeline()
       for v_i in binlist:
         A, B = v_i

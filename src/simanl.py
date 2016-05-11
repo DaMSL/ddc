@@ -7,6 +7,7 @@ import shutil
 import time
 import fcntl
 import logging
+import pickle
 from datetime import datetime as dt
 import math
 from collections import namedtuple, deque
@@ -351,18 +352,35 @@ class simulationJob(macrothread):
     logging.info('CENTROID Retrieval & Updating')
     self.wait_catalog()
 
-    logging.info('Acquiring a Lock on the Centroids')
-    centroids = self.catalog.
-    lock = self.catalog.lock_acquire(kpca_key)
-    if lock is None:
-      logging.info('Could not lock the Centroid. Will use cached (possibly stale) data.')
-    else:
-      kpca.store(self.catalog, kpca_key)
-      lock = self.catalog.lock_release(kpca_key, lock)
-    bench.mark('ConcurrPCAWrite_%d_%d'%(A,B))
+    #  If they were mutable....
+    # logging.info('Acquiring a Lock on the Centroids')
+    # centroids = self.catalog.loadNPArray('centroid')
+    # thetas = self.catalog.loadNPArray('thetas')
+    # lock = self.catalog.lock_acquire('centroid')
+    # if lock is None:
+    #   logging.info('Could not lock the Centroids. Will use current cached (possibly stale) data.')
+    # bench.mark('ConcurrLockCentroid'%(A,B))
+
+    #  Implemented as a Transactional Data Structure:
+    
+    centroid = []
+    for state in range(numLabels):
+      cent_raw  = self.catalog.lrange('centroid:xyz:%d'%state, 0, -1)
+      cent_xyz  = [pickle.loads(i) for i in cent_raw]
+      cent_npts = [int(i) for i in self.catalog.lrange('centroid:npts:%d'%state, 0, -1)]
+      c_sum = np.zeros(shape=cent_xyz[0].shape)
+      c_tot = 0
+      for x, n in zip(cent_xyz, cent_npts):
+        c = x * n
+        c_sum += c
+        c_tot += n
+      centroid.append(c_sum / c_tot)
+
+
 
     # Notes: Delta_S == rmslist
-    rmslist = calc_rmsd(rms_filtered, self.data['centroid'], weights=cw)
+    # rmslist = calc_rmsd(rms_filtered, centroids, weights=cw)
+    rmslist = adaptive_rmsd(rms_filtered, centroids, theta)
     # rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', \
       numConf, numLabels)
@@ -376,8 +394,7 @@ class simulationJob(macrothread):
     groupbybin = {ab: [] for ab in binlist}
     for i, rms in enumerate(rmslist):
       #  Sort RMSD by proximity & set state A as nearest state's centroid
-      prox = np.argsort(rms)
-      A = prox[0]
+      A, B = np.argsort(rms)[:2]
 
       #  Calc Absolute proximity between nearest 2 states' centroids
       # THETA Calc derived from static run. it is based from the average std dev of all rms's from a static run
@@ -385,29 +402,37 @@ class simulationJob(macrothread):
       #  The theta is divided by four based on the analysis of DEShaw:
       #   est based on ~3% of DEShaw data in transition (hence )
       # avg_stddev = 0.34119404492089034
-      theta = settings.RMSD_THETA
+      # theta = settings.RMSD_THETA
+      ## FOR ADAPTIVE Cantroids. Theta is now updated dyamically
 
       # NOTE: Original formulate was relative. Retained here for reference:  
       # Rel vs Abs: Calc relative proximity for top 2 nearest centroids   
       # relproximity = rms[A] / (rms[A] + rms[rs[1]])
       # B = rs[1] if relproximity > (.5 - theta) else A
       # proximity = abs(rms[prox[1]] - rms[A]) / (rms[prox[1]] + rms[A])  #relative
-      proximity = abs(rms[prox[1]] - rms[A])    #abs
+      #proximity = abs(rms[prox[1]] - rms[A])    #abs
+      # Update for Adaptive Centroid.
+      delta = np.abs(rms[B] - rms[A])
 
       #  (TODO:  Factor in more than top 2, better noise)
       #  Label secondary sub-state
-      B = prox[1] if proximity < theta else A
-      rmslabel.append((A, B))
+      # sub_state = B prox[1] if proximity < theta else A
+      # For ADAPTIVE Centroids
+      if delta < thetas[A][B]:
+        sub_state = B
+      else:
+        sub_state = A
+      rmslabel.append((A, sub_state))
 
       # Add this index to the set of indices for this respective label
       #  TODO: Should we evict if binsize is too big???
       # logging.debug('Label for observation #%3d: %s', i, str((A, B)))
-      label_count[(A, B)] += 1
+      label_count[(A, sub_state)] += 1
 
       # Group high-dim point by state
       # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
       groupbystate[A].append(i)
-      groupbybin[(A,B)].append(i)
+      groupbybin[(A, sub_state)].append(i)
 
     stat.collect('observe', label_count)
     bench.mark('RMS')
@@ -419,6 +444,31 @@ class simulationJob(macrothread):
       if len(groupbybin[ab]) > 0:
         A, B = ab
         logging.info('label,bin,%d,%d,num,%d', A, B, len(groupbybin[ab]))
+
+    #  ADAPTIVE CENTROID & THETA CALCULATION
+    # if lock is None:
+    #   logging.info('Never acqiured a lock. Skipping adaptive update (TODO: Mark pts as stale)')
+    # else:  
+    #   logging.info('Updating Adaptive Centroid')
+    
+    pipe = self.catalog.pipeline()
+    for state in range(numLabels):
+      n_pts = len(groupbybin[(state, state)])
+      if n_pts == 0:
+        logging.info('Skipping State %d Centroid -- Well not visited on this trajectory')
+        continue
+
+      cent_xyz  = [alpha.xyz[i] for i in groupbybin[(state, state)]]
+      cent_npts = len(groupbybin[(state, state)])
+      c_sum = np.zeros(shape=alpha.xyz[0].shape)
+      for pt in cent_xyz:
+        c_sum += pt
+      centroid_local = c_sum / n_pts
+      centroid_delta = LA.norm(centroid[state] - cent) 
+      pipe.rpush('centroid:xyz:%d' % state, pickle.dumps(centroid_local))
+      pipe.rpush('centroid:npts:%d' % state, n_pts)
+      pipe.rpush('centroid:delta:%d' % state, centroid_delta)
+    pipe.execute()
 
   # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Full Protein
   #------ B:  Covariance Matrix  -----------------
