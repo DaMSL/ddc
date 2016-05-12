@@ -214,7 +214,7 @@ class KDTree(object):
     if data is not None:
       if not isinstance(data, np.ndarray):
         logging.error("Can only instantiate with an NDArray.")
-        sys.exit(0)
+        return
       self.dim = data.shape[1]
       self.root = KDTree.Node(0)
       self.root.configure(np.min(data.T[-1]), np.max(data.T[-1]), deque(np.arange(len(data))))

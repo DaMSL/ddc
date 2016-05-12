@@ -75,6 +75,32 @@ def scats (series, title, size=10, xlabel=None, xlim=None, labels=None):
 
 
 
+def scat_Transtions (series, title, size=10, xlabel=None, xlim=None, labels=None):
+  plt.clf()
+  ax = plt.subplot(111)
+  maxlen = 0
+  maxY = 0
+  minY = 0
+  for C, D in series.items():
+    if len(D) == 0:
+      continue
+    X, Y = zip(*D)
+    maxlen = maxlen + len(X)
+    maxY = max(maxY, max(Y))
+    minY = min(minY, min(Y))
+    plt.scatter(X, Y, s=size, c=C, lw=0)
+  plt.title(title)
+  plt.xlim(0, maxlen)
+  plt.ylim(minY, maxY)
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+  patches = [mpatches.Patch(color=C, label=L) for C, L in labels.items()]
+  plt.legend(handles=patches, loc='lower right')  
+  plt.savefig(SAVELOC + '/scat_' + title + '.png')
+  plt.close()
+
+
+
 def scat_layered (series, title, size=10, xlabel=None, xlim=None):
   marker_list = ('o', 'v', '*', 'H', 'D', '^', '<', '>', '8', 's', 'p', 'h', 'd')
   keys = sorted(series.keys())
@@ -157,7 +183,7 @@ def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
 
 
 
-def transition_line(X, A, B, trans_factor=.33):
+def transition_line(X, A, B, title='', trans_factor=.33):
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.plot(np.arange(len(X)), X)
@@ -201,13 +227,13 @@ def transition_line(X, A, B, trans_factor=.33):
   plt.annotate('# B = %d' % b_pts, xy=(len(X)*.8, min(X)+hgt*.25))
   plt.annotate('(A, B) = %d\nT=%4.2f' % (ab_pts, thetaA), xy=(crossover-ab_pts, 0), ha='right')
   plt.annotate('(B, A) = %d\nT=%4.2f' % (ba_pts, thetaB), xy=(crossover+ba_pts, 0))
-  plt.title('Transitions: %d , %d  (Transition Factor = %4.2f' % (A, B, trans_factor))
+  plt.title('Transitions: %d , %d  (Transition Factor = %4.2f)' % (A, B, trans_factor))
   plt.xlim(0, len(X))
   plt.ylim(min(X), max(X))
   plt.legend()
   plt.xlabel('Observations')
   plt.ylabel('Delta of Distances to Centoids %d & %d' % (A,B))
-  plt.savefig(loc + '/transition_%d_%d'%(A,B) + '.png')
+  plt.savefig(loc + '/transition%s_%d_%d'%(title,A,B) + '.png')
   plt.close()  
 
 
@@ -274,6 +300,40 @@ def bargraph_simple(data, title, err=None):
   plt.savefig(SAVELOC + '/bar_' + title + '.png')
   plt.close()  
   plt.show()
+
+
+
+def feadist(data, title, err=None):
+  plt.cla()
+  plt.clf()
+  # labels=['0,0', '0,1','0,2','0,3', '0,4', '1,1', '1,2', '1,3','1,4','2,2','2,3','2,4','3,3','3,4','4,4']
+  # labels=['0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
+  # labels=['S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
+  labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
+  fig, ax = plt.subplots()
+  Y = data
+  X = np.arange(len(Y))
+  if err is None:
+    plt.bar(X, Y)
+  else:
+    plt.bar(X, Y, yerr=err, error_kw=dict(ecolor='red', elinewidth=2))
+  plt.axvline(4.9, color='k', linewidth=2)
+  plt.axvline(9.9, color='k', linewidth=2)
+  ymin, ymax = np.min(data), np.max(data)
+  plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -1))
+  plt.annotate('Proximity to\nCentroids', xy=(5.1, -2))
+  plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, 4.5))
+  plt.legend()
+  ax.set_xticks(X+.5)
+  ax.set_xticklabels(labels)
+  ax.set_ylim(-6, 6)
+  fig.suptitle(title)
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()  
+  plt.show()
+
+
 
 
 

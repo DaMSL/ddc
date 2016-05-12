@@ -361,8 +361,7 @@ class simulationJob(macrothread):
     #   logging.info('Could not lock the Centroids. Will use current cached (possibly stale) data.')
     # bench.mark('ConcurrLockCentroid'%(A,B))
 
-    #  Implemented as a Transactional Data Structure:
-    
+    #  Implemented as a Transactional Data Structure....
     centroid = []
     for state in range(numLabels):
       cent_raw  = self.catalog.lrange('centroid:xyz:%d'%state, 0, -1)

@@ -394,7 +394,7 @@ class controlJob(macrothread):
       trans_factor = self.data['transition_sensitivity']
       for A in range(0, numLabels-1):
         for B in range(A+1, numLabels):
-          X = sorted(diff[A][B] + diff[B][A])
+          X = sorted(diffM[A][B] + diffM[B][A])
           crossover = 0
           for i, x in enumerate(X):
             if x > 0:

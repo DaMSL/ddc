@@ -2,6 +2,8 @@ import mdtraj as md
 import numpy as np
 import logging
 import math
+import redis
+
 from numpy import linalg as LA
 
 import datatools.datareduce as dr
@@ -32,6 +34,9 @@ def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None, weights=N
     # TODO:  Check Axis here
     rmsd[n] = np.array([cw[i]*LA.norm(pt - centroid[i]) for i in range(5)])
   return rmsd
+
+
+
 
 
 def calc_deshaw_centroid_alpha_cartesian():
@@ -181,3 +186,198 @@ def transplot(r, StateA, StateB):
 #   for b in range(a+1, 5):
 #     D = rmsd.transplot(r, a, b)
 #     P.transition_line(np.array(D), a, b)
+
+def show(x, n=10):
+  for i in x[:n]:
+    print (' '.join(['%7.2f'%p for p in i]))
+
+# centroid = np.load('../data/gen-alpha-cartesian-centroid.npy')
+
+
+
+# cent = [np.mean(np.array(i), axis=0) for i in well]
+
+# for a in range(5):
+#   for b in range(5):
+#     d = LA.norm(cent[a]-cent[b])
+#     print(a, b, '%5.2f'%d)
+# rms_a=[]
+# for v in conf:
+#   for i in rms_all[int(v['xid:start'])+1:int(v['xid:end'])+1]:
+#     rms_a.append(i)
+
+# rms_b=[]
+# for t in alpha:
+#   for i in t.xyz:
+#     rms_b.append([LA.norm(i-c) for c in centroid])
+
+# rms_c = []
+# for t in alpha:
+#   t.center_coordinates(mass_weighted=False)
+#   for i in t.xyz:
+#     rms_c.append([LA.norm(i-c) for c in centroid])
+
+# with open('foo2', 'w') as w:
+#   for x in rms_c:
+#     _=w.write(' '.join(['%7.2f'%k for k in x]) + '\n')
+
+# rms_e = []
+# for t in tr1:
+#   # t.center_coordinates(mass_weighted=True)
+#   a = dr.filter_alpha(t)
+#   for i in a.xyz:
+#     rms_e.append([LA.norm(i-c) for c in centroid])
+
+# with open('foo_e', 'w') as w:
+#   for x in rms_d:
+#     _=w.write(' '.join(['%7.2f'%k for k in x]) + '\n')
+
+# cent15 = []
+# for a in range(4):
+#   for b in range(a, 5):
+#     if a == b:
+#       cent15.append(np.array(cent[a]))
+#     else:
+#       cent15.append((np.array(cent[a]) + np.array(cent[b]))/2)
+
+
+if False:
+  exp = rmsd.ExprAnl(port=6382)
+  exp.loadtraj(list(range(0, 200)))
+  rmslist = []
+  for k in exp.trlist.keys():
+    for i in exp.trlist[k].xyz:
+      rmslist.append([LA.norm(c-i) for c in exp.cent15])
+
+  # rmsnorm = []
+  # for rms in rmslist:
+  #   rmsnorm.append(np.array(rms)/np.sum(rms))
+  feal = np.array([[max(0, 16 - i)/16 for i in rms] for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr0_dif16_15')
+  feal = np.array([[max(0, 11.34 - i)/11.34 for i in rms] for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr0_dif11_15')
+  feal = np.array([np.array(rms)/sum(rms) for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr0_norm_15')
+  feal = np.array([.33-np.array(rms)/sum(rms) for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr0_ninv_15')
+  feal = np.array([[max(0, 11.34 - i)/11.34 for i in rms] for rms in rmslist[:12000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr12_dif11_15')
+
+  feal = np.array([.33-np.array(rms)/sum(rms) for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr0_ninv_15')
+
+  feal = np.array([[i*i for i in rms] for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(feal, axis=0)), 'feal_tr0_sqr_15')
+
+  feal = np.array([.33-np.array(rms)/sum(rms) for rms in rmslist[:1000]])
+  P.feadist(list(np.mean(reld[:10000], axis=0)), 'feal_tr10_pw')
+
+  for x in range(5):
+    feal = np.array([[max(0, np.power((11.34 - i), x)/np.power(11.34,x)) for i in rms] for rms in rmslist[:12000]])
+    P.feadist(list(np.mean(feal, axis=0)), 'feal_tr12_p%dinvn_15'%x)
+
+  rmslist = []
+  for k in exp.trlist.keys():
+    for i in exp.trlist[k].xyz:
+      rmslist.append([LA.norm(c-i) for c in c15])
+
+
+  rms15 = [exp.get_rms(i) for i in range(200)]
+  rms5  = [exp.get_rms5(i) for i in range(200)]
+
+  rms_val = rms5
+  nCent = len(rms_val[0])
+
+  w=[]
+  tidx=[]
+  window_size = 800
+  for tnum, traj in enumerate(rms5):
+      N = len(traj)
+      if N < window_size:
+        continue
+      for i in range(0, N, window_size):
+        x = np.array(traj[i:i+window_size])
+        if len(x) == window_size:
+          w.append(x)
+          tidx.append((tnum, i))
+
+  wind = np.array(w)
+
+  kdtree1 = KDTree(50, maxdepth=4, data=wind, method='median')
+  hc1 = kdtree1.getleaves()
+  for k, v in hc1.items():
+    src_pts = []
+    for i in v['elm']:
+      a, b = tidx[i]
+      src_pts.append(rms_val[a][b])
+    print(k, np.mean(src_pts, axis=0))
+
+
+  var=[]
+  for traj in rms5:
+      N = len(traj)
+      for i in range(0, N, 100):
+        end = min(i+100, N)
+        var.append(np.std(traj[i:end], axis=0))
+
+  kdtree2 = KDTree(50, maxdepth=4, data=np.array(var), method='median')
+  hc2 = kdtree2.getleaves()
+  for k, v in hc2.items():
+    print(k, np.mean([var[i] for i in v['elm']], axis=0))
+
+  from sklearn.cluster import KMeans
+  km1 = KMeans(5)
+  km1.fit([np.mean(i, axis=0) for i in w])
+  L=km1.predict(np.mean(i, axis=0))
+  X = np.mean(i, axis=0)
+
+
+  for k in diff.keys():
+    reld2 = np.array([v for k,v in sorted(diff.items())])
+  s = np.random.randint(140000) + 25000; showhist(reld2[s:s+100], title='win_100')
+  showhist(reld2[s-50:s-49], title='win_f-50')
+  showhist(reld2[s+100:s+151], title='win_f+50')
+  for i in range(0, 22000, 5000):
+    showhist(reld2[i:i+1000], title='seq24/src4_1_fr_%d'% (i//5000))
+  for i in range(0, 400, 10):
+    showhist(reld2[s2+i:s+i+10], title='seq1/framestep_10_%03d'%(i//10))
+  for i in range(0, 1000, 10):
+    showhist(reld2[i:i+10], title='seq1/framestep_10_%03d'%(i//10))
+  for i in range(0, 500, 1):
+    showhist(reld2[i:i+1], title='seq24/src4_1_fr_%03d'%(i))
+  diff = {}
+  reld2 = []
+  for a in range(4):
+    for b in range(a+1, 5):
+      diff['%d-%d'%(a,b)] = []
+  for a in range(5):
+    diff['-%d-'%(a)] = []
+
+def showhist(data, agg=np.mean, title=''):
+    P.feadist(counts, title)
+
+def draw_windows(rmslist, title='feal_', winsize=10, slide=10):
+  feallist = []
+  N = len(rmslist)
+  fnum=0
+  for start in range(0, N, slide):
+    f = get_feal(rmslist[start:min(N,start+slide)])
+    P.feadist(f, title+'_%03d' % fnum)
+    fnum += 1
+
+def get_feal(rmslist):
+  counts = [0 for i in range(5)]
+  tup_list = []
+  for rms in rmslist:
+    counts[np.argmin(rms)] += 1
+    tup = []
+    for n, val in enumerate(rms):
+      tup.append(max(11.34-val, 0))
+    for a in range(4):
+      for b in range(a+1, 5):
+        tup.append(rms[a]-rms[b])
+    tup_list.append(tup)
+  landscape = [5*c/sum(counts) for c in counts]
+  landscape.extend(np.mean(tup_list, axis=0))
+  return np.array(landscape)
+

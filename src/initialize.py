@@ -11,6 +11,8 @@ import datetime as dt
 
 import mdtraj as md
 import numpy as np
+from numpy import linalg as LA
+
 
 from core.common import *
 import mdtools.deshaw as deshaw
@@ -18,10 +20,13 @@ from overlay.redisOverlay import RedisClient
 from core.kvadt import kv2DArray
 from core.slurm import slurm
 from core.kdtree import KDTree
+import core.ops as ops
+import datatools.datareduce as datareduce
+from datatools.rmsd import *
 from mdtools.simtool import generateNewJC
 import mdtools.deshaw as deshaw
-
-
+import bench.db as db
+import plot as P
 
 DO_COV_MAT = False
 
@@ -72,9 +77,267 @@ def initializecatalog(catalog):
   # New distance space based centroids
   catalog.delete('centroid')
   centfile = settings.RMSD_CENTROID_FILE
-  logging.info("Loading centroids from %s", centfile)
+  logging.info("Loading Starting Centroids from %s", centfile)
   centroid = np.load(centfile)
   catalog.storeNPArray(centroid, 'centroid')
+
+
+
+def centroid_bootstrap(catalog):
+  centfile = settings.RMSD_CENTROID_FILE
+  centroid = np.load(centfile)
+  cent_npts = [1, 1, 1, 1, 1]  # TBD
+  numLabels = len(centroid)
+  binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
+  logging.info("Loaded Starting Centroids from %s", centfile)
+
+  name = catalog.get('name')
+  if name is None:
+    logging.info('Name not configured in this catalog. Set it and try again')
+    return
+
+  # Load/Set initial (current) Configs from Catalog
+  if catalog.exists('thetas'):
+    thetas = catalog.loadNPArray('thetas')
+  else:
+    thetas = np.zeros(shape=(numLabels, numLabels))
+    thetas[:] = 0.25
+
+  if catalog.exists('transition_sensitivity'):
+    trans_factor = catalog.loadNPArray('transition_sensitivity')
+  else:
+    trans_factor = 0.2
+    
+  use_gradient = True
+  obs_count = {ab: 0 for ab in binlist}
+  C_delta = []
+  T_delta = []
+
+  # Configure Noise Filter
+  noise = int(catalog.get('obs_noise'))
+  dcdfreq = int(catalog.get('dcdfreq'))
+  stepsize = int(catalog.get('sim_step_size'))
+  nwidth = noise//(2*stepsize)
+  noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+
+
+  # Get previously Labeled data (or label data IAW current settings)
+  eid = db.get_expid(name)
+  obslist = [i[0] for i in db.runquery('SELECT obs FROM obs WHERE expid=%d' % eid)]
+  jobs = [i[0] for i in sorted(catalog.hgetall('anl_sequence').items(), key=lambda x: x[1])]
+  shape = None
+
+  # Initialize lists for pair-wise distances (top 2 nearest centroids)
+  diffList  = {}
+  transList = {}
+  scatPlot  = {}
+  for A in range(0, numLabels-1):
+    for B in range(A+1, numLabels):
+      diffList[(A, B)]  = []
+      transList[(A, B)] = []
+      scatPlot[(A, B)]  = []
+  allScat = []
+  # Load trajectories & filter
+  obs_global = []
+
+  # Process learning in batches (static batch size to start)
+  batch_size = 25
+  max_obs = 150
+  batch = 0
+  while batch <= max_obs:
+    logging.info("Procssing Jobs %d - %d", batch, batch+batch_size)
+    exec_sim = []
+    obs_list = []
+    for job in jobs[batch:batch+25]:
+      conf = catalog.hgetall('jc_' + job)
+      traj = md.load(conf['dcd'], top=conf['pdb'])
+      alpha = datareduce.filter_alpha(traj)
+      conf['alpha'] = alpha.xyz
+      exec_sim.append(conf)
+      if shape is None:
+        shape = conf['alpha'].shape[1:]
+
+      # xyz_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(alpha.n_frames)])
+      rmslist = calc_rmsd(alpha, centroid)
+      labels = []
+      for rms in rmslist:
+        # [cw[i]*LA.norm(pt - centroid[i]) for i in range(5)]
+        A, B = np.argsort(rms)[:2]
+        delta = np.abs(rms[B] - rms[A])
+        if delta < thetas[A][B]:
+          sub_state = B
+        else:
+          sub_state = A
+        classify = (A, sub_state)
+        labels.append(classify)
+        obs_count[classify] += 1
+
+        # For globally updating Thetas
+        obs_global.append(classify)
+        if A < B:
+          diffList[(A, B)].append(rms[A] - rms[B])
+        else:
+          diffList[(B, A)].append(rms[B] - rms[A])
+
+        for a in range(0, numLabels-1):
+          for b in range(a+1, numLabels):
+            transList[(a, b)].append(rms[a] - rms[b])
+            if (a, a) == classify or (b, b) == classify:
+              c = 'b'
+            elif (a, b) == classify or (b, a) == classify:
+              c = 'g'
+            elif a == A or b == A:
+              c = 'r'
+            else:
+              c = 'black'
+            scatPlot[(a, b)].append((rms[a] - rms[b], c))
+      obs_list.append(labels)
+
+    logging.info('Bin Distribution:')
+    grpby = {}
+    for llist in obs_list:
+      for l in llist:
+        if l not in grpby:
+          grpby[l] = 0
+        grpby[l] += 1
+    for k in sorted(grpby.keys()):
+      logging.info('%s:  %5d', k, grpby[k])
+    for A in range(0, numLabels-1):
+      for B in range(A+1, numLabels):
+        d = diffList[(A, B)]
+        logging.info('Diff list for %d,%d:  %d, %5.2f, %5.2f', A, B, len(d), min(d), max(d))
+
+
+    # # 6. Apply Heuristics Labeling
+    # # logging.debug('Applying Labeling Heuristic. Origin:   %d, %d', srcA, srcB)
+    # rmslabel = []
+    # 
+    # label_count = {ab: 0 for ab in binlist}
+    # groupbystate = [[] for i in range(numLabels)]
+    # groupbybin = {ab: [] for ab in binlist}
+
+
+    # For each frame in each traj: ID labeled well pts & build avg op
+    logging.info('Selecting observed Well States')
+    coor_sum = {i: np.zeros(shape=shape) for i in range(numLabels)}
+    coor_tot = {i: 0 for i in range(numLabels)}
+    for job, obslist in zip(exec_sim, obs_list):
+      # offset = int(job['xid:start'])
+      # for i, frame in enumerate(job['alpha']):
+      for frame, label in zip(job['alpha'], obslist):
+        # A, B = eval(obslist[offset+i])
+        A, B = label
+        if A != B:
+          continue
+        coor_sum[A] += frame
+        coor_tot[A] += 1
+
+    logging.info('Calculating Avg from following stats:')
+    logging.info('   Total Frames: %d', sum([len(sim['alpha']) for sim in exec_sim]))
+
+    # Calculate New Centroids (w/deltas)
+    delta = []
+    for S in range(numLabels):
+      if coor_tot[S] == 0:
+        logging.info("   State: %d --- NO OBSERVATIONS IN THIS WELL STATE", S)
+        continue
+      cent_local = coor_sum[S] / coor_tot[S]
+      diff_local = LA.norm(centroid[S] - cent_local)
+      update = ((centroid[S] * cent_npts[S]) + (cent_local * coor_tot[S])) / (cent_npts[S] + coor_tot[S])
+      delta.append(LA.norm(update - centroid[S]))
+      logging.info('   State %d:  NewPts=%5d   Delta=%5.2f   LocalDiff=%5.2f', 
+        S, coor_tot[S], delta[-1], diff_local)
+      centroid[S] = update
+      cent_npts[S] += coor_tot[S]
+    centroid_change = np.mean(delta)
+    if len(C_delta) > 1:
+      rel_change = np.abs((centroid_change - C_delta[-1]) / C_delta[-1])
+      logging.info('Centroid Change:  %5.2f   (%5.2f%%)', centroid_change, 100*rel_change)
+    C_delta.append(centroid_change)
+    batch += batch_size
+
+
+    # Update Thetas (usig global data ?????)
+    delta = []
+    for A in range(0, numLabels-1):
+      for B in range(A+1, numLabels):
+        X = sorted(diffList[(A, B)])
+        if len(X) < 100:
+          logging.info('Lacking data on %d, %d', A, B)
+          continue
+        # logging.info('  Total # Obs: %d', len(X))
+        crossover = 0
+        for i, x in enumerate(X):
+          if x > 0:
+            crossover = i
+            break
+        # logging.info('  Crossover at Index: %d', crossover)
+        if crossover < 50 or (len(X)-crossover) < 50:
+          logging.info('  Lacking local data skipping.')
+          continue
+
+        # Find local max gradient  (among 50% of points)
+        
+        if use_gradient:
+          thetas_updated = np.copy(thetas)
+          zoneA = int((1-trans_factor) * crossover)
+          zoneB = crossover + int(trans_factor * (len(X) - crossover))
+          gradA = zoneA + np.argmax(np.gradient(X[zoneA:crossover]))
+          gradB = crossover + np.argmax(np.gradient(X[crossover:zoneB]))
+          thetaA = X[gradA]
+          thetaB = X[gradB]
+          thetas_updated[A][B] = np.abs(thetaA)
+          thetas_updated[B][A] = np.abs(thetaB)
+          tdeltA = np.abs(thetas_updated[A][B] - thetas[A][B])
+          tdeltB = np.abs(thetas_updated[B][A] - thetas[B][A])
+          delta.append(tdeltA)
+          delta.append(tdeltB)
+          logging.info('  Theta Change (%d,%d):  %4.2f  (%4.1f)', A, B, tdeltA, (100*tdeltA/thetas[A][B]))
+          logging.info('  Theta Change (%d,%d):  %4.2f  (%4.1f)', B, A, tdeltB, (100*tdeltB/thetas[B][A]))
+          thetas[A][B] = thetas_updated[A][B]
+          thetas[B][A] = thetas_updated[B][A]
+        else:
+          # Classify Fixed Percent of observations as Transitional
+          thetas_updated = np.copy(thetas)
+          transitionPtA = int((1-trans_factor) * crossover)
+          transitionPtB = crossover + int(trans_factor * (len(X) - crossover))
+          thetaA = X[transitionPtA]
+          thetaB = X[transitionPtB]
+          thetas_updated[A][B] = np.abs(thetaA)
+          thetas_updated[B][A] = np.abs(thetaB)
+          tdeltA = np.abs(thetas_updated[A][B] - thetas[A][B])
+          tdeltB = np.abs(thetas_updated[B][A] - thetas[B][A])
+          delta.append(tdeltA)
+          delta.append(tdeltB)
+          logging.info('  Theta Change (%d,%d):  %4.2f  (%4.1f)', A, B, tdeltA, (100*tdeltA/thetas[A][B]))
+          logging.info('  Theta Change (%d,%d):  %4.2f  (%4.1f)', B, A, tdeltB, (100*tdeltB/thetas[B][A]))
+          thetas[A][B] = thetas_updated[A][B]
+          thetas[B][A] = thetas_updated[B][A]
+
+    T_delta.append(np.mean(delta))
+  P.line(np.array(C_delta), 'Avg_CHANGE_Centroid_Pos_%s' % name)
+  P.line(np.array(T_delta), 'Avg_CHANGE_Theta_Val_%s' % name)
+  P.bargraph_simple(obs_count, 'Final_Histogram_%s' % name)
+  # for k, X in diffList.items():
+  #   A, B = k
+  #   P.transition_line(sorted(X), A, B, title='-X', trans_factor=.5)
+  # for k, X in transList.items():
+  #   A, B = k
+  #   P.transition_line(sorted(X), A, B, title='-ALL', trans_factor=.5)
+  for k, X in scatPlot.items():
+    collab = {'b': 'Well', 'g': 'Trans', 'r': 'Primary', 'brown': 'Secondary', 'black': 'None'}
+    ptmap = {k: [] for k in collab.keys()}
+    ordpts = sorted(X, key = lambda x : x[0])
+    for i, tup in enumerate(ordpts):
+      y, c = tup
+      ptmap[c].append((i, y))
+      # if c == 'b' or c == 'g':
+      #   ptmap[c].append((i, y))
+      # else:
+      #   ptmap[c].append((i, 0))
+    A, B = k
+    P.scat_Transtions(ptmap, title='-%d_%d'%(A,B), size=1, labels=collab)
+
 
 
 def load_PCA_Subspace(catalog):
@@ -615,6 +878,7 @@ if __name__ == '__main__':
   parser.add_argument('--reset', action='store_true')
   parser.add_argument('--all', action='store_true')
   parser.add_argument('--exact', action='store_true')
+  parser.add_argument('--centroid', action='store_true')
 
   # parser.add_argument('--initarchive', action='store_true')
   # parser.add_argument('--seeddata', action='store_true')
@@ -634,6 +898,9 @@ if __name__ == '__main__':
   # TO Recalculate PCA Vectors from DEShaw (~30-40 mins at 10% of data)
   # calcDEShaw_PCA(catalog)
   # sys.exit(0)
+
+  if args.centroid:
+    centroid_bootstrap(catalog)
 
   if args.initcatalog or args.all:
     settings.envSetup()
