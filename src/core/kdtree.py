@@ -12,6 +12,7 @@ import sys
 import json
 import logging
 import math
+import abc
 
 import numpy as np
 
@@ -22,6 +23,41 @@ __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
+
+
+def SpacePartitionScheme(method):
+    """
+    Returns partitioning function from the given partitoning name
+    """
+
+    if method == 'median':
+      return np.median
+
+    if method == 'mean':
+      return np.mean
+
+    if method == 'middle':
+      middle = lambda vals: (np.max(vals) + np.min(vals)) / 2
+      return middle
+
+    # Simple Linear SVM Classifier:
+    if method == 'max_gap':
+
+      def max_gap(vals):
+        mid = np.mean(vals)
+        max_gap = 0
+        sorted_vals = sorted(vals)
+        for i in range(1, len(sorted_vals)):
+          gap = sorted_vals[i] - sorted_vals[i-1]
+          if gap > max_gap:
+            max_gap = gap
+            mid = max_gap/2 + sorted_vals[i-1]    
+        return mid
+
+      return max_gap
+
+    logging.error('Invalid space partitioning strategy provided')
+    return None
 
 
 class KDTree(object):
@@ -208,7 +244,7 @@ class KDTree(object):
     self.leafsize = leafsize
     self.data = None
     self.data_new = deque()
-    self.split_method = method  #or max_gap
+    self.partition = SpacePartitionScheme(method)  #or max_gap
 
     # New Tree
     if data is not None:
@@ -250,29 +286,7 @@ class KDTree(object):
     vals = [self.deref_pt(i)[axis] for i in node.elm]
     # print(min(vals), max(vals), (max(vals)+min(vals))/2, np.mean(vals), np.median(vals))
 
-    # Apply Split Function Here  (TODO:  inner-class)
-    # Mean (could also use median)
-    if self.split_method == 'median':
-      mid = np.median(vals)
-
-    elif self.split_method == 'mean':
-      mid = np.mean(vals)
-
-    elif self.split_method == 'middle':
-      mid = (np.max(vals) + np.min(vals)) / 2
-
-    # Simple Linear SVM Classifier:
-    elif self.split_method == 'max_gap':
-      mid = np.mean(vals)
-      max_gap = 0
-      sorted_vals = sorted(vals)
-      for i in range(1, len(sorted_vals)):
-        gap = sorted_vals[i] - sorted_vals[i-1]
-        if gap > max_gap:
-          max_gap = gap
-          mid = max_gap/2 + sorted_vals[i-1]    
-    else:
-      mid = np.mean(vals)
+    mid = self.partition(vals)
 
     node.mid = mid
     left = deque()
@@ -431,6 +445,143 @@ class KDTree(object):
       for idx in range(len(globalidxlist), len(dataArray)):
         tree.insert(dataArray[idx], idx)
     return tree
+
+
+class SparseKDTree(KDTree):
+  """
+    Sparse KD-Tree will alway create the tree (lazily) down the max-depth
+    level. Thus, all points in leaf nodes reside as the maxdepth level
+    which much be set and defaults to 8
+
+  """
+
+  def __init__(self, maxdepth=8, data=None, method='middle'):
+    """
+    Leafsize is set to 1
+    """
+
+    KDTree.__init__(self, 1, maxdepth, data, method)
+    self.global_mid = []
+
+
+  def split(self, node, debug='N'):
+    """
+    Recursively splits the given node until both child nodes are leaves
+    """
+    axis = node.depth % self.dim
+
+    if node.depth < self.dim:
+      vals = self.data.T[axis]
+    else:
+      vals = [self.deref_pt(i)[axis] for i in node.elm]
+    
+    mid = self.partition(vals)
+    
+    node.mid = mid
+    left = deque()
+    right = deque()
+    while len(node.elm) > 0:
+      pt = int(node.elm.popleft())
+      if self.deref_pt(pt)[axis] > mid:
+        right.append(pt)
+      else:
+        left.append(pt)
+    node.elm   = None
+    node.left  = KDTree.Node(node.depth+1)
+    node.right = KDTree.Node(node.depth+1)
+
+    # For Sparse leaves
+    lo = node.lo if len(vals) == 0 else np.min(vals)
+    hi = node.hi if len(vals) == 0 else np.max(vals)
+    node.left.configure(lo, mid, left)
+    node.right.configure(mid, hi, right)
+
+    if node.depth+1 < self.maxdepth:
+      self.split(node.left, debug='L')
+      self.split(node.right, debug='R')
+
+
+  def insertPt(self, ptIdx, node):
+    """
+    Updates insertion method to never check inner nodes
+    TODO:  Optimize for balanced insertion (re-balance/partition tree)
+    """
+    if node.elm is not None:
+      return node.insert(ptIdx)
+    else:
+      axis = node.depth % self.dim
+      if self.deref_pt(ptIdx)[axis] < node.mid:
+        return '0' + self.insertPt(ptIdx, node.left)
+      else:
+        return '1' + self.insertPt(ptIdx, node.right)
+
+
+
+class KDGrid(KDTree):
+  """
+    KD-Grid is a K-dimensional grid used for sparse KD Tree HCubes will share
+    common partitioning hyperplanes across depths (hence a grid)
+
+  """
+  def __init__(self, maxdepth=8, data=None, method='middle'):
+    """
+    Leafsize is set to 1
+    """
+    KDTree.__init__(self, 1, maxdepth, data, method)
+    self.global_mid = []
+
+  def split(self, node, debug='N'):
+    """
+    Recursively splits the given node until both child nodes are leaves
+    """
+    axis = node.depth % self.dim
+
+    if node.depth < self.dim:
+      vals = self.data.T[axis]
+    else:
+      vals = [self.deref_pt(i)[axis] for i in node.elm]
+    
+    mid = self.partition(vals)
+    
+    node.mid = mid
+    left = deque()
+    right = deque()
+    while len(node.elm) > 0:
+      pt = int(node.elm.popleft())
+      if self.deref_pt(pt)[axis] > mid:
+        right.append(pt)
+      else:
+        left.append(pt)
+    node.elm   = None
+    node.left  = KDTree.Node(node.depth+1)
+    node.right = KDTree.Node(node.depth+1)
+
+    # For Sparse leaves
+    lo = node.lo if len(vals) == 0 else np.min(vals)
+    hi = node.hi if len(vals) == 0 else np.max(vals)
+    node.left.configure(lo, mid, left)
+    node.right.configure(mid, hi, right)
+
+    if node.depth+1 < self.maxdepth:
+      self.split(node.left, debug='L')
+      self.split(node.right, debug='R')
+
+
+  def insertPt(self, ptIdx, node):
+    """
+    Updates insertion method to never check inner nodes
+    TODO:  Optimize for balanced insertion (re-balance/partition tree)
+    """
+    if node.elm is not None:
+      return node.insert(ptIdx)
+    else:
+      axis = node.depth % self.dim
+      if self.deref_pt(ptIdx)[axis] < node.mid:
+        return '0' + self.insertPt(ptIdx, node.left)
+      else:
+        return '1' + self.insertPt(ptIdx, node.right)
+
+
 
 
 def testKDTree(X, r):

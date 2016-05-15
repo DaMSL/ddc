@@ -303,27 +303,45 @@ def bargraph_simple(data, title, err=None):
 
 
 
-def feadist(data, title, err=None):
+def feadist(data, title, err=None, pcount=None):
   plt.cla()
   plt.clf()
+  numlabels = 5
+  colors = ['k','grey','r','b','g',]
   # labels=['0,0', '0,1','0,2','0,3', '0,4', '1,1', '1,2', '1,3','1,4','2,2','2,3','2,4','3,3','3,4','4,4']
   # labels=['0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
   # labels=['S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
   labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
+  pairs = []
+  for a in range(numlabels-1):
+    for b in range(a + 1, numlabels):
+      pairs.append((a,b))
   fig, ax = plt.subplots()
   Y = data
-  X = np.arange(len(Y))
-  if err is None:
-    plt.bar(X, Y)
-  else:
-    plt.bar(X, Y, yerr=err, error_kw=dict(ecolor='red', elinewidth=2))
+  X = np.arange(len(Y))  
+
+  # Print first 10
+  for i in range(10):
+    C = i % 5
+    plt.bar(i, Y[i], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
+  for i in range(10):
+    polar = Y[i+10] > 0
+    C = pairs[i][polar]
+    plt.bar(i+10, Y[i+10], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
+
   plt.axvline(4.9, color='k', linewidth=2)
   plt.axvline(9.9, color='k', linewidth=2)
   ymin, ymax = np.min(data), np.max(data)
   plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -1))
-  plt.annotate('Proximity to\nCentroids', xy=(5.1, -2))
+  plt.annotate('Proximity to\nCentroids', xy=(5.1, -1))
+  if pcount is not None:
+    plt.annotate('HC Size: %d' % pcount, xy=(5.1, -3))
   plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, 4.5))
-  plt.legend()
+
+  patches = [mpatches.Patch(color=C, label= L) for C, L in zip(colors, ['State %d'%i for i in range(5)])]
+  plt.legend(handles=patches, loc='lower left')  
+
+  # plt.legend()
   ax.set_xticks(X+.5)
   ax.set_xticklabels(labels)
   ax.set_ylim(-6, 6)

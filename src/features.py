@@ -39,12 +39,14 @@ DESHAW_LABEL_FILE = 'data/deshaw_labeled_bins.txt'
 class ExprAnl:
   def __init__(self, host='localhost', port=6379):
     self.r = redis.StrictRedis(port=port, decode_responses=True)
-    self.rms = [np.fromstring(i) for i in self.r.lrange('subspace:rms', 0, -1)]
+    # self.rms = [np.fromstring(i) for i in self.r.lrange('subspace:rms', 0, -1)]
     self.seq = ['jc_'+x[0] for x in sorted(self.r.hgetall('anl_sequence').items(), key=lambda x:x[1])]
     self.conf=[self.r.hgetall(i) for i in self.seq]
     self.trlist = {}
     self.wells = [[] for i in range(5)]
-    self.rmsd = []
+    self.rmsd = {}
+    self.rmsd15 = {}
+    self.feal_list = {}
     self.checked_rmsd = []
     cent = np.load('../data/init-centroids.npy')
     self.centroid = cent
@@ -55,6 +57,9 @@ class ExprAnl:
           self.cent15.append(np.array(cent[a]))
         else:
           self.cent15.append((np.array(cent[a]) + np.array(cent[b]))/2)
+  def load(self, num):
+    for i in range(num):
+      _ = self.feal_atemp(i)
   def loadtraj(self, tr):
     if isinstance(tr, list):
       trlist = tr
@@ -74,29 +79,124 @@ class ExprAnl:
           alpha = dr.filter_alpha(traj)
           for i in alpha.xyz[:100]:
             self.wells[A].append(i)
-  def calc_rmsd(self):
-    for k, v in self.trlist:
-      # if k in self.checked_rmsd:
-      #   continue
-      for i in v.xyz:
-        self.rmsd.append([LA.norm(c-i) for c in self.centroid])
-      self.checked_rmsd.append(k)
-  def get_rms(self, trnum):
+  def rms(self, trnum):
     if trnum not in self.trlist.keys():
       self.loadtraj(trnum)
-    return [[LA.norm(c-i) for c in self.cent15] for i in self.trlist[trnum].xyz]
-  def get_rms5(self, trnum):
+    if trnum not in self.rmsd.keys():
+      rmsd = [[LA.norm(c-i) for c in self.centroid] for i in self.trlist[trnum].xyz]
+      self.rmsd[trnum] = rmsd
+    return self.rmsd[trnum]
+  def rms15(self, trnum):
     if trnum not in self.trlist.keys():
       self.loadtraj(trnum)
-    return [[LA.norm(c-i) for c in self.centroid] for i in self.trlist[trnum].xyz]
+    if trnum not in self.rmsd.keys():
+      rmsd = [[LA.norm(c-i) for c in self.cent15] for i in self.trlist[trnum].xyz]
+      self.rmsd[trnum] = rmsd
+    return self.rmsd[trnum]
+  def feature_landscape(self, window, var=False):
+    """ FEATURE LANDSCAPE Calculation for traj f data pts
+    """
+    counts = [0 for i in range(5)]
+    tup_list = []
+    for rms in window:
+      counts[np.argmin(rms)] += 1
+      tup = []
+      for n, val in enumerate(rms):
+        tup.append(max(11.34-val, 0))
+      # Additional Feature Spaces
+      for a in range(4):
+        for b in range(a+1, 5):
+          tup.append(rms[a]-rms[b])
+      tup_list.append(tup)
+    landscape = [6*c/sum(counts) for c in counts]
+    landscape.extend(np.mean(tup_list, axis=0))
+    if var:
+      variance = [0 for i in range(5)]
+      variance.extend(np.std(tup_list, axis=0))
+      return np.array(landscape), np.array(variance)
+    else:
+      return np.array(landscape)
+  def feal(self, trnum, winsize=None, var=False):
+    feal_list = []
+    var_list = []
+    N = len(self.rmsd[trnum])
+    wsize = N if winsize is None else winsize
+    if trnum not in self.rmsd.keys():
+      _ = self.rms(trnum)
+    for idx in range(0, N, wsize):
+      window = self.rmsd[trnum][idx:min(N,idx+wsize)]
+      if var:
+        f, v = self.feature_landscape(window, var=True)
+        var_list.append(v)
+      else:
+        f = self.feature_landscape(window)
+      feal_list.append(f)
+    if var:
+      return np.array(feal_list), np.array(var_list)
+    return np.array(feal_list)
+  def feal_atemp(self, trnum):
+    """Atemporal (individual frame) featue landscape
+    """
+    if trnum in self.feal_list:
+      return self.feal_list[trnum]
+    feal_list = []
+    if trnum not in self.rmsd.keys():
+      _ = self.rms(trnum)
+    for rms in self.rmsd[trnum]:
+      landscape = [0 for i in range(5)]
+      landscape[np.argmin(rms)] = 6
+      tup = []
+      for n, val in enumerate(rms):
+        tup.append(max(11.34-val, 0))
+      for a in range(4):
+        for b in range(a+1, 5):
+          tup.append(rms[a]-rms[b])
+      landscape.extend(tup)
+      feal_list.append(np.array(landscape))
+    self.feal_list[trnum] = np.array(feal_list) 
+    return self.feal_list[trnum]
+  def kdtree(self, leafsize, depth, method):
+    self.index = []
+    allpts = []
+    for trnum, f in self.feal_list.items():
+      for i, tup in enumerate(f):
+        allpts.append(tup[5:])
+        self.index.append((trnum, i))
+    self.kd = KDTree(leafsize, depth, np.array(allpts), method)
+    self.hc = self.kd.getleaves()
+  def hcmean(self, hckey=None):
+    if hckey is None:
+      result = {}
+      for k, v in self.hc.items():
+        flist = []
+        for idx in v['elm']:
+          trnum, frame = self.index[int(idx)]
+          flist.append(self.feal_list[trnum][frame])
+        result[k] = np.mean(flist, axis=0)
+      return result
+    else:
+      flist = []
+      for idx in v['elm']:
+        trnum, frame = self.index[idx]
+        flist.append(self.feal_list[trnum][frame])
+      return np.mean(flist, axis=0)
 
+    
 
 def draw_windows(rmslist, title='feal_', winsize=10, slide=10):
   feallist = []
   N = len(rmslist)
   fnum=0
-  for start in range(0, N, slide):
-    f = get_feal(rmslist[start:min(N,start+slide)])
+  for idx in range(0, N, slide):
+    f = get_feal(rmslist[idx:min(N,idx+winsize)])
+    P.feadist(f, title+'_%03d' % fnum)
+    fnum += 1
+
+def draw_win_flist(feal_list, title='feal_', winsize=10, slide=10):
+  N = len(feal_list)
+  fnum=0
+  for idx in range(0, N, slide):
+    f = np.mean(feal_list[idx:min(N,idx+winsize)], axis=0)
     P.feadist(f, title+'_%03d' % fnum)
     fnum += 1
 
@@ -116,7 +216,6 @@ def get_feal(rmslist):
   landscape.extend(np.mean(tup_list, axis=0))
   return np.array(landscape)
 
-
 def get_feal_var(rmslist):
   counts = [0 for i in range(5)]
   tup_list = []
@@ -135,7 +234,17 @@ def get_feal_var(rmslist):
   landscape.extend(np.mean(tup_list, axis=0))
   return np.array(landscape), variance
 
-
+def plot_seq(rms_list, title, wsize=10, slide=10, witherror=False):
+  N = len(rms_list)
+  fnum = 0
+  for i in range(0, len(rms_list), slide):
+    if witherror:
+      feal, var = get_feal_var(rms_list[i:min(i+slide,N)])
+      P.feadist(feal, title+'_%04d' % fnum, err=var)
+    else:
+      feal = get_feal(rms_list[i:min(i+slide,N)])
+      P.feadist(feal, title+'_%04d' % fnum)
+    fnum += 1
 
 def make_kdtree(feal_list):
   kdtree1 = KDTree(50, maxdepth=4, data=feal_list, method='median')
@@ -148,6 +257,9 @@ def make_kdtree(feal_list):
     print(k, np.mean(src_pts, axis=0))
 
 
+  # a, b = binlist[i]
+# for i in range(25):
+#   P.plot_seq(frms[i], '/seq%d/24ns_10ps_%d_%d', 10, 10)
 
 
 def centroid_bootstrap(catalog):
@@ -550,3 +662,52 @@ if __name__ == '__main__':
   if args.centroid:
     centroid_bootstrap(catalog)
 
+
+
+# #================
+# hcf = {k: np.array([np.array(feal[i]) for i in v['elm']]) for k,v in hc5.items()}
+# fmean = {k: np.mean(v, axis=0) for k,v in hcf.items()}
+
+# def find_hc(hclist, index):
+#   for k, v in hclist.items():
+#     if int(index) in v['elm']:
+#       return k
+#   return None
+
+# def get_traj(expr, srcindex):
+#   for i in expr.conf:
+#     if int(i['src_index']) == int(srcindex):
+#       return i
+
+# def get_traj(expr, srcindex):
+#   for i, con in enumerate(expr.conf):
+#     if int(con['src_index']) == int(srcindex):
+#       return i
+
+
+# srcidx = [i['src_index'] for i in unif.conf]
+# candid = [i for i in srcidx if i < 91985]
+# hc_c = [find_hc(hc5, i) for i in candid]
+
+# hc_map = {}
+# for h,i in zip(hc_c, candid):
+#   if h not in hc_map:
+#     hc_map[h] = []
+#   hc_map[h].append(i)
+
+# gh = {}
+# for i, h in enumerate(hc_start):
+#   if h not in gh:
+#     gh[h] = []
+#   gh[h].append(i)
+
+# HCCube -> Src traj
+# '11100111': [27, 28, 29, 33, 36, 42]
+
+
+
+
+# trlist = [get_traj(unif, i) for i in hc_map['01000011']]
+
+# for k, v in fmean:
+#   P.feadist(v, 'feal_hc/hc_'+k)
