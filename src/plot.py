@@ -169,7 +169,6 @@ def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
   plt.clf()
   ax = plt.subplot(111)
   for X, C, L in zip(seriesList, colorList, labelList):
-    print('Plotting: ', L, C)
     plt.plot(np.arange(len(X))*(step), X, color=C, label=L)
   plt.title(title)
   if xlabel is not None:

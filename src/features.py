@@ -108,7 +108,7 @@ class ExprAnl:
         for b in range(a+1, 5):
           tup.append(rms[a]-rms[b])
       tup_list.append(tup)
-    landscape = [6*c/sum(counts) for c in counts]
+    landscape = [c/sum(counts) for c in counts]
     landscape.extend(np.mean(tup_list, axis=0))
     if var:
       variance = [0 for i in range(5)]
@@ -144,7 +144,7 @@ class ExprAnl:
       _ = self.rms(trnum)
     for rms in self.rmsd[trnum]:
       landscape = [0 for i in range(5)]
-      landscape[np.argmin(rms)] = 6
+      landscape[np.argmin(rms)] = 1
       tup = []
       for n, val in enumerate(rms):
         tup.append(max(11.34-val, 0))
