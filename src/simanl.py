@@ -23,6 +23,7 @@ import redis
 from core.common import *
 from core.slurm import slurm
 from core.kvadt import kv2DArray
+from datatools import feal
 
 from macro.macrothread import macrothread
 import mdtools.deshaw as deshaw
@@ -309,6 +310,10 @@ class simulationJob(macrothread):
         traj = md.load(dcd_ramfile, top=job['pdb'])
       else:
         traj = md.load(dcdFile, top=job['pdb'])
+
+    # Center Coordinates
+    traj.center_coordinates()
+
     bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
@@ -326,28 +331,15 @@ class simulationJob(macrothread):
     # 1. Filter to Alpha atoms
     alpha = traj.atom_slice(deshaw.FILTER['alpha'])
 
+
+
     # 2. (IF USED) Convert to distance space: pairwise dist for all atom combinations
     # alpha_dist = dr.distance_space(alpha)
 
     # 3. Calc RMS for each conform to all centroids
-    # Heuristic centroid weight (TODO: make this trained)
-    cw = [.94, .95, .97, .99, .99]
+    # Heuristic centroid weight (TODO: make this trained)\
 
-    numLabels = len(self.data['centroid'])
-    numConf = len(traj.xyz)
-    stat.collect('numpts',numConf)
-
-    # 4. Account for noise : Simple spatial mean filter over a small window
-    #    Where size of window captures extent of noise 
-    #    (e.g. 10000fs window => motions under 10ps are considered "noisy")
-    noise = self.data['obs_noise']
-    stepsize = 500 if 'interval' not in job else int(job['interval'])
-    nwidth = noise//(2*stepsize)
-    noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
-    rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
-
-    # 5. Calculate the RMSD for each filtered point to 5 pre-determined centroids
-
+    # 4. For adaptive Centriods
     #  Centroids Will be pulled & updated. 
     logging.info('CENTROID Retrieval & Updating')
     self.wait_catalog()
@@ -362,87 +354,116 @@ class simulationJob(macrothread):
     # bench.mark('ConcurrLockCentroid'%(A,B))
 
     #  Implemented as a Transactional Data Structure....
-    centroid = []
-    for state in range(numLabels):
-      cent_raw  = self.catalog.lrange('centroid:xyz:%d'%state, 0, -1)
-      cent_xyz  = [pickle.loads(i) for i in cent_raw]
-      cent_npts = [int(i) for i in self.catalog.lrange('centroid:npts:%d'%state, 0, -1)]
-      c_sum = np.zeros(shape=cent_xyz[0].shape)
-      c_tot = 0
-      for x, n in zip(cent_xyz, cent_npts):
-        c = x * n
-        c_sum += c
-        c_tot += n
-      centroid.append(c_sum / c_tot)
+    if ADAPTIVE_CENTROID:
+      centroids = []
+      for state in range(numLabels):
+        cent_raw  = self.catalog.lrange('centroid:xyz:%d'%state, 0, -1)
+        cent_xyz  = [pickle.loads(i) for i in cent_raw]
+        cent_npts = [int(i) for i in self.catalog.lrange('centroid:npts:%d'%state, 0, -1)]
+        c_sum = np.zeros(shape=cent_xyz[0].shape)
+        c_tot = 0
+        for x, n in zip(cent_xyz, cent_npts):
+          c = x * n
+          c_sum += c
+          c_tot += n
+        centroids.append(c_sum / c_tot)
+    else:
+      centroids = self.catalog.loadNPArray('centroid')      
 
+    if EXPERIMENT_NUMBER < 10:
+    # 5. Calculate the RMSD for each filtered point to 5 pre-determined centroids
+    # cw = [.92, .94, .96, .99, .99]
+      cw = [.94, .95, .97, .99, .99]
 
+      numLabels = len(self.data['centroid'])
+      numConf = len(traj.xyz)
+      stat.collect('numpts',numConf)
 
-    # Notes: Delta_S == rmslist
-    # rmslist = calc_rmsd(rms_filtered, centroids, weights=cw)
-    rmslist = adaptive_rmsd(rms_filtered, centroids, theta)
+      # 4. Account for noise : Simple spatial mean filter over a small window
+      #    Where size of window captures extent of noise 
+      #    (e.g. 10000fs window => motions under 10ps are considered "noisy")
+      noise = self.data['obs_noise']
+      stepsize = 500 if 'interval' not in job else int(job['interval'])
+      nwidth = noise//(2*stepsize)
+      noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+      rms_filtered = np.array([noisefilt(alpha.xyz, i) for i in range(numConf)])
+      # Notes: Delta_S == rmslist
+      rmslist = calc_rmsd(rms_filtered, centroids, weights=cw)
+      # rmslist = adaptive_rmsd(rms_filtered, centroids, theta)
+
+    else:
+      rmslist = calc_rmsd(alpha, centroids)
+
     # rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', \
       numConf, numLabels)
 
+
     # 6. Apply Heuristics Labeling
-    # logging.debug('Applying Labeling Heuristic. Origin:   %d, %d', srcA, srcB)
-    rmslabel = []
-    binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
-    label_count = {ab: 0 for ab in binlist}
-    groupbystate = [[] for i in range(numLabels)]
-    groupbybin = {ab: [] for ab in binlist}
-    for i, rms in enumerate(rmslist):
-      #  Sort RMSD by proximity & set state A as nearest state's centroid
-      A, B = np.argsort(rms)[:2]
+    if EXPERIMENT_NUMBER < 10:    
+      rmslabel = []
+      binlist = [(a, b) for a in range(numLabels) for b in range(numLabels)]
+      label_count = {ab: 0 for ab in binlist}
+      groupbystate = [[] for i in range(numLabels)]
+      groupbybin = {ab: [] for ab in binlist}
+      for i, rms in enumerate(rmslist):
+        #  Sort RMSD by proximity & set state A as nearest state's centroid
+        A, B = np.argsort(rms)[:2]
 
-      #  Calc Absolute proximity between nearest 2 states' centroids
-      # THETA Calc derived from static run. it is based from the average std dev of all rms's from a static run
-      #   of BPTI without solvent. It could be dynamically calculated, but is hard coded here
-      #  The theta is divided by four based on the analysis of DEShaw:
-      #   est based on ~3% of DEShaw data in transition (hence )
-      # avg_stddev = 0.34119404492089034
-      # theta = settings.RMSD_THETA
-      ## FOR ADAPTIVE Cantroids. Theta is now updated dyamically
+        #  Calc Absolute proximity between nearest 2 states' centroids
+        # THETA Calc derived from static run. it is based from the average std dev of all rms's from a static run
+        #   of BPTI without solvent. It could be dynamically calculated, but is hard coded here
+        #  The theta is divided by four based on the analysis of DEShaw:
+        #   est based on ~3% of DEShaw data in transition (hence )
+        # avg_stddev = 0.34119404492089034
+        # theta = settings.RMSD_THETA
+        ## FOR ADAPTIVE Cantroids. Theta is now updated dyamically
 
-      # NOTE: Original formulate was relative. Retained here for reference:  
-      # Rel vs Abs: Calc relative proximity for top 2 nearest centroids   
-      # relproximity = rms[A] / (rms[A] + rms[rs[1]])
-      # B = rs[1] if relproximity > (.5 - theta) else A
-      # proximity = abs(rms[prox[1]] - rms[A]) / (rms[prox[1]] + rms[A])  #relative
-      #proximity = abs(rms[prox[1]] - rms[A])    #abs
-      # Update for Adaptive Centroid.
-      delta = np.abs(rms[B] - rms[A])
+        # NOTE: Original formulate was relative. Retained here for reference:  
+        # Rel vs Abs: Calc relative proximity for top 2 nearest centroids   
+        # relproximity = rms[A] / (rms[A] + rms[rs[1]])
+        # B = rs[1] if relproximity > (.5 - theta) else A
+        # proximity = abs(rms[prox[1]] - rms[A]) / (rms[prox[1]] + rms[A])  #relative
+        #proximity = abs(rms[prox[1]] - rms[A])    #abs
+        # Update for Adaptive Centroid.
+        delta = np.abs(rms[B] - rms[A])
 
-      #  (TODO:  Factor in more than top 2, better noise)
-      #  Label secondary sub-state
-      # sub_state = B prox[1] if proximity < theta else A
-      # For ADAPTIVE Centroids
-      if delta < thetas[A][B]:
-        sub_state = B
-      else:
-        sub_state = A
-      rmslabel.append((A, sub_state))
+        #  (TODO:  Factor in more than top 2, better noise)
+        #  Label secondary sub-state
+        # sub_state = B prox[1] if proximity < theta else A
+        # For ADAPTIVE Centroids
+        if delta < thetas[A][B]:
+          sub_state = B
+        else:
+          sub_state = A
+        rmslabel.append((A, sub_state))
 
-      # Add this index to the set of indices for this respective label
-      #  TODO: Should we evict if binsize is too big???
-      # logging.debug('Label for observation #%3d: %s', i, str((A, B)))
-      label_count[(A, sub_state)] += 1
+        # Add this index to the set of indices for this respective label
+        #  TODO: Should we evict if binsize is too big???
+        # logging.debug('Label for observation #%3d: %s', i, str((A, B)))
+        label_count[(A, sub_state)] += 1
 
-      # Group high-dim point by state
-      # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
-      groupbystate[A].append(i)
-      groupbybin[(A, sub_state)].append(i)
+        # Group high-dim point by state
+        # TODO: Consider grouping by stateonly or well/transitions (5 vs 10 bins)
+        groupbystate[A].append(i)
+        groupbybin[(A, sub_state)].append(i)
 
-    stat.collect('observe', label_count)
-    bench.mark('RMS')
-    logging.info('Labeled the following:')
-    for A in range(numLabels):
-      if len(groupbystate[A]) > 0:
-        logging.info('label,state,%d,num,%d', A, len(groupbystate[A]))
-    for ab in binlist:
-      if len(groupbybin[ab]) > 0:
-        A, B = ab
-        logging.info('label,bin,%d,%d,num,%d', A, B, len(groupbybin[ab]))
+      stat.collect('observe', label_count)
+      bench.mark('RMS')
+      logging.info('Labeled the following:')
+      for A in range(numLabels):
+        if len(groupbystate[A]) > 0:
+          logging.info('label,state,%d,num,%d', A, len(groupbystate[A]))
+      for ab in binlist:
+        if len(groupbybin[ab]) > 0:
+          A, B = ab
+          logging.info('label,bin,%d,%d,num,%d', A, B, len(groupbybin[ab]))
+
+    # FEATURE LANDSCAPE
+    else:
+
+      # Calc Feature landscape for each frame's RMSD
+      feal_list = [feal.atemporal(rms) for rms in rmslist]
 
     #  ADAPTIVE CENTROID & THETA CALCULATION
     # if lock is None:
@@ -450,24 +471,25 @@ class simulationJob(macrothread):
     # else:  
     #   logging.info('Updating Adaptive Centroid')
     
-    pipe = self.catalog.pipeline()
-    for state in range(numLabels):
-      n_pts = len(groupbybin[(state, state)])
-      if n_pts == 0:
-        logging.info('Skipping State %d Centroid -- Well not visited on this trajectory')
-        continue
+    if ADAPTIVE_CENTROID:
+      pipe = self.catalog.pipeline()
+      for state in range(numLabels):
+        n_pts = len(groupbybin[(state, state)])
+        if n_pts == 0:
+          logging.info('Skipping State %d Centroid -- Well not visited on this trajectory')
+          continue
 
-      cent_xyz  = [alpha.xyz[i] for i in groupbybin[(state, state)]]
-      cent_npts = len(groupbybin[(state, state)])
-      c_sum = np.zeros(shape=alpha.xyz[0].shape)
-      for pt in cent_xyz:
-        c_sum += pt
-      centroid_local = c_sum / n_pts
-      centroid_delta = LA.norm(centroid[state] - cent) 
-      pipe.rpush('centroid:xyz:%d' % state, pickle.dumps(centroid_local))
-      pipe.rpush('centroid:npts:%d' % state, n_pts)
-      pipe.rpush('centroid:delta:%d' % state, centroid_delta)
-    pipe.execute()
+        cent_xyz  = [alpha.xyz[i] for i in groupbybin[(state, state)]]
+        cent_npts = len(groupbybin[(state, state)])
+        c_sum = np.zeros(shape=alpha.xyz[0].shape)
+        for pt in cent_xyz:
+          c_sum += pt
+        centroid_local = c_sum / n_pts
+        centroid_delta = LA.norm(centroids[state] - cent) 
+        pipe.rpush('centroid:xyz:%d' % state, pickle.dumps(centroid_local))
+        pipe.rpush('centroid:npts:%d' % state, n_pts)
+        pipe.rpush('centroid:delta:%d' % state, centroid_delta)
+      pipe.execute()
 
   # 4-B. Subspace Calcuation: COVARIANCE Matrix, 200ns windows, Full Protein
   #------ B:  Covariance Matrix  -----------------
@@ -510,21 +532,26 @@ class simulationJob(macrothread):
             global_index.append(index - 1) 
 
           pipe.multi()
-          logging.debug('Update RMS Subspace')
-          for x in range(traj.n_frames):
-            A, B = rmslabel[x]
-            index = global_index[x]
-            # Labeled Observation (from RMSD)
-            pipe.rpush('label:rms', rmslabel[x])
-            pipe.rpush('varbin:rms:%d_%d' % (A, B), index)
-            # pipe.rpush('lineage:rms:%d_%d:%d_%d' % (srcA, srcB, A, B), index)
-            # pipe.rpush('lineage:pca:%s:%d_%d' % (job['src_hcube'], A, B), index)
-            pipe.rpush('subspace:rms', bytes(rmslist[x]))
+          if EXPERIMENT_NUMBER < 10:
+            logging.debug('Update RMS Subspace')
+            for x in range(traj.n_frames):
+              A, B = rmslabel[x]
+              index = global_index[x]
+              # Labeled Observation (from RMSD)
+              pipe.rpush('label:rms', rmslabel[x])
+              pipe.rpush('varbin:rms:%d_%d' % (A, B), index)
+              # pipe.rpush('lineage:rms:%d_%d:%d_%d' % (srcA, srcB, A, B), index)
+              # pipe.rpush('lineage:pca:%s:%d_%d' % (job['src_hcube'], A, B), index)
+              pipe.rpush('subspace:rms', bytes(rmslist[x]))
 
-          logging.debug('Update OBS Counts')
-          for b in binlist:
-            pipe.rpush('observe:rms:%d_%d' % b, label_count[b])
-          pipe.incr('observe:count')
+            logging.debug('Update OBS Counts')
+            for b in binlist:
+              pipe.rpush('observe:rms:%d_%d' % b, label_count[b])
+            pipe.incr('observe:count')
+          else:
+            for x in range(traj.n_frames):
+              pipe.rpush('subspace:rms', bytes(rmslist[x]))            
+              pipe.rpush('subspace:feal', bytes(feal_list[x]))            
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)
 
           if EXPERIMENT_NUMBER > 5:
@@ -552,7 +579,7 @@ class simulationJob(macrothread):
   # 4-C. Subspace Calcuation: PCA BY Strata (PER STATE) using Alpha Filter
   #------ C:  GLOBAL PCA by state  -----------------
   #  Update PCA Vectors for each state with new data
-    if EXPERIMENT_NUMBER > 5:
+    if EXPERIMENT_NUMBER > 5 and EXPERIMENT_NUMBER < 10:
       logging.info('---- PCA per BIN over Alpha Filter in cartesian Space ----')
       # TODO:  This will eventually get moved into a User process macrothread 
       #   which will set in between analysis and controller. 

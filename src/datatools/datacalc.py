@@ -5,8 +5,7 @@ import math
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
-def makeLogisticFunc (maxval, steep, midpt):
-  return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))
+
 
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
 

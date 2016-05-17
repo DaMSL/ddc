@@ -74,7 +74,7 @@ def bootstrap_replacement (source, samplesize=.1, N=100, interval=.90):
 
 def bootstrap_std (series, interval=.9):
   """
-  Bootstrap algorithm for sampling and confidence interval estimation
+  This is actually just the confidence interval estimation
   """
   N = len(series)
   mean = np.mean(series, axis=0)
@@ -122,17 +122,24 @@ def bootstrap_mv(source, N=10):
 def bootstrap_block(source, blocksize=5000):
   i = 0
   boot = []
+  mu = np.mean(source, axis=0)
   while i+blocksize < len(source):
     mu_i = np.mean(source[i:i+blocksize], axis=0)
     boot.append(mu_i)
     i += blocksize
   N = len(boot)
+  if N < 2:
+    return [np.ones(len(mu)) for i in range(5)]
   boot = np.array(boot)
-  mean = np.nan_to_num(np.mean(boot, axis=0))
-  stddev = np.nan_to_num(np.std(boot, axis=0))
+  # mean = np.nan_to_num(np.mean(boot, axis=0))
+  # stddev = np.nan_to_num(np.std(boot, axis=0))
+  mean = np.mean(boot, axis=0)
+  stddev = np.std(boot, axis=0)
   Z = 1.645  # .9 CI
-  err = np.nan_to_num(stddev / math.sqrt(N))
-  CI = np.nan_to_num(Z * err)
-  return (mean, CI, stddev, err, CI/mean)
+  err = stddev / math.sqrt(N)
+  CI = Z * err
+  return (mu, CI, stddev, err, np.abs(CI/mu))
 
 
+def makeLogisticFunc (maxval, steep, midpt):
+  return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))

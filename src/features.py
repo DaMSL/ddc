@@ -9,6 +9,7 @@ import json
 import bisect
 import datetime as dt
 
+
 import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
@@ -17,6 +18,7 @@ from numpy import linalg as LA
 from core.common import *
 import mdtools.deshaw as deshaw
 from overlay.redisOverlay import RedisClient
+import core.ops as op
 from core.kvadt import kv2DArray
 from core.slurm import slurm
 from core.kdtree import KDTree
@@ -46,9 +48,10 @@ class ExprAnl:
     self.wells = [[] for i in range(5)]
     self.rmsd = {}
     self.rmsd15 = {}
-    self.feal_list = {}
+    self.feal_list = None
     self.checked_rmsd = []
-    cent = np.load('../data/init-centroids.npy')
+    # cent = np.load('../data/init-centroids.npy')
+    cent = np.load('../data/gen-alpha-cartesian-centroid.npy')
     self.centroid = cent
     self.cent15 = []
     for a in range(5):
@@ -57,10 +60,10 @@ class ExprAnl:
           self.cent15.append(np.array(cent[a]))
         else:
           self.cent15.append((np.array(cent[a]) + np.array(cent[b]))/2)
-  def load(self, num):
-    for i in range(num):
-      _ = self.feal_atemp(i)
-  def loadtraj(self, tr):
+    self.cw = [1., 1., 1., 1., 1.]  
+    # self.cw = [.92, .92, .96, .99, .99]  
+
+  def loadtraj(self, tr, first=None):
     if isinstance(tr, list):
       trlist = tr
     else:
@@ -68,7 +71,10 @@ class ExprAnl:
     for t in trlist:
       traj = md.load(self.conf[t]['dcd'], top=self.conf[t]['pdb'])
       traj.center_coordinates()
+      if first is not None:
+        traj = traj.slice(np.arange(first))
       self.trlist[t] = datareduce.filter_alpha(traj)
+
   def ld_wells(self):
     for x, i in enumerate(self.conf[:100]):
       if i['origin'] == 'deshaw':
@@ -79,13 +85,30 @@ class ExprAnl:
           alpha = dr.filter_alpha(traj)
           for i in alpha.xyz[:100]:
             self.wells[A].append(i)
-  def rms(self, trnum):
+
+  def load(self, num, first=None):
+    for i in range(num):
+      _ = self.rms(i, first)
+
+  def rms(self, trnum, noise=False, force=False, first=None):
     if trnum not in self.trlist.keys():
-      self.loadtraj(trnum)
-    if trnum not in self.rmsd.keys():
-      rmsd = [[LA.norm(c-i) for c in self.centroid] for i in self.trlist[trnum].xyz]
+      self.loadtraj(trnum, first)
+    if trnum not in self.rmsd.keys() or force:
+      if noise:
+        # With Noise Filter
+        noise = int(self.r.get('obs_noise'))
+        dcdfreq = int(self.r.get('dcdfreq'))
+        stepsize = int(self.r.get('sim_step_size'))
+        nwidth = noise//(2*stepsize)
+        noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+        source_pts = np.array([noisefilt(self.trlist[trnum].xyz, i) for i in range(self.trlist[trnum].n_frames)])
+      else:
+        source_pts = self.trlist[trnum].xyz
+      rmsd = [[self.cw[i]*LA.norm(self.centroid[i]-pt) for i in range(5)] for pt in source_pts]
+      # rmsd = [[LA.norm(c-i) for c in self.centroid] for i in self.trlist[trnum].xyz]
       self.rmsd[trnum] = rmsd
     return self.rmsd[trnum]
+
   def rms15(self, trnum):
     if trnum not in self.trlist.keys():
       self.loadtraj(trnum)
@@ -93,22 +116,34 @@ class ExprAnl:
       rmsd = [[LA.norm(c-i) for c in self.cent15] for i in self.trlist[trnum].xyz]
       self.rmsd[trnum] = rmsd
     return self.rmsd[trnum]
+
   def feature_landscape(self, window, var=False):
     """ FEATURE LANDSCAPE Calculation for traj f data pts
     """
+    log_prox = op.makeLogisticFunc(1., .5, .5)
+    log_reld = op.makeLogisticFunc(1., -1, .5)
     counts = [0 for i in range(5)]
     tup_list = []
     for rms in window:
       counts[np.argmin(rms)] += 1
       tup = []
-      for n, val in enumerate(rms):
-        tup.append(max(11.34-val, 0))
+
+      # Proximity
+      for n, dist in enumerate(rms):
+        tup.append(log_prox(dist))
+        # tup.append(max(11.34-dist, 0))
+
       # Additional Feature Spaces
       for a in range(4):
         for b in range(a+1, 5):
-          tup.append(rms[a]-rms[b])
+          rel_dist = rms[a]-rms[b]
+          tup.append(log_reld(rel_dist))
       tup_list.append(tup)
+
+    # Normalize Count
     landscape = [c/sum(counts) for c in counts]
+
+    # Average over the window
     landscape.extend(np.mean(tup_list, axis=0))
     if var:
       variance = [0 for i in range(5)]
@@ -116,6 +151,7 @@ class ExprAnl:
       return np.array(landscape), np.array(variance)
     else:
       return np.array(landscape)
+
   def feal(self, trnum, winsize=None, var=False):
     feal_list = []
     var_list = []
@@ -134,46 +170,72 @@ class ExprAnl:
     if var:
       return np.array(feal_list), np.array(var_list)
     return np.array(feal_list)
-  def feal_atemp(self, trnum):
+
+  def feal_atemp(self, rms, scaleto=10):
     """Atemporal (individual frame) featue landscape
     """
-    if trnum in self.feal_list:
-      return self.feal_list[trnum]
-    feal_list = []
-    if trnum not in self.rmsd.keys():
-      _ = self.rms(trnum)
-    for rms in self.rmsd[trnum]:
-      landscape = [0 for i in range(5)]
-      landscape[np.argmin(rms)] = 1
-      tup = []
-      for n, val in enumerate(rms):
-        tup.append(max(11.34-val, 0))
-      for a in range(4):
-        for b in range(a+1, 5):
-          tup.append(rms[a]-rms[b])
-      landscape.extend(tup)
-      feal_list.append(np.array(landscape))
-    self.feal_list[trnum] = np.array(feal_list) 
-    return self.feal_list[trnum]
+    log_prox = op.makeLogisticFunc(scaleto, .5, .5)
+    log_reld = op.makeLogisticFunc(scaleto, -3, 0)
+
+    fealand = [0 for i in range(5)]
+    fealand[np.argmin(rms)] = scaleto
+    tup = []
+    # Proximity
+    for n, dist in enumerate(rms):
+      # tup.append(log_prox(dist))
+      maxd = 10.  #11.34
+      # tup.append(scaleto*max(maxd-dist, 0)/maxd)
+      tup.append(max(maxd-dist, 0))
+
+    # Additional Feature Spaces
+    for a in range(4):
+      for b in range(a+1, 5):
+        rel_dist = rms[a]-rms[b]
+        tup.append(log_reld(rel_dist))
+
+    fealand.extend(tup)
+    return np.array(fealand)   # Tuple or NDArray?
+
+  def all_feal(self, force=False):
+    if self.feal_list is None or force:
+      self.feal_list = op.flatten([[self.feal_atemp(i) for i in self.rmsd[tr]] for tr in self.rmsd.keys()])    
+    return self.feal_list
+
+  def feal_global(self):
+    flist = self.all_feal()
+    return np.mean(flist, axis=0)
+
+  def draw_feal(self, trnum=None, norm=10):
+    if trnum is None:
+      flist = self.all_feal()
+    else:
+      flist = [self.feal_atemp(i, scaleto=norm) for i in self.rmsd[trnum]]
+    agg = np.mean(flist, axis=0)
+    P.feadist(agg, 'feal_global_%s' % self.r.get('name'), norm=norm)
+
   def kdtree(self, leafsize, depth, method):
     self.index = []
     allpts = []
-    for trnum, f in self.feal_list.items():
+    # Recalc for indexing
+    flist = [[self.feal_atemp(i) for i in self.rmsd[tr]] for tr in self.rmsd.keys()]
+    for trnum, f in enumerate(flist):
       for i, tup in enumerate(f):
         allpts.append(tup[5:])
         self.index.append((trnum, i))
     self.kd = KDTree(leafsize, depth, np.array(allpts), method)
     self.hc = self.kd.getleaves()
+
   def hcmean(self, hckey=None):
     if hckey is None:
-      result = {}
-      for k, v in self.hc.items():
-        flist = []
-        for idx in v['elm']:
-          trnum, frame = self.index[int(idx)]
-          flist.append(self.feal_list[trnum][frame])
-        result[k] = np.mean(flist, axis=0)
-      return result
+    flist = [[self.feal_atemp(i) for i in self.rmsd[tr]] for tr in self.rmsd.keys()]      
+    result = {}
+    for k, v in self.hc.items():
+      hc_feal = []
+      for idx in v['elm']:
+        trnum, frame = self.index[int(idx)]
+        hc_feal.append(flist[trnum][frame])
+      result[k] = np.mean(hc_feal, axis=0)
+    return result
     else:
       flist = []
       for idx in v['elm']:
@@ -639,6 +701,27 @@ def resetAnalysis(catalog):
   jobfile.close()
 
     
+  # def feal_atemp(self, trnum):
+  #   """Atemporal (individual frame) featue landscape
+  #   """
+  #   if trnum in self.feal_list:
+  #     return self.feal_list[trnum]
+  #   feal_list = []
+  #   if trnum not in self.rmsd.keys():
+  #     _ = self.rms(trnum)
+  #   for rms in self.rmsd[trnum]:
+  #     landscape = [0 for i in range(5)]
+  #     landscape[np.argmin(rms)] = 1
+  #     tup = []
+  #     for n, val in enumerate(rms):
+  #       tup.append(max(11.34-val, 0))
+  #     for a in range(4):
+  #       for b in range(a+1, 5):
+  #         tup.append(rms[a]-rms[b])
+  #     landscape.extend(tup)
+  #     feal_list.append(np.array(landscape))
+  #   self.feal_list[trnum] = np.array(feal_list) 
+  #   return self.feal_list[trnum]
 
 
 #############################

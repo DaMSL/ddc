@@ -13,6 +13,7 @@ from datatools.datacalc import *
 from collections import OrderedDict
 
 import bench.db as db
+import core.ops as op
 import plot as P
 
 def bootstrap_std (series, interval=.9):
@@ -694,6 +695,9 @@ def bystate(slist=None, cumulative=False, STEPSIZE=50):
     plt.savefig(SAVELOC + 'TotConv_%s.png' % (A))
     plt.close()
   return data
+
+
+
 
 
 

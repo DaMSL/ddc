@@ -302,7 +302,7 @@ def bargraph_simple(data, title, err=None):
 
 
 
-def feadist(data, title, err=None, pcount=None):
+def feadist(data, title, err=None, pcount=None, norm=1):
   plt.cla()
   plt.clf()
   numlabels = 5
@@ -322,28 +322,34 @@ def feadist(data, title, err=None, pcount=None):
   # Print first 10
   for i in range(10):
     C = i % 5
-    plt.bar(i, Y[i], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
+    if err is None:
+      plt.bar(i, Y[i], color=colors[C])
+    else:
+      plt.bar(i, Y[i], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
   for i in range(10):
-    polar = Y[i+10] > 0
+    polar = Y[i+10] > norm/2
     C = pairs[i][polar]
-    plt.bar(i+10, Y[i+10], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
+    if err is None:
+      plt.bar(i+10, Y[i+10], color=colors[C])
+    else:
+      plt.bar(i+10, Y[i+10], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
 
   plt.axvline(4.9, color='k', linewidth=2)
   plt.axvline(9.9, color='k', linewidth=2)
   ymin, ymax = np.min(data), np.max(data)
-  plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -1))
-  plt.annotate('Proximity to\nCentroids', xy=(5.1, -1))
+  plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -.1*norm))
+  plt.annotate('Proximity to\nCentroids', xy=(5.1, -.1*norm))
   if pcount is not None:
-    plt.annotate('HC Size: %d' % pcount, xy=(5.1, -3))
-  plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, 4.5))
+    plt.annotate('HC Size: %d' % pcount, xy=(5.1, -.1*norm))
+  plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, -.1*norm))
 
   patches = [mpatches.Patch(color=C, label= L) for C, L in zip(colors, ['State %d'%i for i in range(5)])]
-  plt.legend(handles=patches, loc='lower left')  
+  plt.legend(handles=patches, loc='upper right')  
 
   # plt.legend()
   ax.set_xticks(X+.5)
   ax.set_xticklabels(labels)
-  ax.set_ylim(-6, 6)
+  ax.set_ylim(-.1*norm, norm)
   fig.suptitle(title)
   plt.tight_layout()
   plt.savefig(SAVELOC + '/' + title + '.png')
