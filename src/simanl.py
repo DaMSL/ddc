@@ -23,7 +23,7 @@ import redis
 from core.common import *
 from core.slurm import slurm
 from core.kvadt import kv2DArray
-from datatools import feal
+from datatools.feature import feal
 
 from macro.macrothread import macrothread
 import mdtools.deshaw as deshaw
@@ -104,7 +104,7 @@ class simulationJob(macrothread):
       self.job_id = args.useid
 
   def term(self):
-    numobs = self.catalog.llen('label:rms')
+    numobs = self.catalog.llen('subspace:rms')
     if numobs >= self.data['max_observations']:
       logging.info('Terminating at %d observations', numobs)
       return True
@@ -146,6 +146,8 @@ class simulationJob(macrothread):
     dcdFile = conFile.replace('conf', 'dcd')      # dcd in same place as config file
     USE_SHM = True
 
+    ADAPTIVE_CENTROID = False
+
     SIMULATE_RATIO = settings.SIMULATE_RATIO
     if SIMULATE_RATIO > 1:
       logging.warning(" USING SIMULATION RATIO OF %d -- THis is ONLY for debugging", SIMULATE_RATIO)
@@ -157,8 +159,8 @@ class simulationJob(macrothread):
     logging.info('Running Experiment Configuration #%d', EXPERIMENT_NUMBER)
 
     # TODO: FOR LINEAGE
-    srcA, srcB = eval(job['src_bin'])
-    stat.collect('src_bin', [str(srcA), str(srcB)])
+    # srcA, srcB = eval(job['src_bin'])
+    # stat.collect('src_bin', [str(srcA), str(srcB)])
 
     traj = None
 
@@ -394,6 +396,9 @@ class simulationJob(macrothread):
     else:
       rmslist = calc_rmsd(alpha, centroids)
 
+    numConf = traj.n_frames
+    numLabels = len(rmslist)
+
     # rmslist = calc_rmsd(alpha.xyz, self.data['centroid'], weights=cw)
     logging.debug('  RMS:  %d points projected to %d centroid-distances', \
       numConf, numLabels)
@@ -464,6 +469,12 @@ class simulationJob(macrothread):
 
       # Calc Feature landscape for each frame's RMSD
       feal_list = [feal.atemporal(rms) for rms in rmslist]
+      logging.info('Calculated Feature Landscape. Aggregate for this traj')
+      # For logging purposes
+      agg_feal = np.mean(feal_list, axis=0)
+      logging.info('CountsMax [C]:  %s', str(agg_feal[:5]))
+      logging.info('StateDist [S]:  %s', str(agg_feal[5:10]))
+      logging.info('RelDist [A-B]:  %s', str(agg_feal[10:]))
 
     #  ADAPTIVE CENTROID & THETA CALCULATION
     # if lock is None:

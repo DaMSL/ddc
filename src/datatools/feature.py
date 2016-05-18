@@ -12,16 +12,14 @@ from core.kdtree import KDTree
 
 class feal(object):
 
-  log_prox = op.makeLogisticFunc(scaleto, .5, .5)
-  log_reld = op.makeLogisticFunc(scaleto, -3, 0)
-
   def __init__(self):
     pass
 
   @classmethod
-  def atemporal(self, rms, scaleto=10):
+  def atemporal(cls, rms, scaleto=10):
     """Atemporal (individual frame) featue landscape
     """
+    log_reld = op.makeLogisticFunc(scaleto, -3, 0)
 
     fealand = [0 for i in range(5)]
     fealand[np.argmin(rms)] = scaleto
@@ -41,3 +39,10 @@ class feal(object):
 
     fealand.extend(tup)
     return np.array(fealand)   # Tuple or NDArray?
+
+  @classmethod
+  def tostring(cls, feal):
+      out = 'CountsMax [C]:  %s' % str(feal[:5])
+      out += '\nStateDist [S]:  %s' % str(feal[5:10])
+      out += '\nRelDist [A-B]:  %s' % str(feal[10:])
+      return out

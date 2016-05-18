@@ -193,9 +193,166 @@ def show(x, n=10):
 
 # centroid = np.load('../data/gen-alpha-cartesian-centroid.npy')
 
-
-
 # cent = [np.mean(np.array(i), axis=0) for i in well]
+
+# Adaptive Centroids using modified KMeans like algorithm
+def adapt_cent(pts, labels, init_cent=None, init_wgt=None, n_iter=50):
+  N = len(pts)
+  K = max(labels) + 1
+  rms = np.zeros(shape=(N, K))
+  k_count = np.bincount(labels)
+  cur_score = np.zeros(K)
+  if init_cent is None:
+    grouped = [[] for i in range(K)]
+    for i, L in enumerate(labels):
+      grouped[L].append(pts[i])
+    centroid = [np.mean(P, axis=0) for P in grouped]
+  else:
+    centroid = init_cent
+  if init_wgt is None:
+    weight = np.ones(K)
+  else:
+    weight = init_wgt
+  for i in range(n_iter):
+    score = np.zeros(K)
+    cent_adj = [[] for i in range(K)]
+    for n, x in enumerate(pts):
+      for k, c in enumerate(centroid):
+        rms[n][k] = weight[k] * LA.norm(x-c)
+      k_near = np.argmin(rms[n])
+      k_actual = labels[n]
+      if k_near == k_actual:
+        score[k_actual] += 1
+      else:
+        # Interpolate to adjust cent' for this pt
+        d_near = rms[n][k_near]
+        d_actual = rms[n][k_actual]
+        cent_p = x + (d_near / d_actual) * (centroid[k_actual] - x)
+        cent_adj[k_actual].append((d_actual, cent_p))
+    for k in range(K):
+      new_centlist = sorted(cent_adj[k], key=lambda x: x[0])
+      candid = [c[1] for c in new_centlist[:10]]
+      centroid[k] = np.mean(candid, axis=0)
+    if i % 1 == 0 or i == n_iter-1:
+      print ('%4d -'%i, ' '.join(['%4.0f' % i for i in score] ),  '[%d]' % sum(score))
+  return centroid
+
+
+def adapt_wgts(pts, labels, init_cent=None, init_wgt=None, n_iter=10):
+  N = len(pts)
+  K = max(labels) + 1
+  if init_cent is None:
+    grouped = [[] for i in range(K)]
+    for i, L in enumerate(labels):
+      grouped[L].append(pts[i])
+    centroid = [np.mean(P, axis=0) for P in grouped]
+  else:
+    centroid = init_cent
+  if init_wgt is None:
+    weight = np.ones(K)
+  else:
+    weight = init_wgt
+  k_count = np.bincount(labels)
+  for i in range(n_iter):
+    score = np.zeros(K)
+    wgt_adj = []
+    # cent_adj = [[] for i in range(K)]
+    for n, x in enumerate(pts):
+      w_n = np.ones(K)
+      rms_actual = np.array([LA.norm(x-c) for c in centroid])
+      rms_adj = rms_actual * weight
+      k_near = np.argmin(rms_adj)
+      k_actual = labels[n]
+      if k_near == k_actual:
+        score[k_actual] += 1
+      else:
+        d_near = rms_actual[k_near]
+        d_actual = rms_actual[k_actual]
+        w_n[k_actual] = weight[k_actual] * d_near / d_actual
+      wgt_adj.append(w_n)  
+    weight = np.mean(wgt_adj, axis=0)
+    if i % 1 == 0 or i == n_iter-1:
+      print ('%4d -'%i, ' '.join(['%4.0f' % i for i in score] ),  '[%d]' % sum(score))
+  print('Final weights:')
+  print (' '.join(['%4.3f' % i for i in weight] ))
+  return weight
+
+
+def adapt_combine(pts, labels, n_iter=10):
+  N = len(pts)
+  K = max(labels) + 1
+  grouped = [[] for i in range(K)]
+  for i, L in enumerate(labels):
+    grouped[L].append(pts[i])
+  centroid = [np.mean(P, axis=0) for P in grouped]
+  weight  = np.ones(K)
+  k_count = np.bincount(labels)
+  for i in range(n_iter):
+    score = np.zeros(K)
+    wgt_adj = [[] for i in range(K)]
+    cent_adj = [[] for i in range(K)]
+    w_nk = np.ones(shape=(N,K))
+    for n, x in enumerate(pts):
+      rms_actual = np.array([LA.norm(x-c) for c in centroid])
+      rms_adj = rms_actual * weight
+      k_near = np.argmin(rms_adj)
+      k_actual = labels[n]
+      if k_near == k_actual:
+        score[k_actual] += 1
+      else:
+        d_near = rms_actual[k_near]
+        d_actual = rms_actual[k_actual]
+        wgt_adj[k_actual].append(d_near / d_actual)
+        cent_adj[k_actual].append(x + (d_near / d_actual) * (centroid[k_actual] - x))
+      # wgt_adj.append(w_n)
+    centroid = [np.mean(C, axis=0) for C in cent_adj]
+    weight = [np.mean(i, axis=0) for i in wgt_adj]
+    print (' '.join(['%4.0f' % i for i in score] ))
+  print('Final weights:')
+  print (' '.join(['%4.3f' % i for i in weight] ))
+
+
+def adapt_centroid(pts, labels, init_cent=None, init_wgt=None, n_iter=50):
+  N = len(pts)
+  K = max(labels) + 1
+  rms = np.zeros(shape=(N, K))
+  k_count = np.bincount(labels)
+  cur_score = np.zeros(K)
+  if init_cent is None:
+    grouped = [[] for i in range(K)]
+    for i, L in enumerate(labels):
+      grouped[L].append(pts[i])
+    centroid = [np.mean(P, axis=0) for P in grouped]
+  else:
+    centroid = init_cent
+  if init_wgt is None:
+    weight = np.ones(K)
+  else:
+    weight = init_wgt
+  for i in range(n_iter):
+    score = np.zeros(K)
+    group = [[] for i in range(K)]
+    for n, x in enumerate(pts):
+      rms = weight * np.array([LA.norm(x-c) for c in centroid])
+      k_near = np.argmin(rms)
+      k_actual = labels[n]
+      if k_near == k_actual:
+        score[k_actual] += 1
+        group[k_actual].append((rms[k_near], x))
+    for k in range(K):
+      new_centlist = sorted(group[k], key=lambda x: x[0])
+      candid = [c[1] for c in new_centlist]
+      centroid[k] = np.mean(candid, axis=0)
+    if i % 1 == 0 or i == n_iter-1:
+      print ('%4d -'%i, ' '.join(['%4.0f' % i for i in score] ),  '[%d]' % sum(score))
+  return centroid
+
+
+# centtraj = [md.Trajectory(c, alpha_pdb.top) for c in cent]
+
+# mdrms = np.array([md.lprmsd(a, c) for c in centtraj]).T
+# mind = [np.argmin(i) for i in mdrms]
+# np.bincount(mind)
 
 # for a in range(5):
 #   for b in range(5):

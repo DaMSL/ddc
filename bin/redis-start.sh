@@ -4,10 +4,10 @@
 #SBATCH --job-name=osvc-red
 #SBATCH --time=12:0:0
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=6
+#SBATCH --cpus-per-task=4
 #SBATCH --output=/home-1/bring4@jhu.edu/ddc/log/osvc-redis-%j.out
 #SBATCH --workdir=/home-1/bring4@jhu.edu/ddc
-#SBATCH --partition=shared,parallel
+#SBATCH --partition=parallel,shared
 
 module load namd
 module load redis

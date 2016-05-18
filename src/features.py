@@ -39,8 +39,8 @@ DESHAW_LABEL_FILE = 'data/deshaw_labeled_bins.txt'
 
 
 class ExprAnl:
-  def __init__(self, host='localhost', port=6379):
-    self.r = redis.StrictRedis(port=port, decode_responses=True)
+  def __init__(self, host='localhost', port=6379, adaptive_cent=False):
+    self.r = redis.StrictRedis(port=port, host=host, decode_responses=True)
     # self.rms = [np.fromstring(i) for i in self.r.lrange('subspace:rms', 0, -1)]
     self.seq = ['jc_'+x[0] for x in sorted(self.r.hgetall('anl_sequence').items(), key=lambda x:x[1])]
     self.conf=[self.r.hgetall(i) for i in self.seq]
@@ -50,8 +50,8 @@ class ExprAnl:
     self.rmsd15 = {}
     self.feal_list = None
     self.checked_rmsd = []
-    # cent = np.load('../data/init-centroids.npy')
-    cent = np.load('../data/gen-alpha-cartesian-centroid.npy')
+    cent = np.load('../data/init-centroids.npy')
+    # cent = np.load('../data/gen-alpha-cartesian-centroid.npy')
     self.centroid = cent
     self.cent15 = []
     for a in range(5):
@@ -63,6 +63,9 @@ class ExprAnl:
     self.cw = [1., 1., 1., 1., 1.]  
     # self.cw = [.92, .92, .96, .99, .99]  
 
+    if adaptive_cent:
+      pass
+
   def loadtraj(self, tr, first=None):
     if isinstance(tr, list):
       trlist = tr
@@ -70,20 +73,21 @@ class ExprAnl:
       trlist = [tr]
     for t in trlist:
       traj = md.load(self.conf[t]['dcd'], top=self.conf[t]['pdb'])
-      traj.center_coordinates()
+      # traj.center_coordinates()
       if first is not None:
         traj = traj.slice(np.arange(first))
       self.trlist[t] = datareduce.filter_alpha(traj)
 
   def ld_wells(self):
-    for x, i in enumerate(self.conf[:100]):
+    for x, i in enumerate(self.conf):
       if i['origin'] == 'deshaw':
         A, B = eval(i['src_bin'])
         if A == B:
           traj = md.load(self.conf[A]['dcd'], top=self.conf[A]['pdb'])
           traj.center_coordinates()
           alpha = dr.filter_alpha(traj)
-          for i in alpha.xyz[:100]:
+          maxf = min(1000, alpha.n_frames)
+          for i in alpha.xyz[:maxf]:
             self.wells[A].append(i)
 
   def load(self, num, first=None):
@@ -208,10 +212,12 @@ class ExprAnl:
   def draw_feal(self, trnum=None, norm=10):
     if trnum is None:
       flist = self.all_feal()
+      agg = np.mean(flist, axis=0)
+      P.feadist(agg, 'feal_global_%s' % self.r.get('name'), norm=norm)
     else:
       flist = [self.feal_atemp(i, scaleto=norm) for i in self.rmsd[trnum]]
-    agg = np.mean(flist, axis=0)
-    P.feadist(agg, 'feal_global_%s' % self.r.get('name'), norm=norm)
+      agg = np.mean(flist, axis=0)
+      P.feadist(agg, 'feal_global_%s_%d' % (self.r.get('name'), trnum), norm=norm)
 
   def kdtree(self, leafsize, depth, method):
     self.index = []
@@ -227,15 +233,15 @@ class ExprAnl:
 
   def hcmean(self, hckey=None):
     if hckey is None:
-    flist = [[self.feal_atemp(i) for i in self.rmsd[tr]] for tr in self.rmsd.keys()]      
-    result = {}
-    for k, v in self.hc.items():
-      hc_feal = []
-      for idx in v['elm']:
-        trnum, frame = self.index[int(idx)]
-        hc_feal.append(flist[trnum][frame])
-      result[k] = np.mean(hc_feal, axis=0)
-    return result
+      flist = [[self.feal_atemp(i) for i in self.rmsd[tr]] for tr in self.rmsd.keys()]      
+      result = {}
+      for k, v in self.hc.items():
+        hc_feal = []
+        for idx in v['elm']:
+          trnum, frame = self.index[int(idx)]
+          hc_feal.append(flist[trnum][frame])
+        result[k] = np.mean(hc_feal, axis=0)
+      return result
     else:
       flist = []
       for idx in v['elm']:
@@ -277,6 +283,30 @@ def get_feal(rmslist):
   landscape = [6*c/sum(counts) for c in counts]
   landscape.extend(np.mean(tup_list, axis=0))
   return np.array(landscape)
+
+def feal_atemp(rms, scaleto=10):
+  """Atemporal (individual frame) featue landscape
+  """
+  log_reld = op.makeLogisticFunc(scaleto, -3, 0)
+
+  fealand = [0 for i in range(5)]
+  fealand[np.argmin(rms)] = scaleto
+  tup = []
+  # Proximity
+  for n, dist in enumerate(rms):
+    # tup.append(log_prox(dist))
+    maxd = 10.  #11.34
+    # tup.append(scaleto*max(maxd-dist, 0)/maxd)
+    tup.append(max(maxd-dist, 0))
+
+  # Additional Feature Spaces
+  for a in range(4):
+    for b in range(a+1, 5):
+      rel_dist = rms[a]-rms[b]
+      tup.append(log_reld(rel_dist))
+
+  fealand.extend(tup)
+  return np.array(fealand)   # Tuple or NDArray?
 
 def get_feal_var(rmslist):
   counts = [0 for i in range(5)]

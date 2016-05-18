@@ -19,6 +19,7 @@ import numpy as np
 from numpy import linalg as LA
 
 from core.common import *
+import core.ops as op
 from macro.macrothread import macrothread
 from core.kvadt import kv2DArray
 from core.slurm import slurm
@@ -36,6 +37,7 @@ from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
 from bench.stats import StatCollector
 
+from datatools.feature import feal
 import plot as G
 
 
@@ -337,6 +339,8 @@ class controlJob(macrothread):
     # PRE-PROCESSING ---------------------------------------------------------------------------------
       logging.debug("============================  <PRE-PROCESS>  =============================")
 
+      np.set_printoptions(precision=4, linewidth=150)
+
       self.data['timestep'] += 1
       logging.info('TIMESTEP: %d', self.data['timestep'])
 
@@ -365,7 +369,7 @@ class controlJob(macrothread):
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
       logging.debug(" Start_index=%d,  thru_index=%d,   ctlIndexHead=%d", start_index, thru_index, self.data['ctlIndexHead'])
 
-      feallist = [np.fromstring(i) for i in r.lrange('subspace:feal', 0, -1)]
+      feallist = [np.fromstring(i) for i in self.catalog.lrange('subspace:feal', 0, -1)]
       num_pts = len(feallist)
       self.data['ctlIndexHead'] = thru_index
       thru_count = self.data['observe:count']
@@ -386,8 +390,10 @@ class controlJob(macrothread):
       global_landscape = np.mean(feallist, axis=0)
       stat.collect('convergence', mv_convergence)
       stat.collect('globalfeal', global_landscape)
-      logging.info('MV Convergence values:\nCONV,%s', ','.join(['%5.3f'%i for i in mv_convergence]))
-      logging.info('Global Feature Landscape:\nFEAL,%s', ','.join(['%5.3f'%i for i in global_landscape]))
+      # logging.info('MV Convergence values:\nCONV,%s', ','.join(['%5.3f'%i for i in mv_convergence]))
+      # logging.info('Global Feature Landscape:\nFEAL,%s', ','.join(['%5.3f'%i for i in global_landscape]))
+      logging.info('MV Convergence values:\nCONV,%s', str(mv_convergence[-1]))
+      logging.info('Global Feature Landscape:\n%s', feal.tostring(global_landscape))
 
     # IMPLEMENT USER QUERY with REWEIGHTING:
       logging.debug("=======================  <QUERY PROCESSING>  =========================")
@@ -410,42 +416,32 @@ class controlJob(macrothread):
         # Collect hypercubes
         hc = kd.getleaves()
 
+        logging.info('KD Tree Stats')
+        logging.info('    # HCubes   : %5d', len(hc))
+        logging.info('    Largest  HC: %5d', max([v['count'] for k,v in hc.items()]))
+        logging.info('    Smallest HC: %5d', min([v['count'] for k,v in hc.items()]))
+
         for key, hcube in hc.items():
-          hc_feal = [feallist[i] for i in hc['elm']
-          hc['feal'] = np.mean(hc_feal, axis=0)
+          hc_feal = [feallist[i] for i in hcube['elm']]
+          hc[key]['feal'] = np.mean(hc_feal, axis=0)
 
         #  Det scale and/or sep scales for each feature set
         desired = 10 - global_landscape
+        logging.info('Desired Landscape:\n%s', feal.tostring(desired))
 
         #  Calc euclidean dist to each mean HC's feal
         nn = {k: LA.norm(desired[5:] - v['feal'][5:]) for k,v in hc.items()}
 
         #  Grab top N Neighbors (10 for now)
         neighbors = sorted(nn.items(), key=lambda x: x[1])[:10]
+        logging.info('BestFit Landscape:\n%s', feal.tostring(hc[neighbors[0][0]]['feal']))
 
         ## DATA SAMPLER
         nn_keys = [i for i,w in neighbors]
         nn_wgts = np.array([w for i,w in neighbors])
         nn_wgts /= np.sum(nn_wgts)  # normalize
 
-        # TODO:   Load DEShaw labeled indices -- ASSUME NONE
-        # if self.catalog.exists('label:deshaw'):
-        #   logging.info("Loading DEShaw historical points.... From Catalog")
-        #   rmslabel = [eval(x) for x in self.catalog.lrange('label:deshaw', 0, -1)]
-        # else:
-        #   logging.info("Loading DEShaw historical points.... From File (and recalculating)")
-        #   rmslabel = deshaw.labelDEShaw_rmsd()
-
-        # deshaw_samples = {b:[] for b in binlist}
-        # for i, b in enumerate(rmslabel):
-        #   deshaw_samples[b].append(i)
-
-        # coord_origin = []
-        # conv_vals = np.array([v for k, v in sorted(convergence_rms.items())])
-        # norm_pdf_conv = conv_vals / sum(conv_vals)
-        # logging.info("Umbrella Samping PDF (Bootstrapping):")
-        # sampled_distro_perbin = {b: 0 for b in binlist}
-
+        coord_origin = []
         while numresources > 0:
           # First sampling is BIASED
           selected_hc = np.random.choice(nn_keys, p=nn_wgts)
@@ -453,9 +449,11 @@ class controlJob(macrothread):
           # Second is UNIFORM (within the HCube)
           index = np.random.choice(hc[selected_hc]['elm'])
           selected_index_list.append(index)
-          coord_origin.append(('sim', index, binlist[selected_bin], '%d-D'%A))
-          numresources -= 1
+          src_state = np.argmax(feallist[index][:5])
+          coord_origin.append(('sim', index, src_state, selected_hc))
+          logging.info('Sampled Landscape [hc=%s]:\n%s', selected_hc, feal.tostring(feallist[index]))
 
+          numresources -= 1
 
     # Back Project to get new starting Coords for each sample  
       logging.debug("=======================  <INPUT PARAM GENERATION>  =================")
@@ -517,10 +515,10 @@ class controlJob(macrothread):
         self.catalog.delete('jcqueue')
 
       #  CATALOG UPDATES
-      self.catalog.rpush('datacount', len(labeled_pts_rms))
+      self.catalog.rpush('datacount', len(feallist))
 
       #  EXPR 7 Update:
-      if EXPERIMENT_NUMBER > 5:
+      if EXPERIMENT_NUMBER > 5 and EXPERIMENT_NUMBER < 10:
         # self.catalog.storeNPArray(np.array(centroid), 'subspace:covar:centroid:%d' % cov_iteration)
         self.catalog.rpush('subspace:covar:thruindex', len(covar_pts))
 

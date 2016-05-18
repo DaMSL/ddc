@@ -281,6 +281,14 @@ def check_bpti_rms(observations, centroid, skip=40):
 
 
 
+def load_prot():
+  desh = [dr.filter_alpha(md.load(dedcd%i, top=depdb)) for i in range(40)]
+  demid = []
+  for tr in desh:
+    for i in range(500, tr.n_frames, 1000):
+      demid.append(tr.xyz[i])
+
+
 if __name__ == '__main__':
   #  FOR Calculting Centroids and RMSD of ALL conforms in D.E.Shaw Dataset
   settings = systemsettings()
