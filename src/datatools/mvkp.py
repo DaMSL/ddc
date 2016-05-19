@@ -24,25 +24,27 @@ def convert_knap(feal, scale=10, M=25):
 from core.kdtree import KDTree
 kd = KDTree(100, 15, np.array(flist), 'median')
 hc = kd.getleaves()
-gfeal = np.mean(flist, axis=0)
-desired = 10-gfeal
-meanlist = {k: np.mean([flist[i] for i in v['elm']], axis=0) for k, v in hc.items()}
-hcidx = [i for i in meanlist.keys()]
-itemlist = [meanlist[i] for i in hcidx]
+global_landscape = np.mean(flist, axis=0)
+desired = 10-global_landscape
+hcWgt = {k: np.mean([feallist[i] for i in v['elm']], axis=0) for k, v in hc.items()}
+hcidx = [i for i in hcWgt.keys()]
+hcWgt_list = [hcWgt[i] for i in hcidx]
+numresources = 25
+M=25
 
 
 def knapsack_pack(desired, itemlist, numresources, M=25):
-  I = len(itemlist)
-  X = np.zeros(shape=(I, M))  
-  capacity = numresources * convert_knap(desired)
-  # Variant A --> all items grouped together
+I = len(hcWgt_list)
 X = np.zeros(shape=(I, M))  
 capacity = numresources * convert_knap(desired)
-itemlist = np.array([convert_knap(i) for i in itemlist])
+itemlist = np.array([convert_knap(i) for i in hcWgt_list])
+
+featureQ = [deque() for k in M]
 for k, feature in enumerate(itemlist.T):
     bestfit_k = np.argsort(feature)
     weight = 0
     for i in bestfit_k:
+      featureQ[k].append(i)
       if feature[i] + weight < capacity[k]:
         weight += feature[i]
         X[i][k] = 1
@@ -63,15 +65,27 @@ bestfit = [itemlist[i] for i in bff_M]
   weight = np.zeros(M)
 
   """ Greedy (with replacement)"""
-space  = np.copy(capacity)
-knapsack = deque()
-available_items = deque(bff_M)
-while np.sum(space) > 0:
-    nextitem_idx = available_items.popleft()
-    knapsack.append(nextitem_idx)
-    space -= itemlist[nextitem_idx]
-    if len(knapsack) == 25:
-      break
+space  = np.copy(capacity)   # GOAL: MIN(ABS(space))
+knapsack = np.zeros(M)
+available = deque(bff_M)
+for i in range(M):
+  nextitem_idx = available_items.popleft()
+  knapsack[i] = itemlist[nextitem_idx]
+
+#Stategic Oscillation
+for i in range(100):
+  score = capacity - np.sum(knapsack, axis=0)
+  print('Score = ', score)
+  min_k = np.argmin(score)   # Most penalized feature (most value if removed)
+  max_k = np.argmax(score)   # Least gain (most value if added)
+  if min_k > 0:
+    break  # found solution (how good?)
+  # min_k is negative --> largest penalized features
+  most_penalized_item = np.argmax(knapsack[:,min_k])
+  most_value_added = featureQ[k].popleft()
+  # TODO: Reqeu the item???
+  knapsack[most_penalized_item] = itemlist[most_value_added]
+  print('Removing KP item # %d  -- Replace with ItemIdx # %d' % (most_penalized_item, most_value_added))
 
   # Global Relacement
 cur_score = np.sum(space)
