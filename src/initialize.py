@@ -68,6 +68,8 @@ def initializecatalog(catalog):
   updateschema(catalog)
   catalog.loadSchema()
 
+  catalog.set('name', settings.name)
+
   # Set defaults vals for schema
   initvals = {i:settings.init[i] for i in settings.init.keys() if settings.schema[i] in ['int', 'float', 'list', 'dict', 'str']}
   catalog.save(initvals)
@@ -387,9 +389,10 @@ def labelDEShaw_rmsd(store_to_disk=False):
   theta = 0.27
   logging.info('Labeling All DEShaw Points.')
   rmslabel = []
+  skip = 100 if settings.name == 'debug' else 1
   # Only use N-% of all points
   # for i in range(0, len(rms), 100):
-  for i in range(len(rms)):
+  for i in range(0, len(rms), skip):
     A = prox[i][0]
     proximity = abs(rms[i][prox[i][1]] - rms[i][A])    #abs
     B = prox[i][1] if proximity < theta else A
@@ -418,6 +421,7 @@ def seedJob_Uniform(catalog, num=1, exact=None):
   if catalog.exists('label:deshaw'):
     rmslabel = [eval(x) for x in catalog.lrange('label:deshaw', 0, -1)]
   elif os.path.exists(DESHAW_LABEL_FILE):
+    logging.info('Loading DEShaw Points From File....')
     with open(DESHAW_LABEL_FILE) as lfile:
       rmslabel = [eval(label) for label in lfile.read().strip().split('\n')]
     logging.info('Loaded DEShaw %d Labels from file, %s', len(rmslabel), DESHAW_LABEL_FILE)

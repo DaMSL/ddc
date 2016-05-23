@@ -141,5 +141,8 @@ def bootstrap_block(source, blocksize=5000):
   return (mu, CI, stddev, err, np.abs(CI/mu))
 
 
+
+
+
 def makeLogisticFunc (maxval, steep, midpt):
   return lambda x: maxval / (1 + np.exp(-steep * (midpt - x)))

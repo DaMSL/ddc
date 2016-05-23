@@ -23,9 +23,11 @@ import core.ops as op
 from macro.macrothread import macrothread
 from core.kvadt import kv2DArray
 from core.slurm import slurm
+
 from core.kdtree import KDTree
 import datatools.datareduce as datareduce
 import datatools.datacalc as datacalc
+import datatools.mvkp as mvkp
 import mdtools.deshaw as deshaw
 import datatools.kmeans as KM
 # from datatools.pca import calc_kpca, calc_pca, project_pca
@@ -454,6 +456,20 @@ class controlJob(macrothread):
           logging.info('Sampled Landscape [hc=%s]:\n%s', selected_hc, feal.tostring(feallist[index]))
 
           numresources -= 1
+
+
+      elif EXPERIMENT_NUMBER == 11:
+
+        #  Use only right most 10 features (non-normalized ones)
+        inventory = np.array([f[10:] for f in feallist])
+        desired = 10 - global_landscape
+        logging.info('Desired Landscape (NOTE Only Including A-B values:\n%s', feal.tostring(desired))
+
+        selected_index_list = mvkp.knapsack(desired[10:], inventory, numresources, 2000000)
+        coord_origin = [('sim', index, np.argmax(feallist[index][:5]), 'D') for index in selected_index_list]
+        logging.info("KNAPSACK Completed:")
+        logging.info('Target Distribution:\n%s', str(desired[10:]))
+        logging.info('Target Distribution:\n%s', '\n'.join(['%s'%feallist[i] for i in selected_index_list]))
 
     # Back Project to get new starting Coords for each sample  
       logging.debug("=======================  <INPUT PARAM GENERATION>  =================")

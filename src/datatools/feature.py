@@ -46,3 +46,17 @@ class feal(object):
       out += '\nStateDist [S]:  %s' % str(feal[5:10])
       out += '\nRelDist [A-B]:  %s' % str(feal[10:])
       return out
+
+  @classmethod
+  def classify(cls, feal_list):
+    state_list = []
+    tran_list  = []
+    for i in feal_list:
+      state = [None for i in range(5)]
+      state[0] = (i[10] < 5 and i[11] < 5 and i[12] < 5 and i[13] < 5)  #0
+      state[1] = (i[14] < 5 and i[15] < 5 and i[16] < 5 and i[10] > 5)  #1
+      state[2] = (i[17] < 5 and i[18] < 5 and i[11] > 5 and i[14] > 5)  #2
+      state[3] = (i[19] < 5 and i[12] > 5 and i[15] > 5 and i[17] > 5)  #3
+      state[4] = (i[13] > 5 and i[16] > 5 and i[18] > 5 and i[19] > 5)  #4
+      state_list.append(state)
+    return state_list

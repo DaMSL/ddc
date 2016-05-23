@@ -430,12 +430,17 @@ def Elasticity(step=25):
 
 
 def plot_elas():
-  rlist=['rtime100_20', 'rtime100_100', 'rtime250_10', 'rtime250_20', 'rtime250_50', 'rtime250_100', 'rtime250_200']
-  costlabels={'rtime100_100': '100ps/100/%d'%(1367+32),
-  'rtime100_20':  '100ps/20/%d'%(1315+32),
+  rlist=['rtime250_5', 'rtime250_10', 'rtime250_20', 'rtime250_25', 'rtime250_50',  'rtime250_75', 'rtime250_100', 'rtime250_200']
+  # rlist=['rtime100_20', 'rtime100_100', 'rtime250_10', 'rtime250_20', 'rtime250_50', 'rtime250_100', 'rtime250_200']
+  costlabels={
+  # 'rtime100_100': '100ps/100/%d'%(1367+32),
+  # 'rtime100_20':  '100ps/20/%d'%(1315+32),
+  'rtime250_5':  '250ps/5/%d'%(923+114),
   'rtime250_10':  '250ps/10/%d'%(1351+95),
   'rtime250_100': '250ps/100/%d'%(1711+40),
   'rtime250_20':  '250ps/20/%d'% (825+109),
+  'rtime250_25':  '250ps/25/%d'% (1300+80),
+  'rtime250_75':  '250ps/75/%d'% (1400+80),
   'rtime250_200': '250ps/200/%d'%(1561+29),
   'rtime250_50':  '250ps/50/%d'%(1555+52)}
 
@@ -476,6 +481,29 @@ def conv_over_time(name, step=10000, tw=False):
         nextcalc += step
       snum += 1
   return plotlists
+
+
+def elas_feal(name, feal_list, max_obs, step=2000):
+  eid = db.get_expid(name)
+  plotlist = []
+  sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+  ts_0 = du.parse(sw_list[0][0]).timestamp()
+  sw = sorted([dict(start=x[0], time=x[1], numobs=x[2], end=end_ts(x)-ts_0) for x in sw_list], key=lambda i: i['end'])
+  n = 0
+  snum = 0
+  nextcalc = step
+  while n < max_obs and snum < len(sw):
+      n += sw[snum]['numobs']
+      if n > nextcalc:
+        t = sw[snum]['end'] / 3600.
+        # c = bootstrap_sampler(obs[:min(n,N)], samplesize=.25)
+        c = op.bootstrap_block(feal_list[:n], step)
+        plotlist.append((t, min(np.max(c[1]), 1.)))
+        nextcalc += step
+      snum += 1
+  return plotlist
+
 
 
 def time_comp(elist, step=10000):

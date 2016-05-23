@@ -236,6 +236,12 @@ def transition_line(X, A, B, title='', trans_factor=.33):
   plt.close()  
 
 
+def bootCI(boot, step=10, tag=''):
+  N = min([len(v) for v in boot.values()])
+  merge = {}
+  merge = {k: [np.mean([min(1., boot[k][i][1][f]) for f in range(5, 20)]) for i in range(N)] for k in boot.keys()}
+  lines(merge, 'ConvCI_Merged_%s'%tag, step=step, xlabel='Simulation Time (in ns)')
+
 
 ###### BAR PLOTS
 def bargraph(data, title, label=None):

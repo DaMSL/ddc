@@ -209,6 +209,17 @@ class ExprAnl:
     flist = self.all_feal()
     return np.mean(flist, axis=0)
 
+
+  def bootstrap(self, size):
+    feal = self.all_feal()
+    i = 0
+    boot = []
+    while i+size < len(feal):
+      print(i)
+      boot.append(op.bootstrap_block(feal[:i+size], size))
+      i += size
+    return boot
+
   def draw_feal(self, trnum=None, norm=10):
     if trnum is None:
       flist = self.all_feal()
@@ -250,6 +261,34 @@ class ExprAnl:
       return np.mean(flist, axis=0)
 
     
+
+def calcrmslabel(exp, centroids, load=False):
+  cw = [.92, .94, .96, .99, .99]
+  rmslabel = []
+  if load:
+    pipe = exp.r.pipeline()
+  for n, tr in sorted(exp.trlist.items()):
+    numConf = tr.n_frames
+    nwidth = 10
+    noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+    rms_filtered = np.array([noisefilt(tr.xyz, i) for i in range(numConf)])
+    # Notes: Delta_S == rmslist
+    rmslist_sv = calc_rmsd(rms_filtered, centroids, weights=cw)
+    for rms in rmslist_sv:
+      A, B = np.argsort(rms)[:2]
+      delta = np.abs(rms[B] - rms[A])
+      if delta < 0.33:
+        sub_state = B
+      else:
+        sub_state = A
+      if load:
+        pipe.rpush('label:rms', (A, sub_state))
+      rmslabel.append((A, sub_state))
+  if load:
+    pipe.execute()
+  return rmslabel
+
+
 
 def draw_windows(rmslist, title='feal_', winsize=10, slide=10):
   feallist = []

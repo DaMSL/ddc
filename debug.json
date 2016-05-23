@@ -28,7 +28,7 @@
 
     },
     "settings": {
-        "experiment_number": 10,
+        "experiment_number": 11,
         "simulation_ratio": 50,
         "catalog_port": 6399,
         "catalog_idle_theta": 300,

@@ -314,7 +314,6 @@ def qrygraph_line(query, title, rowhead=False):
   plt.savefig(os.path.join(GRAPH_LOC, title + '.png'))
   plt.close()  
 
-
 def benchmark_graph(datalabel, expname=None, Xseries=None):
   if expname is not None:
     eid = get_expid(expname)
@@ -647,12 +646,12 @@ def update_num_obs(name):
 
 
 def adjust_time():
-  x = db.runquery('select swname,start from sw where expid=23')
-  for swname,start in x:
-    if swname > 'sw-0001':
-      continue
-    nt = (du.parse(start)+dt.timedelta(minutes=85)).isoformat()
-    _ = db.runquery("update sw set start='%s' where swname='%s';" % (nt,swname))
+x = db.runquery('select swname,start from sw where expid=29')
+for swname,start in x:
+  if start < '2016-05-07T19:00:30':
+    continue
+  nt = (du.parse(start)-dt.timedelta(minutes=470)).isoformat()
+  _ = db.runquery("update sw set start='%s' where swname='%s' and expid=29;" % (nt,swname))
 
 # Queries to run:
 
