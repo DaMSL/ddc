@@ -12,6 +12,21 @@ HOME = os.environ['HOME']
 SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
 
 
+
+elabels = ['Serial', 'Parallel','Uniform','Biased', 'MVNN', 'Reweight']
+ecolors = {'Serial': 'darkorange', 
+           'Parallel': 'maroon',
+           'Uniform': 'darkgreen',
+           'Biased': 'mediumblue',  
+           'MVNN': 'darkmagenta', 
+           'Reweight': 'red'}
+
+# ecolors = {'Serial': '#FF8C00', 
+#            'Parallel': '#803030',
+#            'Uniform': '#187018',
+#            'Biased': '#3030CD',  
+#            'MVNN': '#C030C0', 
+#            'Reweight': 'red'}
 ####  SCATTER PLOTS
 
 def scatter(X, Y, title, size=1, L=None):
@@ -154,6 +169,23 @@ def linegraphcsv(X, title, nolabel=False):
   """ Plots line series for a csv list
   """
 
+
+def seriesLines(X, series, title, xlabel=None):
+  labelList = sorted(series.keys())
+  seriesList = [series[key] for key in labelList]
+  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  plt.clf()
+  ax = plt.subplot(111)
+  for Y, C, L in zip(seriesList, colorList, labelList):
+    plt.plot(X, Y, color=C, label=L)
+  plt.title(title)
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+  plt.legend()
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
+
+
 def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
   if isinstance(series, list):
     seriesList = series
@@ -181,6 +213,21 @@ def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
 
 
 
+def conv(series, title, xlim=None, labelList=None, step=1, xlabel=None):
+  seriesList = [series[key] for key in elabels]
+  colorList  = [ecolors[key] for key in elabels]
+  plt.clf()
+  ax = plt.subplot(111)
+  for X, C, L in zip(seriesList, colorList, elabels):
+    plt.plot(np.arange(len(X))*(step), X, color=C, label=L, linewidth=2)
+  plt.title(title)
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+  if xlim is not None:
+    ax.set_xlim(xlim)
+  plt.legend()
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
 
 def transition_line(X, A, B, title='', trans_factor=.33):
   plt.clf()
@@ -308,14 +355,11 @@ def bargraph_simple(data, title, err=None):
 
 
 
-def feadist(data, title, err=None, pcount=None, norm=1):
+def feadist(data, title, err=None, pcount=None, norm=1, negval=False):
   plt.cla()
   plt.clf()
   numlabels = 5
   colors = ['k','grey','r','b','g',]
-  # labels=['0,0', '0,1','0,2','0,3', '0,4', '1,1', '1,2', '1,3','1,4','2,2','2,3','2,4','3,3','3,4','4,4']
-  # labels=['0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
-  # labels=['S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
   labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
   pairs = []
   for a in range(numlabels-1):
@@ -335,27 +379,33 @@ def feadist(data, title, err=None, pcount=None, norm=1):
   for i in range(10):
     polar = Y[i+10] > norm/2
     C = pairs[i][polar]
+    y = Y[i+10]*2 - norm if negval else Y[i+10]
     if err is None:
-      plt.bar(i+10, Y[i+10], color=colors[C])
+      plt.bar(i+10, y, color=colors[C])
     else:
-      plt.bar(i+10, Y[i+10], color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
+      plt.bar(i+10, y, color=colors[C], yerr=err[i], error_kw=dict(ecolor='red', elinewidth=2))
 
   plt.axvline(4.9, color='k', linewidth=2)
   plt.axvline(9.9, color='k', linewidth=2)
-  ymin, ymax = np.min(data), np.max(data)
-  plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -.1*norm))
-  plt.annotate('Proximity to\nCentroids', xy=(5.1, -.1*norm))
+  ymin = -norm if negval else 0
+  ymax = norm
+  # plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -.1*norm))
+  # plt.annotate('Proximity to\nCentroids', xy=(5.1, -.1*norm))
   if pcount is not None:
-    plt.annotate('HC Size: %d' % pcount, xy=(5.1, -.1*norm))
-  plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, -.1*norm))
+    plt.annotate('HC Size: %d' % pcount, xy=(5.1, -.2*norm))
+  # plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, -.1*norm))
 
   patches = [mpatches.Patch(color=C, label= L) for C, L in zip(colors, ['State %d'%i for i in range(5)])]
-  plt.legend(handles=patches, loc='upper right')  
+  plt.legend(handles=patches, loc='lower left')  
 
   # plt.legend()
   ax.set_xticks(X+.5)
+  ax.xaxis.set_ticks_position('none')
   ax.set_xticklabels(labels)
-  ax.set_ylim(-.1*norm, norm)
+  if negval:
+    ax.set_ylim(-norm-1, norm+1)
+  else:
+    ax.set_ylim(-1, norm)
   fig.suptitle(title)
   plt.tight_layout()
   plt.savefig(SAVELOC + '/' + title + '.png')
@@ -364,17 +414,18 @@ def feadist(data, title, err=None, pcount=None, norm=1):
 
 
 
-
-
 def histogram(data, title, ylim=None):
-  colorList = plt.cm.brg(np.linspace(0, 1, len(data)))
-  seriesList = list(data.keys())
+  # colorList = plt.cm.brg(np.linspace(0, 1, len(data)))
+  # seriesList = list(data.keys())
+  seriesList = elabels
+  colorList  = [ecolors[key] for key in elabels]
   nseries = len(seriesList)
-  nbars  = len(data[seriesList[0]])
 
   pad = .3
+  # sets   = sorted(data[seriesList[0]].keys())
+  sets = ['Well-2', 'Well-3', 'Well-4', 'Tran-0', 'Tran-1', 'Tran-2', 'Tran-3', 'Tran-4']
+  nbars = len(sets)
   X = np.arange(nbars)
-  sets   = sorted(data[seriesList[0]].keys())
   bw = (1-pad) / nseries
 
   plt.cla()
@@ -394,7 +445,7 @@ def histogram(data, title, ylim=None):
   fig.suptitle(title)
   fig.set_size_inches(16,6)
   plt.tight_layout()
-  plt.savefig(SAVELOC + '/bar_' + title + '.png')
+  plt.savefig(SAVELOC + '/histogram' + '.png')
   plt.close()  
 
 
@@ -534,7 +585,7 @@ cdict = {
 mycmap = LinearSegmentedColormap('mycmap', cdict)
 plt.register_cmap(cmap=mycmap)
 
-def heatmap(data, rows, cols, title, vmax=None, xlabel=None, ylabel=None):
+def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.cla()
   plt.clf()
@@ -542,7 +593,8 @@ def heatmap(data, rows, cols, title, vmax=None, xlabel=None, ylabel=None):
   # heatmap = ax.matshow(data, interpolation='nearest')
   # fig.colorbar(heatmap)
   # heatmap = ax.pcolor(data, cmap='YlGnBu', vmin=0, vmax=300)
-  heatmap = ax.pcolormesh(data, cmap='OrRd')
+  # heatmap = ax.pcolormesh(data, cmap='OrRd')
+  heatmap = ax.pcolormesh(data, cmap=colmap)
   fig.colorbar(heatmap)
 
   # # put the major ticks at the middle of each cell
@@ -553,8 +605,8 @@ def heatmap(data, rows, cols, title, vmax=None, xlabel=None, ylabel=None):
   if vmax is None:
     vmax = 1. if np.max(data) <= 1. else np.max(data)
       
-  ax.set_xticklabels(rows, rotation='vertical', fontsize='small')
-  ax.set_yticklabels(cols, fontsize='x-small')
+  ax.set_xticklabels(rows, rotation='vertical', fontsize=8)
+  ax.set_yticklabels(cols, fontsize=8)
   ax.set_xlim(0, len(rows))
   ax.set_ylim(0, len(cols))
   if xlabel is None:
@@ -568,6 +620,7 @@ def heatmap(data, rows, cols, title, vmax=None, xlabel=None, ylabel=None):
     plt.ylabel(ylabel)
 
   fig.suptitle('Heatmap: '+title)
+  fig.set_size_inches(16,12)
   plt.tight_layout()
   plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
   plt.close()  

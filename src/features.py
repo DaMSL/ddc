@@ -31,6 +31,14 @@ import bench.db as db
 import plot as P
 import redis
 
+
+import datatools.datareduce as dr
+from datatools.pca import PCAnalyzer, PCAKernel
+from core.kdtree import KDTree
+from core.kdgrid import KDGrid
+import datatools.feature as FL
+
+
 DO_COV_MAT = False
 
 DESHAW_LABEL_FILE = 'data/deshaw_labeled_bins.txt'
@@ -46,22 +54,15 @@ class ExprAnl:
     self.conf=[self.r.hgetall(i) for i in self.seq]
     self.trlist = {}
     self.wells = [[] for i in range(5)]
-    self.rmsd = {}
-    self.rmsd15 = {}
+    self.rmsd_c = {}
+    self.rmsd_cw = {}
+    self.rmsd_ds = {}
+    self.rmsd_dsw = {}
     self.feal_list = None
     self.checked_rmsd = []
-    cent = np.load('../data/init-centroids.npy')
-    # cent = np.load('../data/gen-alpha-cartesian-centroid.npy')
-    self.centroid = cent
-    self.cent15 = []
-    for a in range(5):
-      for b in range(a, 5):
-        if a == b:
-          self.cent15.append(np.array(cent[a]))
-        else:
-          self.cent15.append((np.array(cent[a]) + np.array(cent[b]))/2)
-    self.cw = [1., 1., 1., 1., 1.]  
-    # self.cw = [.92, .92, .96, .99, .99]  
+    self.cent_ds = np.load('../bpti-alpha-dist-centroid.npy')
+    self.cent_c = np.load('../data/gen-alpha-cartesian-centroid.npy')
+    self.cw = [.92, .92, .96, .99, .99]  
 
     if adaptive_cent:
       pass
@@ -76,7 +77,9 @@ class ExprAnl:
       # traj.center_coordinates()
       if first is not None:
         traj = traj.slice(np.arange(first))
-      self.trlist[t] = datareduce.filter_alpha(traj)
+      alpha = datareduce.filter_alpha(traj)
+      # alpha.superpose(deshaw.topo_alpha)
+      self.trlist[t] = alpha
 
   def ld_wells(self):
     for x, i in enumerate(self.conf):
@@ -97,7 +100,7 @@ class ExprAnl:
   def rms(self, trnum, noise=False, force=False, first=None):
     if trnum not in self.trlist.keys():
       self.loadtraj(trnum, first)
-    if trnum not in self.rmsd.keys() or force:
+    if trnum not in self.rmsd_c.keys() or force:
       if noise:
         # With Noise Filter
         noise = int(self.r.get('obs_noise'))
@@ -107,54 +110,13 @@ class ExprAnl:
         noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
         source_pts = np.array([noisefilt(self.trlist[trnum].xyz, i) for i in range(self.trlist[trnum].n_frames)])
       else:
-        source_pts = self.trlist[trnum].xyz
-      rmsd = [[self.cw[i]*LA.norm(self.centroid[i]-pt) for i in range(5)] for pt in source_pts]
-      # rmsd = [[LA.norm(c-i) for c in self.centroid] for i in self.trlist[trnum].xyz]
-      self.rmsd[trnum] = rmsd
-    return self.rmsd[trnum]
-
-  def rms15(self, trnum):
-    if trnum not in self.trlist.keys():
-      self.loadtraj(trnum)
-    if trnum not in self.rmsd.keys():
-      rmsd = [[LA.norm(c-i) for c in self.cent15] for i in self.trlist[trnum].xyz]
-      self.rmsd[trnum] = rmsd
-    return self.rmsd[trnum]
-
-  def feature_landscape(self, window, var=False):
-    """ FEATURE LANDSCAPE Calculation for traj f data pts
-    """
-    log_prox = op.makeLogisticFunc(1., .5, .5)
-    log_reld = op.makeLogisticFunc(1., -1, .5)
-    counts = [0 for i in range(5)]
-    tup_list = []
-    for rms in window:
-      counts[np.argmin(rms)] += 1
-      tup = []
-
-      # Proximity
-      for n, dist in enumerate(rms):
-        tup.append(log_prox(dist))
-        # tup.append(max(11.34-dist, 0))
-
-      # Additional Feature Spaces
-      for a in range(4):
-        for b in range(a+1, 5):
-          rel_dist = rms[a]-rms[b]
-          tup.append(log_reld(rel_dist))
-      tup_list.append(tup)
-
-    # Normalize Count
-    landscape = [c/sum(counts) for c in counts]
-
-    # Average over the window
-    landscape.extend(np.mean(tup_list, axis=0))
-    if var:
-      variance = [0 for i in range(5)]
-      variance.extend(np.std(tup_list, axis=0))
-      return np.array(landscape), np.array(variance)
-    else:
-      return np.array(landscape)
+        source_pts = self.trlist[trnum]
+      self.rmsd_c[trnum] = [[LA.norm(self.cent_c[i]-pt) for i in range(5)] for pt in source_pts.xyz]
+      self.rmsd_cw[trnum] = [[self.cw[i]*LA.norm(self.cent_c[i]-pt) for i in range(5)] for pt in source_pts.xyz]
+      ds = dr.distance_space(source_pts)
+      self.rmsd_ds[trnum] = [[LA.norm(self.cent_ds[i]-pt) for i in range(5)] for pt in ds]
+      self.rmsd_dsw[trnum] = [[self.cw[i]*LA.norm(self.cent_ds[i]-pt) for i in range(5)] for pt in ds]
+    return self.rmsd_c[trnum]
 
   def feal(self, trnum, winsize=None, var=False):
     feal_list = []
@@ -166,43 +128,67 @@ class ExprAnl:
     for idx in range(0, N, wsize):
       window = self.rmsd[trnum][idx:min(N,idx+wsize)]
       if var:
-        f, v = self.feature_landscape(window, var=True)
+        f, v = self.feature_temporal(window, var=True)
         var_list.append(v)
       else:
-        f = self.feature_landscape(window)
+        f = self.feature_temporal(window)
       feal_list.append(f)
     if var:
       return np.array(feal_list), np.array(var_list)
     return np.array(feal_list)
 
-  def feal_atemp(self, rms, scaleto=10):
+  @classmethod
+  def feal_atemp(cls, rms, scaleto=10):
     """Atemporal (individual frame) featue landscape
     """
-    log_prox = op.makeLogisticFunc(scaleto, .5, .5)
     log_reld = op.makeLogisticFunc(scaleto, -3, 0)
 
+    # Counts  (feature 0..4)
     fealand = [0 for i in range(5)]
     fealand[np.argmin(rms)] = scaleto
     tup = []
-    # Proximity
+
+    # Proximity (feature 5..9)
     for n, dist in enumerate(rms):
       # tup.append(log_prox(dist))
       maxd = 10.  #11.34
       # tup.append(scaleto*max(maxd-dist, 0)/maxd)
       tup.append(max(maxd-dist, 0))
 
-    # Additional Feature Spaces
+    # Relative Distance (akin to LLE) (feature 10..19)
     for a in range(4):
       for b in range(a+1, 5):
         rel_dist = rms[a]-rms[b]
         tup.append(log_reld(rel_dist))
 
     fealand.extend(tup)
+
+    # Additional Feature Spaces Would go here
     return np.array(fealand)   # Tuple or NDArray?
 
-  def all_feal(self, force=False):
+  def feature_temporal(self, window, var=False, scaleto=10):
+    """ FEATURE LANDSCAPE Calculation for traj f data pts
+    """
+    landscape = [self.feal_atemp(rms) for rms in window]
+    meanfeal = np.mean(landscape, axis=0)
+    if var:
+      variance = [0 for i in range(5)]
+      variance.extend(np.std(tup[5:] for tup in landscape), axis=0)
+      return np.array(meanfeal), np.array(variance)
+    else:
+      return np.array(meanfeal)
+
+  def all_feal(self, force=False, method='c'):
+    if method == 'c':
+      rmsd = self.rmsd_c
+    elif method == 'cw':
+      rmsd = self.rmsd_cw
+    elif method == 'ds':
+      rmsd = self.rmsd_ds
+    else:
+      rmsd = self.rmsd_dsw
     if self.feal_list is None or force:
-      self.feal_list = op.flatten([[self.feal_atemp(i) for i in self.rmsd[tr]] for tr in self.rmsd.keys()])    
+      self.feal_list = op.flatten([[self.feal_atemp(i) for i in rmsd[tr]] for tr in rmsd.keys()])    
     return self.feal_list
 
   def feal_global(self):
@@ -259,8 +245,136 @@ class ExprAnl:
         trnum, frame = self.index[idx]
         flist.append(self.feal_list[trnum][frame])
       return np.mean(flist, axis=0)
+   
+  ####  FEATURE LANDSCAPE Temporal Data Analysis/Study
+  def make_covar(self, win, slide):
+    covar = []
+    WIN_SIZE_NS = win
+    SLIDE_AMT_NS = slide
+    for i, tr in self.trlist.items():
+      if i % 100==0:
+        print(i)
+      cov = datareduce.calc_covar(tr.xyz, WIN_SIZE_NS, 1, slide=SLIDE_AMT_NS)
+      covar.extend(cov)
+    return covar
 
-    
+  
+
+
+class Reweight:
+  def __init__(self, expr, space='cw'):
+    self.E = expr
+    self.space = 'cw'
+    self.last_method = None
+    self.kdg = None
+    self.hc = None
+    self.fealcov = None
+    self.covar = None
+
+  def doGrid(self, method=None):
+    if method is None:
+      feal = self.E.all_feal()
+    else:
+      self.space = method
+      feal = self.E.all_feal(force=True, method=method)
+    self.kdg = KDGrid(K=10, split=5)
+    self.kdg.insert([i[10:] for i in feal])
+
+  def doCovar(self, winsize=.1, slide=.05):
+    # Calculate Covariance matrices over all temporal data IAW given window param
+    self.covar = []
+    self.fealcov  = []
+    for i, tr in self.E.trlist.items():
+      if i % 100 == 0:
+        print(i)
+      cov = dr.calc_covar(tr.xyz, winsize, 1, slide=slide)
+      if self.space in ['ds', 'dsw']:
+        X, C = dr.distance_space(tr), self.E.cent_ds
+      else:
+        X, C = tr.xyz, self.E.cent_c
+      wgt = self.E.cw if self.space in ['cw', 'dsw'] else [1,1,1,1,1]
+      rms = calc_rmsd(X, C, weights=wgt)
+      W = int(winsize * 1000)
+      S = int(slide * 1000)
+      feal = [np.mean([FL.feal.atemporal(i) for i in rms[st:st+W]], axis=0) for st in range(0, len(tr.xyz), S)]
+      for n in range(min(len(cov), len(feal))):
+        self.covar.append(cov[n])
+        self.fealcov.append(feal[n])
+
+    # Extract diagonals as a vector and solve Kernel PCA
+
+  def doTree(self, pc=4, ktype='rbf', leafsize=100, maxdepth=6, split='middle'):
+    diag = np.array([np.diag(i) for i in self.covar])
+    kpca = PCAKernel(pc, ktype)
+    kpca.solve(diag)
+    gdata = kpca.project(diag)
+
+    # Create KDTree over reduced-dim subspace (4-PCs)
+    gtree  = KDTree(leafsize, maxdepth, gdata, split) # Or Max Gap
+    self.hc = gtree.getleaves()
+
+  def doHeatmap(self, title, DS=True):
+
+    # Save grid hcubes which actually have sufficient data points
+    nodeA_size = [len(i) for i in self.kdg.grid]
+    nodeA = [i for i, size in enumerate(nodeA_size) if size > 10]
+    nodeB = list(self.hc.keys())
+    idxB  = {k: i for i, k in enumerate(nodeB)}
+
+    # For each HCube (among clustered temporal data):
+    for k in nodeB:
+      self.hc[k]['reweight'] = {}
+      for cov in self.hc[k]['elm']:
+        probe = self.kdg.toindex(self.fealcov[cov][10:])
+        if probe not in self.hc[k]['reweight']:
+          self.hc[k]['reweight'][probe] = 0
+        self.hc[k]['reweight'][probe] += 1
+        if probe not in nodeA:
+          nodeA.append(probe)
+
+    idxA  = {k: i for i, k in enumerate(nodeA)}
+
+    # Map projection to edges (and subsequent heatmap chart)
+    edge = []
+    projmap = np.zeros(shape=(len(nodeA), len(nodeB)))
+    for kB in nodeB:
+      for kA, proj_cnt in self.hc[kB]['reweight'].items():
+        edge.append((kA, kB, proj_cnt))
+        A = idxA[kA]
+        B = idxB[kB]
+        projmap[A][B] = proj_cnt
+
+    xlabel = 'SOURCE: Temporal Windows (Covariance -> KPCA -> KDTree)'
+    ylabel = 'DEST: ATemporal Data (K-D Grid w/feature Landscape, 0-1..3-4 vals)'
+
+    Asize = [nodeA_size[i] for i in nodeA]
+    proj_total = [int(i) for i in np.sum(projmap, axis=1)]
+    Bsize = [self.hc[k]['count'] for k in nodeB]
+    alabel = ['#%04d/ %5d/ %3d' % x for x in zip(nodeA, Asize, proj_total)]
+    blabel = ['%6s/ %d' % x for x in zip(nodeB, Bsize)]
+    pmap_bal_row_norm = np.nan_to_num(projmap / np.linalg.norm(projmap, axis=-1)[:, np.newaxis]).T
+    pmap_bal_col_norm = np.nan_to_num(projmap.T / np.linalg.norm(projmap.T, axis=-1)[:, np.newaxis])
+
+
+    P.heatmap(projmap, alabel, blabel, title, ylabel=ylabel, xlabel=xlabel)
+    P.heatmap(pmap_bal_col_norm.T, alabel, blabel, title+'_NormCol', ylabel=ylabel, xlabel=xlabel)
+    P.heatmap(pmap_bal_row_norm.T, alabel, blabel, title+'_NormRow', ylabel=ylabel, xlabel=xlabel)  
+
+  def drawLandscape(self, idxList, title):
+    feal = np.mean([self.E.feal_list[i] for i in idxList], axis=0)
+    var  = np.std([self.E.feal_list[i] for i in idxList], axis=0)
+    P.feadist(feal, title, err=var, pcount=len(idxList), norm=10, negval=True)
+
+  def drawIndex(self, idxNum):
+    self.drawLandscape(self.kdg.index[idxNum], 'FeatLand_%d'%idxNum)
+
+  def drawHC(self, hcKey):
+    self.drawLandscape(self.hc[hcKey]['elm'], 'FeatLand_%s'%hcKey)
+
+
+
+
+
 
 def calcrmslabel(exp, centroids, load=False):
   cw = [.92, .94, .96, .99, .99]
@@ -287,8 +401,6 @@ def calcrmslabel(exp, centroids, load=False):
   if load:
     pipe.execute()
   return rmslabel
-
-
 
 def draw_windows(rmslist, title='feal_', winsize=10, slide=10):
   feallist = []
@@ -328,23 +440,26 @@ def feal_atemp(rms, scaleto=10):
   """
   log_reld = op.makeLogisticFunc(scaleto, -3, 0)
 
+  # Counts  (feature 0..4)
   fealand = [0 for i in range(5)]
   fealand[np.argmin(rms)] = scaleto
   tup = []
-  # Proximity
+
+  # Proximity (feature 5..9)
   for n, dist in enumerate(rms):
     # tup.append(log_prox(dist))
     maxd = 10.  #11.34
     # tup.append(scaleto*max(maxd-dist, 0)/maxd)
     tup.append(max(maxd-dist, 0))
 
-  # Additional Feature Spaces
+  # Relative Distance (akin to LLE) (feature 10..19)
   for a in range(4):
     for b in range(a+1, 5):
       rel_dist = rms[a]-rms[b]
       tup.append(log_reld(rel_dist))
-
   fealand.extend(tup)
+
+  # Additional Feature Spaces Would go here
   return np.array(fealand)   # Tuple or NDArray?
 
 def get_feal_var(rmslist):
@@ -391,7 +506,6 @@ def make_kdtree(feal_list):
   # a, b = binlist[i]
 # for i in range(25):
 #   P.plot_seq(frms[i], '/seq%d/24ns_10ps_%d_%d', 10, 10)
-
 
 def centroid_bootstrap(catalog):
   centfile = settings.RMSD_CENTROID_FILE
@@ -647,8 +761,6 @@ def centroid_bootstrap(catalog):
       #   ptmap[c].append((i, 0))
     A, B = k
     P.scat_Transtions(ptmap, title='-%d_%d'%(A,B), size=1, labels=collab)
-
-
 
 def load_PCA_Subspace(catalog):
 

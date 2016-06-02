@@ -361,7 +361,7 @@ class macrothread(object):
     # Dispatch Workers
     else:
       workernum = 1
-      delay = 300 + self.delay  
+      delay = 180 + self.delay  
 
       # Set baseline slurm params and modules (to allow for dynamic disatching)
       baseline_param = copy.deepcopy(self.slurmParams)

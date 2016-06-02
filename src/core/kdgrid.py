@@ -30,7 +30,7 @@ class KDGrid(object):
     hypercube based on polarity along each dimension
 
   """
-  def __init__(self, K=10, data=None):
+  def __init__(self, K=10, split=0, data=None):
     """
     Leafsize is set to 1
     """
@@ -38,7 +38,8 @@ class KDGrid(object):
     self.key = [int(math.pow(2, i)) for i in range(K)]
     self.size = int(math.pow(2, K))
     self.grid = [[] for i in range(self.size)]
-    self.toindex = lambda vect: np.sum(np.greater(vect, np.zeros(K)) * self.key)
+    self.index = {}
+    self.toindex = lambda vect: np.sum(np.greater(vect, np.ones(K)*split) * self.key)
     self.region = {}
     self.define_region(0, [-1, -1, -1, -1,  0,  0,  0,  0,  0,  0])
     self.define_region(1, [ 1,  0,  0,  0, -1, -1, -1,  0,  0,  0])
@@ -51,8 +52,12 @@ class KDGrid(object):
     Inserts a list of points, each pt much be of the same K-dimension vector
     For now: store raw data (vice index)
     """
-    for vect in data:
-      self.grid[self.toindex(vect)].append(vect)
+    for idx, vect in enumerate(data):
+      hc = self.toindex(vect)
+      if hc not in self.index:
+        self.index[hc] = []
+      self.grid[hc].append(vect)
+      self.index[hc].append(idx)
 
   def makeregion(self, mask, d=0):
     if d == self.dim:
@@ -79,13 +84,14 @@ class KDGrid(object):
           region[key].extend(self.grid[grid])
       return region
     else:
-      if label not in region:
+      if label not in self.region.keys():
         print("Error no region defined for: ", label)
         return
       labellist = [label]
       region = []
       for grid in self.region[label]:
         region.extend(self.grid[grid])
+      return region
 
 if __name__ == "__main__":
   kdg = KDG.KDGrid(10)

@@ -48,6 +48,8 @@ FILTER = {
       'alpha'  : topo.top.select_atom_indices('alpha')
     }
 
+topo_alpha = topo_prot.atom_slice(FILTER['alpha'])
+
 
 def atomfilter(filt):
   global atom_filter, topo
@@ -151,8 +153,6 @@ def loadpts_trajlist(trajlist, skip=40, filt=None):
       pts.append(i)
   return np.array(pts)
 
-
-
 def refFromIndex(index):
   """Convert a single frame index to (fileno, frame) tuple
   """
@@ -165,7 +165,6 @@ def getDEShawfilename(seqnum, fullpath=False):
     if fullpath:
       filename = os.path.join(RAW_ARCHIVE, filename)
     return filename
-
 
 def getDEShawfilename_prot(seqnum, fullpath=False):
     filename = 'bpti-prot-%02d.dcd' % seqnum

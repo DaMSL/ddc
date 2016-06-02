@@ -5,6 +5,8 @@ import matplotlib.patches as mpatches
 
 import numpy as np
 
+import bench.db as db
+
 from core.slurm import slurm
 
 import dateutil.parser as dparse
@@ -53,7 +55,7 @@ def makenodelist(joblist):
     nodes.add(job['node'])
   return {n: i for i, n in enumerate(sorted(list(nodes)))}
 
-def makebars(joblist):
+def makebars(joblist, limit=None):
   nodelist = makenodelist(joblist)
   firstjob = min(joblist, key=lambda x:x['start'])
   begin_ts = dparse.parse(firstjob['start']).timestamp()
@@ -65,12 +67,15 @@ def makebars(joblist):
     start_time = dparse.parse(job['start']).timestamp()
     X0 = int((start_time - begin_ts) // 60)
     X1 = int(X0 + timetomin(*job['time'].split(':')))
+    # X1 = X0 + job['time'] #int(X0 + timetomin(*job['time'].split(':')))
     if job['type'] == 'ctl':
       barlist.append((Y, X0, X1, 'g'))      
     else:
       barlist.append((Y, X0, X0+1, 'red'))
       barlist.append((Y, X0+1, X1-2, 'blue'))
       barlist.append((Y, X1-2, X1, 'red'))
+    if limit and X0 > limit:
+      break
   return barlist
 
 
@@ -85,11 +90,15 @@ def drawjobs(barlist, title, sizefactor=3):
   parallelism = [0 for i in range(int(end_ts))]
   catalog[0] = 1
   for Y, X0, X1, col in barlist:
-    catalog[int(X0)] += 1
-    for i in range(int(X1)-TIME_ANL, int(X1)):
-      catalog[i] += 1
-    for i in range(int(X0), int(X1)):
-      parallelism[i] += 1
+    try:
+      catalog[int(X0)] += 1
+      for i in range(int(X1)-TIME_ANL, int(X1)):
+        catalog[i] += 1
+      for i in range(int(X0), int(X1)):
+        parallelism[i] += 1
+    except IndexError as e:
+      print (Y, X0, X1, col)
+      print (e)
   catbars = []
   lastactive = True
   c0 = 0
@@ -100,18 +109,19 @@ def drawjobs(barlist, title, sizefactor=3):
       usage = (0., 0., 0.)
     else:
       usage = (min(numconn/maxparallel + .15, 1.), .15, .15)
-    catbars.append((maxnode+10, ts, ts+1, usage))
+    catbars.append((maxnode+5, ts, ts+1, usage))
     if active != lastactive:
-      catbars.append((maxnode, c0, ts, activecol[lastactive]))
+      catbars.append((maxnode-5, c0, ts, activecol[lastactive]))
       c0 = ts
       lastactive = not lastactive
+  catbars.append((maxnode-5, c0, ts+1, activecol[lastactive]))
 
   for ts, p in enumerate(parallelism):
     if p == 0:
       usage = (0., 0., 0.)
     else:
       usage = (0., 0., min(p/50., 1.))
-    catbars.append((maxnode+20, ts, ts+1, usage))    
+    catbars.append((maxnode+15, ts, ts+1, usage))    
 
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.cla()
@@ -129,32 +139,39 @@ def drawjobs(barlist, title, sizefactor=3):
 
   try:
     for Y, X0, X1, col in catbars:
-      plt.hlines(Y, X0, X1, color=col, lw=10)
+      plt.hlines(Y, X0, X1, color=col, lw=20)
   except ValueError as e:
     print(Y, X0, X1, col)
     print(e)
-  plt.xlabel("Total Wall Clock Time (in Minutes)")
-  plt.ylabel("Node Number w/CATALOG node at the top")
+  plt.xlabel("Total Wall Clock Time (in Minutes)", fontsize=12)
+  plt.ylabel("Node Number w/CATALOG node at the top", fontsize=12)
 
-  ax.annotate('Sims running in parallel (Brighter blue => more parallel)', xy=(10, maxnode+22), fontsize=8)
-  ax.annotate('Catalog Usage (Brighter red => more used)', xy=(10, maxnode+12), fontsize=8)
-  ax.annotate('Catalog Usage (Binary Only)', xy=(10, maxnode+2), fontsize=8)
+  ax.annotate('Sims running in parallel (Brighter blue => more parallel)', xy=(10, maxnode+19), fontsize=10)
+  ax.annotate('Catalog Usage (Brighter red => more used)', xy=(10, maxnode+9), fontsize=10)
+  ax.annotate('Catalog Usage (Binary Only)', xy=(10, maxnode-1), fontsize=10)
 
 
   # Custom Legend:
-  labels = {'g': 'Controller', 'r': 'Catalog_ACTIVE', 'black':'Catalog_IDLE', 'blue':'Simulation', 'red':'Catalog I/O'}
+  labels = {'g': 'Control Thread', 'r': 'Active I/O', 'black':'IDLE', 'blue':'Simulation Thread'}
 
   patches = [mpatches.Patch(color=k, label=v) for k, v in labels.items()]
 
   ax.set_xlim(0, end_ts)
   ax.set_ylim(0, maxnode+25)
-
-  plt.legend(handles=patches, loc='center right')  
-  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.title("Timeline Visualization for Macrothread and Overlay Frameworks")
+  plt.legend(handles=patches, loc='center left')  
+  plt.savefig(SAVELOC + '/gantt_' + title + '.png')
   plt.close()  
 
 
 
+def bigGantt(name, limit=None):
+  # expid = db.get_expid(name)
+  # joblist = db.qryd("select * from sw where expid='%d';" % expid)
+  sourcedir = '/home-1/bring4@jhu.edu/work/log/' + name
+  joblist = getjoblist(sourcedir)
+  job_bars = makebars(joblist, limit)
+  drawjobs(job_bars, name)
 
 ##### GANTT CHART DISPLAY
 def gantt():

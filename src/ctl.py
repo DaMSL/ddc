@@ -378,42 +378,43 @@ class controlJob(macrothread):
       logging.debug(" Start_index=%d,  thru_index=%d,   ctlIndexHead=%d", start_index, thru_index, self.data['ctlIndexHead'])
 
       # To update Thetas
-      rmslist = [np.fromstring(i) for i in r.lrange('subspace:rms', 0, -1)]
-      obslist = r.lrange('label:rms', 0, -1)
-      thetas  = self.catalog.loadNPArray('thetas')
-      thetas_updated = np.zeros(shape=(numLabels, numLabels))
+      rmslist = [np.fromstring(i) for i in self.catalog.lrange('subspace:rms', 0, -1)]
+      obslist = self.catalog.lrange('label:rms', 0, -1)
       # translist=[str((a,b)) for a in [StateA, StateB] for b in [StateA, StateB]]
 
-      # Map diff's to matrix list
-      diffM = [[[] for a in range(numLabels)] for b in range(numLabels)]
-      for rms, obs in zip(rmslist, obslist):
-        A, B = np.argsort(rms)[:2]
-        diffM[A][B].append = rms[A] - rms[B]
-
       # reduce to transition distributions
-      trans_factor = self.data['transition_sensitivity']
-      for A in range(0, numLabels-1):
-        for B in range(A+1, numLabels):
-          X = sorted(diffM[A][B] + diffM[B][A])
-          crossover = 0
-          for i, x in enumerate(X):
-            if x > 0:
-              crossover = i
-              break
-          print('Crossover at Index #', crossover)
+      # if EXPERIMENT_NUMBER > 10:
+      #   thetas  = self.catalog.loadNPArray('thetas')
+      #   thetas_updated = np.zeros(shape=(numLabels, numLabels))
+      # # Map diff's to matrix list
+      #   diffM = [[[] for a in range(numLabels)] for b in range(numLabels)]
+      #   for rms, obs in zip(rmslist, obslist):
+      #     A, B = np.argsort(rms)[:2]
+      #     diffM[A][B].append = rms[A] - rms[B]
 
-          # Find local max gradient  (among 50% of points)
-          zoneA = int((1-trans_factor) * crossover)
-          zoneB = crossover + int(trans_factor * (len(X) - crossover))
-          gradA = zoneA + np.argmax(np.gradient(X[zoneA:crossover]))
-          gradB = crossover + np.argmax(np.gradient(X[crossover:zoneB]))
-          thetaA = X[gradA]
-          thetaB = X[gradB]
-          thetas_updated[A][B] = thetaA
-          thetas_updated[B][A] = thetaB
+      #   trans_factor = self.data['transition_sensitivity']
+      #   for A in range(0, numLabels-1):
+      #     for B in range(A+1, numLabels):
+      #       X = sorted(diffM[A][B] + diffM[B][A])
+      #       crossover = 0
+      #       for i, x in enumerate(X):
+      #         if x > 0:
+      #           crossover = i
+      #           break
+      #       print('Crossover at Index #', crossover)
 
-      # Push Updated Thetas -- should this be transactional?
-      self.catalog.storeNPArray('thetas', thetas_updated)
+      #       # Find local max gradient  (among 50% of points)
+      #       zoneA = int((1-trans_factor) * crossover)
+      #       zoneB = crossover + int(trans_factor * (len(X) - crossover))
+      #       gradA = zoneA + np.argmax(np.gradient(X[zoneA:crossover]))
+      #       gradB = crossover + np.argmax(np.gradient(X[crossover:zoneB]))
+      #       thetaA = X[gradA]
+      #       thetaB = X[gradB]
+      #       thetas_updated[A][B] = thetaA
+      #       thetas_updated[B][A] = thetaB
+
+        # Push Updated Thetas -- should this be transactional?
+        # self.catalog.storeNPArray('thetas', thetas_updated)
 
       # labeled_pts_rms = self.catalog.lrange('label:rms', start_index, thru_index)
       labeled_pts_rms = obslist[start_index:thru_index]

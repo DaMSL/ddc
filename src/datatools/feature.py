@@ -38,6 +38,8 @@ class feal(object):
         tup.append(log_reld(rel_dist))
 
     fealand.extend(tup)
+
+    # Additional Feature Spaces Would go here
     return np.array(fealand)   # Tuple or NDArray?
 
   @classmethod

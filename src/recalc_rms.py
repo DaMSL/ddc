@@ -23,22 +23,18 @@ r = redis.StrictRedis(host=HOST, decode_responses=True)
 filelist = r.lrange('xid:filelist', 0, -1)
 dcent = np.load(home+'/ddc/data/gen-alpha-cartesian-centroid.npy')
 # r.delete('label:raw')
-
 theta = {'sm':.05, 'md':.25, 'lg':.33}
 ab = [(A, B) for A in range(5) for B in range(5)]
 szlist = ['sm', 'md', 'lg']
-topoa = topo.atom_slice(FILTER['alpha'])
-
 nwidth = 10
 noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
 cw = [.92, .94, .96, .99, .99]
 
-for size in ['sm', 'md', 'lg']:
-  r.delete('label:raw:%s'%size)
+# for size in ['sm', 'md', 'lg']:
+#   r.delete('label:raw:%s'%size)
+
 st = dt.datetime.now()
 pipe = r.pipeline()
-
-
 missing = 0
 raw_obs = {'sm':[], 'md':[], 'lg':[]}
 srcbin = []
@@ -51,13 +47,13 @@ for num, tr in enumerate(filelist):
   jc = r.hgetall('jc_' + os.path.splitext(os.path.basename(tr))[0])
   srcbin.append(jc['src_bin'])
   traj = md.load(tr, top=pdb)
-  if traj.n_frames < 1000:
-    continue
+  # if traj.n_frames < 1000:
+  #   continue
   traj.unitcell_vectors = np.array([np.identity(3) * 5.126 for i in range(traj.n_frames)])
   traj.unitcell_angles = np.array([[90,90,90] for i in range(traj.n_frames)])
   traj.unitcell_lengths = np.array([[5.126,5.126,5.126] for i in range(traj.n_frames)])
   traj.center_coordinates()
-  traj = traj.atom_slice(FILTER['alpha'])  
+  traj = filter_alpha(traj)
   trajlist.append(traj)
   # ds = distance_space(traj)
   filteredxyz = np.array([noisefilt(traj.xyz, i) for i in range(len(traj.xyz))])
@@ -70,9 +66,9 @@ for num, tr in enumerate(filelist):
     for size in ['sm', 'md', 'lg']:
       if (rm[B] - rm[A]) > theta[size]:
         raw_obs[size].append((A, A))
-        pipe.rpush('label:raw:%s'%size, (A, A))
+        _=pipe.rpush('label:raw:%s'%size, (A, A))
       else:
-        raw_obs[size].append((A, B))
+        _=raw_obs[size].append((A, B))
         pipe.rpush('label:raw:%s'%size, (A, B))
   if num > 0 and num % 500 == 0:
     print('Saving thru file #', num)

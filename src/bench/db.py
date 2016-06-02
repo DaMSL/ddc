@@ -646,12 +646,12 @@ def update_num_obs(name):
 
 
 def adjust_time():
-x = db.runquery('select swname,start from sw where expid=29')
-for swname,start in x:
-  if start < '2016-05-07T19:00:30':
-    continue
-  nt = (du.parse(start)-dt.timedelta(minutes=470)).isoformat()
-  _ = db.runquery("update sw set start='%s' where swname='%s' and expid=29;" % (nt,swname))
+  x = db.runquery('select swname,start from sw where expid=29')
+  for swname,start in x:
+    if start < '2016-05-07T19:00:30':
+      continue
+    nt = (du.parse(start)-dt.timedelta(minutes=470)).isoformat()
+    _ = db.runquery("update sw set start='%s' where swname='%s' and expid=29;" % (nt,swname))
 
 # Queries to run:
 

@@ -5,8 +5,10 @@ import math
 import redis
 
 from numpy import linalg as LA
+from scipy import ndimage
 
 import datatools.datareduce as dr
+import mdtools.deshaw as deshaw
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
@@ -39,22 +41,32 @@ def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None, weights=N
 
 
 
-def calc_deshaw_centroid_alpha_cartesian():
+def calc_deshaw_centroid_alpha_cartesian(ptlist=None):
   """ Calc RMSD from list of trajectories
   """
-  pts = deshaw.loadpts(skip=100, filt=deshaw.FILTER['alpha'])
-  sums = np.zeros(shape=(5, 58, 3))
-  cnts = [0 for i in range(5)]
+  if ptlist is None:
+    pts = deshaw.loadpts(skip=100, filt=deshaw.FILTER['alpha'])
+  else:
+    pts = ptlist
+  # sums = np.zeros(shape=(5, 58, 3))
+  # cnts = [0 for i in range(5)]
+  groupby = [[] for i in range(5)]
   label = deshaw.loadlabels_aslist()
-  for i, pt in enumerate(pts):
-      idx = math.floor(i/10)
+  for idx, pt in enumerate(pts):
+      # idx = math.floor(i/10)
       try:
         state = label[idx]
-        sums[state] += pt
-        cnts[state] += 1
+        if state == label[idx-2] == label[idx-1] == label[idx+1] == label[idx+2]:
+          # sums[state] += pt
+          # cnts[state] += 1
+          groupby[state].append(pt)
       except IndexError as err:
         pass # ignore idx errors due to tail end of DEShaw data
-  cent = [sums[i] / cnts[i] for i in range(5)]
+
+  # cent = [sums[i] / cnts[i] for i in range(5)]
+  cent = np.zeros(shape=(5, 58,3))
+  for i in range(5):
+    cent[i] = ndimage.measurements.center_of_mass(np.array(groupby[i]))
   return np.array(cent)
 
 

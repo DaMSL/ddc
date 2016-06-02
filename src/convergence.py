@@ -8,6 +8,8 @@ import math
 
 from dateutil import parser as du
 import datetime as dt
+import datatools.feature as FL
+import core.ops as op
 
 from datatools.datacalc import *
 from collections import OrderedDict
@@ -15,6 +17,7 @@ from collections import OrderedDict
 import bench.db as db
 import core.ops as op
 import plot as P
+import features as F
 
 def bootstrap_std (series, interval=.9):
   """
@@ -30,7 +33,7 @@ def bootstrap_std (series, interval=.9):
   return (mean, CI, stddev, err)
 
 
-def bootstrap_actual (series, interval=.95):
+def bootstrap_actual (series, interval=.9):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
   """
@@ -39,9 +42,10 @@ def bootstrap_actual (series, interval=.95):
   N = len(series)
   delta  = np.array(sorted(series))
   P_i = np.mean(series)
+  std = np.std(series)
   ciLO = delta[math.ceil(N*ci_lo)]
   ciHI = delta[math.floor(N*ci_hi)]
-  return (P_i, ciLO, ciHI, (ciHI-ciLO)/P_i, std)
+  return (P_i, ciHI-ciLO, std, (ciHI-ciLO)/P_i)
 
 
 
@@ -50,11 +54,15 @@ def bootstrap_actual (series, interval=.95):
 SAVELOC = os.environ['HOME'] + '/ddc/graph/'
 # r = redis.StrictRedis(host=HOST, decode_responses=True)
 # u = redis.StrictRedis(host='localhost', decode_responses=True)
-s = redis.StrictRedis(port=6381, decode_responses=True)
-p = redis.StrictRedis(port=6382, decode_responses=True)
-u = redis.StrictRedis(port=6383, decode_responses=True)
-b = redis.StrictRedis(port=6384, decode_responses=True)
-r = redis.StrictRedis(port=6385, decode_responses=True)
+s = redis.StrictRedis(port=6380, decode_responses=True)
+p = redis.StrictRedis(port=6381, decode_responses=True)
+u = redis.StrictRedis(port=6382, decode_responses=True)
+b = redis.StrictRedis(port=6383, decode_responses=True)
+# b = redis.StrictRedis(port=6383, decode_responses=True)
+ # = redis.StrictRedis(port=6384, decode_responses=True)
+m = redis.StrictRedis(port=6385, decode_responses=True)
+k = redis.StrictRedis(port=6386, decode_responses=True)
+w = redis.StrictRedis(port=6387, decode_responses=True)
 
 
 
@@ -63,13 +71,53 @@ el2 = {label: redis.StrictRedis(port=6401+i, decode_responses=True) \
   for i, label in enumerate(['elas5', 'elas10', 'elas15', 'elas25', 'elas50'])}
 
 
-colormap = {'uniform': "r",'biased': 'b','parallel':'g', 'serial':'k', 'reweight':'y',
-              'runtime_1000': "r", 'runtime_250': "b", 
-              'elas_base': "r", 'elas_500': "g", 'elas_250': "b",
-              'elas5': "r", 'elas10': "g", 'elas15': "c", 'elas25': "b", 'elas50': "k"}
+colormap = {'Uniform': "red",
+            'Biased': 'olive',
+            'Parallel':'purple', 
+            'Serial':'blue',
+            'MVNN': "darkgreen", 
+            'Knapsack': "slategrey", 
+            'reweight':'y',
+            'runtime_1000': "r",
+            'runtime_250': "b", 
+            'elas_base': "r", 'elas_500': "g", 'elas_250': "b",
+            'elas5': "r", 'elas10': "g", 'elas15': "c", 'elas25': "b", 'elas50': "k"}
+
+labelList = [('serial','Serial'),
+             ('parallel','Parallel'), 
+             ('uniform3','Uniform'), 
+             ('biased4','Biased'), 
+             ('feal1','MVNN')] 
+labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
+
+
 pathmap = {'uniform': "uniform2",'biased': 'biased1','naive':'naive'}
 ab = sorted([(A,B) for A in range(5) for B in range(5)])
 OBS_PER_NS = 1000
+
+nex = {}
+ntr = {}
+
+def preload_data():
+  global nex, ntr
+  ser = F.ExprAnl(port=6380); ser.load(76)
+  para = F.ExprAnl(port=6381)
+  para.loadtraj(list(range(23)), first=26500)
+  _=[para.rms(i) for i in range(25)]
+  unif = F.ExprAnl(port=6382); unif.load(770)
+  bias = F.ExprAnl(port=6383); bias.load(770)
+  rwgt = F.ExprAnl(port=6387); rwgt.load(750)
+  # mvnn = F.ExprAnl(host='compute0491', port=6392); mvnn.load(1722)
+  mvnn = F.ExprAnl(port=6385); mvnn.load(1722)
+  # knap = F.ExprAnl(port=6386)
+  # knap.load(442)
+  print((dt.datetime.now()-st).total_seconds())
+
+  labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
+
+  nex = {'Serial':ser, 'Parallel':para,'Uniform':unif,'Biased':bias, 'MVNN':mvnn, 'Reweight':rwgt}
+  ntr = {'Serial':76, 'Parallel':23,'Uniform':770,'Biased':750, 'MVNN':1722, 'Reweight':750}
+
 
 
 # DATA CONVERTING
@@ -218,8 +266,6 @@ def get_bootstrap_data(r, burnin=0):
   return bs
     # Plot
 
-
-
 def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
   for e in data.keys():
     print("Post Calculating Boostraps for %s. Using stepsize of %d" % (e, STEPSIZE))
@@ -248,38 +294,177 @@ def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
       data[e]['wtcnt']['%d-Tran' %A] = [sum(k)/len(k) for k in aggT]
   return data
 
-
-def plotconv_tw(data, STEPSIZE=5, xlim=None):
+def plotconv_tw(data, STEPSIZE=5, xlim=None, labels=None):
+  global colormap
   colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
+  labelList = [(k,k) for k in sorted(data.keys())] if labels is None else labels
   for A in [0, 1, 2, 3, 4]:
     print('Plotting graphs for state %d' % A)
     plt.clf()
     ax = plt.subplot(111)
     maxlen = min([len(data[e]['wtcnt']['%d-Well' %A]) for e in data.keys()])
-    for e, C in zip(data.keys(), colorList):
+    # for (e, L), C in zip(labelList, colorList):
+    for e, L in labelList:
       X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=C, label=e)
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L)
     plt.title('Convergence for State %d (WELL)'% A)
     plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
     if xlim is not None:
       ax.set_xlim(xlim)
     plt.legend()
-    plt.savefig(SAVELOC + 'convA-well-%s.png' % (A))
+    plt.savefig(SAVELOC + 'conv-well-%s.png' % (A))
     plt.close()
+
     plt.clf()
     ax = plt.subplot(111)
     maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
-    for e, C in zip(data.keys(), colorList):
+    for e, L in labelList:
       X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=C, label=e)
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L)
     plt.title('Convergence for State %d (Transitions)'% A)
-    # ax.set_xlim(75,600)
     plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
     if xlim is not None:
       ax.set_xlim(xlim)
     plt.legend()
-    plt.savefig(SAVELOC + 'convA-tran-%s.png' % (A))
+    plt.savefig(SAVELOC + 'conv-tran-%s.png' % (A))
     plt.close()
+
+
+def plottw_agg(data, STEPSIZE=5, xlim=None, labels=None):
+  global colormap
+  colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
+  labelList = [(k,k) for k in sorted(data.keys())] if labels is None else labels
+  cl = ['3-Tran', '1-Tran', '0-Tran', '0-Well', '4-Well', '1-Well', '4-Tran', '3-Well', '2-Tran', '2-Well']
+  agg = {name: [] for name in data.keys()}  
+  for name in data.keys():
+    for i in range(len(data[name]['wtcnt']['0-Well'])):
+      agg[name].append(np.sum([data[name]['wtcnt'][c][i] for c in cl])/10)    
+  print('Plotting graphs for all states')
+  plt.clf()
+  ax = plt.subplot(111)
+  maxlen = min([len(agg[e]) for e in data.keys()])
+  for e, L in labelList:
+    X = agg[e][:maxlen]
+    plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L)
+  plt.title('Total Convergence')
+  plt.xlabel('Total time (in ns)')
+  if xlim is not None:
+    ax.set_xlim(xlim)
+  plt.legend()
+  plt.savefig(SAVELOC + 'conv-total.png')
+  plt.close()
+
+
+elist = ['serial', 'parallel', 'uniform3', 'biased4', 'feal1']  #, 'knap1'] 
+             # ('knap1','Knapsack')] 
+
+def graphexprA(elist=elist, step=5, labels=labelList):
+  data = {name: {'obs': getobs(name)} for name in elist}
+  data = convtw(data, STEPSIZE=step)
+  plotconv_tw(data, STEPSIZE=step, xlim=(20,200), labels=labelList)
+
+def graphagg(elist=elist, step=5, labels=labelList):
+  data = {name: {'obs': getobs(name)} for name in elist}
+  data = convtw(data, STEPSIZE=step)
+  plottw_agg(data, STEPSIZE=step, xlim=(20,200), labels=labelList)
+
+
+def calc_feal(r):
+  rmslist = [np.fromstring(i) for i in r.lrange('subspace:rms', 0, -1)]
+  feal  = [FL.feal.atemporal(rms) for rms in rmslist]
+  pipe = r.pipeline()
+  for f in feal:
+    r.rpush('subspace:feal', f.tostring())
+  pipe.execute()
+
+
+def plotsep(boot, step=10, tag=''):
+  N = min([len(v) for v in boot.values()])
+  data = {k: {} for k in labels}  
+  for j,k in enumerate(labels):
+    for ex, b in boot.items():
+      # data[k][ex] = [min(np.abs(b[i][j][2]-b[i][j][1]),1.) for i in range(N)]
+      data[k][ex] = [min(b[i][1][j],1.) for i in range(N)]
+  for k, v in data.items():
+    P.lines(v, 'Conv-%s-%s'%(tag,k), step=step, xlabel='Simulation Time (in ns)')
+
+  # merge = {k: [np.mean([min(1.,np.abs(boot[i][f][2]-b[i][f][1])) for f in range(5, 20)]) for i in range(N)] for k in boot.keys()}
+
+def plotm(boot, step=10, tag=''):
+  N = min([len(v) for v in boot.values()])
+  merge = {k: [np.mean([min(1., boot[k][i][1][f]) for f in range(10, 20)]) for i in range(N)] for k in boot.keys()}
+  P.lines(merge, 'Conv-%s-CI-MERGE'%tag, step=step, xlabel='Simulation Time (in ns)')
+  merge = {k: [np.mean([min(1., boot[k][i][2][f]) for f in range(10, 20)]) for i in range(N)] for k in boot.keys()}
+  P.lines(merge, 'Conv-%s-STD-MERGE'%tag, step=step, xlabel='Simulation Time (in ns)')
+  merge = {k: [np.mean([min(1., boot[k][i][3][f]) for f in range(10, 20)]) for i in range(N)] for k in boot.keys()}
+  P.lines(merge, 'Conv-%s-Err-MERGE'%tag, step=step, xlabel='Simulation Time (in ns)')
+  merge = {k: [np.mean([min(1., boot[k][i][4][f]) for f in range(10, 20)]) for i in range(N)] for k in boot.keys()}
+  P.lines(merge, 'Conv-%s-CiMu-MERGE'%tag, step=step, xlabel='Simulation Time (in ns)')
+
+def bootstrap(ex, trnum, size, method, state=None):
+  print(ex.r.get('name'), '-', end=' ')
+  feal = ex.all_feal(True, method)[:375000]
+  # feal = ex.all_feal()[:410000]
+  i = 0
+  boot = []
+  while i+size < len(feal):
+
+    if i % 100000 == 0:
+      print(i, end=' ')
+    i += size
+  print('done')
+  return boot
+
+def plot_boot(data, step=10, tag=''):
+  N = min([len(boot[k][st]) for k in boot.keys()])
+  data = {k: {} for k in labels[5:]}  
+  for j,k in enumerate(labels[5:]):
+    for ex, b in boot.items():
+      # data[k][ex] = [min(np.abs(b[i][j][2]-b[i][j][1]),1.) for i in range(N)]
+      data[k][ex] = [min(b[st][j],1.) for i in range(N)]
+  for k, v in data.items():
+    P.lines(v, 'Conv-%d-%s-%s'%(st,tag,k), step=step, xlabel='Simulation Time (in ns)')
+
+
+
+
+MASK = [[5, 10, 11, 12, 13],
+        [6, 10, 14, 15, 16],
+        [7, 11, 14, 17, 18],
+        [8, 12, 15, 17, 19],
+        [9, 13, 16, 18, 19]]
+def calc_boot(ex, size, method=None, limit=375000, state=None):
+  print(ex.r.get('name'), '-', end=' ')
+  if method is None:
+    feal = ex.all_feal()[:limit]
+  else:
+    feal = ex.all_feal(True, method)[:limit]
+  i = 0
+  boot = [[] for k in range(5)]
+  ci = [[] for k in range(5)]
+  while i+size < len(feal):
+    for state in range(5):
+      arr = np.array(feal[i:i+size]).T
+      feal_ci = []
+      straps = np.array([bootstrap_std(arr[feat]) for feat in range(5, 20)])
+      for feat in MASK[state]:
+        # if np.isnan(straps[feat-5].any()):
+        #   feal_ci.append(1.)
+        # else:
+          # feal_ci.append(straps[feat-5][1]/straps[feat-5][0])
+          feal_ci.append(straps[feat-5][1])
+      ci[state].append(feal_ci)
+      feal_ci = []
+      for feat in range(5):
+        calc = bootstrap_std([x[feat] for x in ci[state]])
+        # feal_ci.append(calc[1]/calc[0])
+        feal_ci.append(calc[1])
+      boot[state].append(feal_ci)
+    i += size
+  return boot
+
+# def boot:
+    # boot.append(op.bootstrap_block(feal[:i+size], size))
 
 
 def convtw_binary(data, slist=None, cumulative=False, STEPSIZE=25):
@@ -346,10 +531,6 @@ def showconvlist(data):
     for k, v in data[run]['wtcnt'].items():
       print('%s,%s,%s' % (run, k, ','.join(['%4.2f'%i for i in v[1:]])))
 
-
-
-
-
 def calc_conv(obs, step=5000, Nsamp=10):
   V = getdistinct(obs)
   results = {v: [] for v in V}
@@ -363,17 +544,9 @@ def calc_conv(obs, step=5000, Nsamp=10):
         results[key].append(1.)
   return results
 
-
 def show_conv(conv):
   for k,v in sorted(conv.items()): 
     print(k, ['%4.2f'%i for i in v])
-
-
-def graphexprA(elist, step=5):
-  data = {name: {'obs': getobs(name)} for name in elist}
-  data = convtw(data, STEPSIZE=step)
-  plotconv_tw(data, STEPSIZE=step)
-
 
 def graphexprB(elist, step=5, tw=True):
   obsbin = {name: getobs(name) for name in elist}
@@ -419,6 +592,12 @@ def graphexprC(elist, step=5, tw=True):
 
 #####  ELASTICITY
 
+
+
+
+
+
+
 def Elasticity(step=25):
   data = {}
   for k in el2.keys():
@@ -448,6 +627,48 @@ def plot_elas():
   for k,v in data.items():
     P.scats(v, 'ElasticityCost-'+k, xlim=(0,5), labels=costlabels, xlabel='Time (in hours)  Legend= SimTime/#Jobs/TotalCost')
 
+
+
+def elas_boot(ex, size, method=None, limit=375000, state=None):
+  print(ex.r.get('name'), '-', end=' ')
+  if method is None:
+    feal = ex.all_feal()[:limit]
+  else:
+    feal = ex.all_feal(True, method)[:limit]
+  plotlist = [[] for i in range(5)]
+  sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+  ts_0 = du.parse(sw_list[0][0]).timestamp()
+  dnum = 0      # Data item # (as in stream)
+  snum = 0      # Sim #
+  lastcalc = 0
+  nextcalc = step
+  i = 0
+  boot = [[] for k in range(5)]
+  ci = [[] for k in range(5)]
+  while n < N and snum < len(sw):
+    dnum += sw[snum]['numobs']
+    if dnum > nextcalc:
+      t = sw[snum]['end'] / 3600.  # get time
+      for state in range(5):
+        arr = np.array(feal[lastcalc:dnum]).T
+        feal_ci = []
+        straps = np.array([bootstrap_std(arr[feat]) for feat in range(5, 20)])
+        for feat in MASK[state]:
+          # feal_ci.append(straps[feat-5][1]/straps[feat-5][0])
+          feal_ci.append(straps[feat-5][1])
+        ci[state].append(feal_ci)
+        feal_ci = []
+        for feat in range(5):
+          calc = bootstrap_std([x[feat] for x in ci[state]])
+          # feal_ci.append(calc[1]/calc[0])
+          feal_ci.append(calc[1])
+        conv = min(1., 100*np.mean(feal_ci[1:]))
+        plotlist[state].append((t, conv))
+      lastcalc = dnum
+      nextcalc += step
+    snum += 1
+  return plotlist
 
 
 def conv_over_time(name, step=10000, tw=False):
@@ -525,9 +746,63 @@ def total_time(name):
   return sw[-1]['end']
 
 
+
+
+
+
+
+
+
+
+
 ####  HISTOGRAM FOR TOTAL # OBSERVATIONS
 
+
 def do_histogram():
+  global nex, ntr
+  ordex = ['Serial', 'Parallel','Uniform','Biased', 'MVNN', 'Reweight']
+  binlist = [(a,b) for a in range(5) for b in range(5)]
+  hist = {k: {ab : 0 for ab in binlist} for k in ordex}
+  obs  = {k: [] for k in ordex}
+  total = {k: 0 for k in ordex} 
+  for k in ordex:
+    print(k)
+    for rmslist in nex[k].rmsd_cw.values():
+      for i, rms in enumerate(rmslist):
+        A, B = np.argsort(rms)[:2]
+        delta = np.abs(rms[B] - rms[A])
+        if delta < 0.12:
+          sub_state = B
+        else:
+          sub_state = A
+        obs[k].append((A, sub_state))
+        total[k] += 1
+
+  for k in ordex:
+    for o in obs[k]:
+      hist[k][o] += 1
+  for k in ordex:
+    for o in sorted(cnt[k].keys()):
+      print(k, o, cnt[k][o])
+      hist[k][o] = int(hist[k][o] * 500000 / total[k])
+
+  cnt = {e: {k: 0 for k in ['Well-2', 'Well-3', 'Well-4',
+                        'Tran-0', 'Tran-1', 'Tran-2', 'Tran-3', 'Tran-4']} for e in ordex}
+  for k in ordex:
+    for a in range(5):
+      for b in range(5):
+        if a == b:
+          if a not in [0, 1]:
+            cnt[k]['Well-%d'%a] = hist[k][(a,b)]
+        else:
+          cnt[k]['Tran-%d'%a] += hist[k][(a,b)]
+
+  P.histogram(cnt, 'Total Observations for each state Well / Transitions')
+
+
+
+
+def do_histogram_OLD():
   # obs = {n: c for n,c in db.runquery('select expname, count(obs) from expr e, obs where e.expid=obs.expid group by expname')}
   data = OrderedDict()
   raw = OrderedDict()
@@ -732,3 +1007,41 @@ def bystate(slist=None, cumulative=False, STEPSIZE=50):
 
 if __name__=='__main__':
   do_histogram()
+
+
+
+# def calc_boot(ex, size, method=None, limit=375000, state=None):
+#   print(ex.r.get('name'), '-', end=' ')
+#   if method is None:
+#     feal = ex.all_feal()[:limit]
+#   else:
+#     feal = ex.all_feal(True, method)[:limit]
+#   i = 0
+#   boot = [[] for k in range(5)]
+#   ci = [[] for k in range(5)]
+#   while i+size < len(feal):
+#     # Group By State
+#     state = [[] for k in range(5)]
+#     for f in feal[i:i+size]:
+#       state[np.argmax(f[:5])].append(f[5:])
+#     for n, st in enumerate(state):
+#       print(i, n, len(st))
+#       if len(st) > 0:
+#         arr = np.array(st)
+#         feal_ci = []
+#         for feat in range(15):
+#           calc = bootstrap_std(arr.T[feat])
+#           feal_ci.append(calc[1])
+#           ci[n].append(feal_ci)
+#         feal_ci = []
+#         for feat in range(15):
+#           calc = bootstrap_std([x[feat] for x in ci[n]])
+#           feal_ci.append(calc[1])
+#         boot[n].append(feal_ci)
+#       elif len(boot[n]) > 0:
+#         print('NO DATA')
+#         boot[n].append(boot[n][-1])
+#       else:
+#         boot[n].append([1]*15)
+#     i += size
+#   return boot

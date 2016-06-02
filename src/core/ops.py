@@ -1,5 +1,7 @@
 import math
 import numpy as np
+import dateutil.parser as du
+import datetime as dt
 
 def groupby (src):
   dest = {}
@@ -33,6 +35,13 @@ def flatten (src):
     dest.extend(elm)
   return dest
 
+def str2date(d):
+  return du.parse(d)
+
+def datediff(date1, date2):
+  d1 = str2date(date1) if isinstance(date1, str) else d1
+  d2 = str2date(date2) if isinstance(date2, str) else d2
+  return np.abs((d2-d1).total_seconds())
 
 
 def bootstrap_replacement (source, samplesize=.1, N=100, interval=.90):
