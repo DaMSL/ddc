@@ -58,7 +58,7 @@ def scatter3D(X, Y, Z, title, L=None):
   plt.close() 
 
 
-def scats (series, title, size=10, xlabel=None, xlim=None, labels=None):
+def scats (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=None):
   if isinstance(series, dict):
     keys = sorted(series.keys())
     if labels is None:
@@ -74,13 +74,16 @@ def scats (series, title, size=10, xlabel=None, xlim=None, labels=None):
   ax = plt.subplot(111)
   for D, C, L in zip(seriesList, colorList, labelList):
     X, Y = zip(*D)
-    plt.scatter(X, Y, s=size, c=C, lw=0)
+    # plt.scatter(X, Y, s=size, c=C, lw=0)
+    plt.plot(X, Y, c=C)
   plt.title(title)
 
   if xlabel is not None:
     plt.xlabel(xlabel)
   if xlim is not None:
     plt.xlim(xlim)
+  if ylim is not None:
+    plt.ylim(ylim)
 
   patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
   plt.legend(handles=patches, loc='upper right')  
@@ -289,6 +292,41 @@ def bootCI(boot, step=10, tag=''):
   merge = {k: [np.mean([min(1., boot[k][i][1][f]) for f in range(5, 20)]) for i in range(N)] for k in boot.keys()}
   lines(merge, 'ConvCI_Merged_%s'%tag, step=step, xlabel='Simulation Time (in ns)')
 
+
+
+
+def elas_graph (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=None):
+  keys = sorted(series.keys())
+  seriesList = [series[key] for key in keys]
+  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  plt.clf()
+  ax = plt.subplot(111)
+  firstX = 0
+  firstPt = False
+  labtext = {}
+  for D, C, L in zip(seriesList, colorList, keys):
+    X, Y = zip(*D)
+    sx, sy = X[0], Y[0]
+    ex, ey = X[-1], Y[-1]
+    plt.scatter(sx, sy, s=25, c=C, lw=0)
+    plt.scatter(ex, ey, s=25, c=C, lw=0)
+    labtext[L] = 'Step = %3d: CI=%4.2f in %3.1f hrs' % (L, ey, ex)
+    plt.plot(X, Y, c=C, linewidth=2)
+  plt.title('Elasticity:  Convergence vs Time')
+
+  labelList = [labtext[key] for key in keys]
+  plt.xlabel('Time (in hours)')
+  plt.ylabel('Confidence Interval Width')
+  if xlim is not None:
+    plt.xlim(xlim)
+  if ylim is not None:
+    plt.ylim(ylim)
+
+  patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
+  plt.legend(handles=patches, loc='upper right', prop={'family': 'monospace'})  
+
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
 
 ###### BAR PLOTS
 def bargraph(data, title, label=None):

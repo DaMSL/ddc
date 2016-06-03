@@ -630,45 +630,101 @@ def plot_elas():
 
 
 def elas_boot(ex, size, method=None, limit=375000, state=None):
-  print(ex.r.get('name'), '-', end=' ')
+  name = ex.r.get('name')
+  print(name, '-', end=' ')
+  eid = db.get_expid(name)
+  # Get feature landscape (for convergence)
   if method is None:
     feal = ex.all_feal()[:limit]
   else:
     feal = ex.all_feal(True, method)[:limit]
-  plotlist = [[] for i in range(5)]
+  plotlist = []
+
+  # Get list of all simulations
   sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
+  print('Simulations read: ', len(sw_list))
   end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+
+  # Account for any gaps in execution & adjust (ensure real time is logically grouped)
   ts_0 = du.parse(sw_list[0][0]).timestamp()
+  last = ts_0
+  sw_seq = []
+  gap = 0
+  cutoff = 30*60  # 30 min gap is bad
+  swbystart = sorted(sw_list, key=lambda i: i[0])
+  for s, t, n in swbystart:
+    sim_start = du.parse(s).timestamp() - ts_0
+    if sim_start - last > cutoff:
+      print('FOUND GAP:', int(sim_start - last))
+      gap += sim_start - last + cutoff
+    new_start = sim_start - gap
+    end = new_start + t
+    sw_seq.append({'start': new_start, 'end':end, 'numobs':n})
+    last = sim_start
+
+  maxobs = sum([i['numobs'] for i in sw_seq])
+
+  # Sort by end time (for convergence)
+  sw = sorted(sw_seq, key=lambda i: i['end'])
+  N = min(limit, maxobs, len(feal))
   dnum = 0      # Data item # (as in stream)
   snum = 0      # Sim #
   lastcalc = 0
-  nextcalc = step
+  nextcalc = size
   i = 0
-  boot = [[] for k in range(5)]
-  ci = [[] for k in range(5)]
-  while n < N and snum < len(sw):
+  boot = []
+  ci = []
+
+  # Process each simulation's observations, batch into step-sizes and calc bootstrap
+  last_conv = 1.
+  while dnum < N and snum < len(sw):
     dnum += sw[snum]['numobs']
     if dnum > nextcalc:
       t = sw[snum]['end'] / 3600.  # get time
-      for state in range(5):
-        arr = np.array(feal[lastcalc:dnum]).T
-        feal_ci = []
-        straps = np.array([bootstrap_std(arr[feat]) for feat in range(5, 20)])
-        for feat in MASK[state]:
-          # feal_ci.append(straps[feat-5][1]/straps[feat-5][0])
-          feal_ci.append(straps[feat-5][1])
-        ci[state].append(feal_ci)
-        feal_ci = []
-        for feat in range(5):
-          calc = bootstrap_std([x[feat] for x in ci[state]])
-          # feal_ci.append(calc[1]/calc[0])
-          feal_ci.append(calc[1])
-        conv = min(1., 100*np.mean(feal_ci[1:]))
-        plotlist[state].append((t, conv))
+      arr = np.array(feal[lastcalc:dnum]).T
+      feal_ci = []
+      straps = np.array([bootstrap_std(arr[feat]) for feat in range(5, 20)])
+      for feat in range(5, 15):
+        feal_ci.append(straps[feat][1]/straps[feat][0])
+        # feal_ci.append(straps[feat-5][1])
+      ci.append(feal_ci)
+      feal_ci = []
+      for feat in range(10):
+        calc = bootstrap_std([x[feat] for x in ci])
+        feal_ci.append(calc[1]/calc[0])
+        # feal_ci.append(calc[1])
+      # conv = min(1., np.mean(feal_ci[1:]))
+      conv = np.mean(np.nan_to_num(feal_ci))
+      if conv == 0:
+        conv = last_conv
+      plotlist.append((t, conv))
       lastcalc = dnum
-      nextcalc += step
+      nextcalc += size
+      nextcalc = min(nextcalc, N)
+      last_conv = conv
     snum += 1
   return plotlist
+
+
+def all_elas():
+  rlist = [5, 10, 25, 50, 75, 100, 200]
+  rex   = {k: F.ExprAnl(port=6391+i) for i, k in enumerate(rlist)}
+  for k, e in rex.items(): 
+    print('Loading', k)
+    e.load(min(750, len(e.conf)))
+
+  name = 'rtime250_%d' % k
+  eid = db.get_expid(name)
+  db.adhoc('select swname, start, time, cpu from sw where expid=%d' % eid)
+
+  allboot = {k: C.elas_boot(v, 1000, 'dsw', limit=151000) for k,v in rex.items()}
+  plots = [{k: v[s] for k,v in allboot.items()} for s in range(5)]
+  for i, p in enumerate(plots):
+    P.scats(p, 'Elas_%d'%i)
+
+
+
+
 
 
 def conv_over_time(name, step=10000, tw=False):

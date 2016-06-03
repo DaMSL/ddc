@@ -85,6 +85,7 @@ class OverlayService(object):
 
     # For Stat Collection
     self.stat = StatCollector('Overlay')
+    self.stat.collect('name', name)
 
     # DEBUG
     self._host = socket.gethostname()
