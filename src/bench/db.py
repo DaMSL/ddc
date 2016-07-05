@@ -1,3 +1,5 @@
+"""Database module for maintaining experiment-wide metrics
+""" 
 import sqlite3
 import sys
 import os
@@ -7,6 +9,12 @@ import numpy as np
 
 from collections import namedtuple
 from core.slurm import slurm
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
 def namedtuple_factory(cursor, row):
     """
@@ -172,9 +180,6 @@ convRecord = namedtuple('convRecord', 'expname ts label val')
 benchctlRecord = namedtuple('benchctlRecord', 'expid ctlid num runtime deltatime label')
 
 conn = sqlite3.connect(DB_FILE)
-
-# for emp in map(EmployeeRecord._make, cursor.fetchall()):
-#     print(emp.name, emp.title)
 
 
 def getConn():
@@ -653,12 +658,11 @@ def adjust_time():
     nt = (du.parse(start)-dt.timedelta(minutes=470)).isoformat()
     _ = db.runquery("update sw set start='%s' where swname='%s' and expid=29;" % (nt,swname))
 
-# Queries to run:
+
+
+# Sample Queries to run:
 
 # run("SELECT expname, avg(deltatime), max(deltatime) FROM bench_ctl B, expr E where label='Sample' and E.expid=B.expid GROUP BY expname;")
-
 # run("SELECT expname, label, avg(deltatime), avg(num) as num FROM bench_ctl B, expr E where E.expid=B.expid and B.expid=8 GROUP BY expname, label order by expname, num;")
-
 # run("SELECT expname, max(runtime) FROM bench_ctl B, expr E where E.expid=B.expid GROUP BY expname order by expname;")
-
 # run("select expname, avg(time) from (SELECT expid, ctlid, max(runtime) as time FROM bench_ctl GROUP BY expid, ctlid) T,  expr E where E.expid=T.expid GROUP BY expname;")

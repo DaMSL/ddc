@@ -1,3 +1,6 @@
+"""
+Multi-Variate Knapsack Algorithm
+"""
 import numpy as np
 import datetime as dt
 from collections import deque
@@ -5,7 +8,11 @@ from core.kdtree import KDTree
 
 import logging
 
-
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
 def convert_knap(feal, scale=10, M=25):
   item = np.zeros(M-5)
@@ -154,83 +161,6 @@ def find_replace(desired, source_bucket, knap, target_list):
         print('Improved index found: %4d   Score=%f' % (best_idx, best_score))
     selected.append(best_idx)
   return selected
-
-# for i in sorted(knap): hc[itemindex[i]]['feal'] = [feallist[j] for j in hc[itemindex[i]]['elm']]
-  # print('Removing KP item # %d  -- Replace with ItemIdx # %d' % (most_penalized_item, most_value_added))
-
-[4, 9, 14, 17, 18, 19, 23]
-  # TODO: Accept/Reject preprocess 2 partial loops to optimize ILO full linear scan
-  # accept = []
-  # for i in bestfit_M:
-  #   if int(score[i]) == M:
-  #     accept.append(i)
-  #   elif int(score[i]) == 0:
-  #     reject.append(i)
-
-
-
-  # Global Relacement
-  # cur_score = np.sum(space)
-  # for i in range(100):    # of times to try replacing or find better strategy
-  #   swapped = False
-  #   for j in range(24, 0, -1):
-  #     swap_candid_score = np.sum(itemlist[knapsack[j]])
-  #     for n in range(len(available_items)):
-  #       swap_score = cur_score - swap_candid_score + np.sum(itemlist[available_items[n]])
-  #       if np.abs(swap_score) < np.abs(cur_score):
-  #         available_items.append(knapsack[j])
-  #         del knapsack[j]
-  #         knapsack.append(available_items[n])
-  #         del available_items[n]
-  #         cur_score = swap_score
-  #         swapped = True
-  #         break
-  #   if not swapped:
-  #     print('found best fit')
-  #     break
-
-    # TODO:  Local Replacement within HCubes
-
-
-# def recency_alg():
-#     idxmin = 0
-#     # Find Most penalized feature (most value if removed) -- but ignore recently dropped items
-#     while True:
-#       if len(recent_drop) == 0 or ranking[idxmin] not in recent_drop or idxmin == R or \
-#         (recent_drop[0] == ranking[idxmin] and len(recent_drop) == R):
-#         min_k = ranking[idxmin]
-#         break
-#       idxmin += 1
-#       if idxmin == R:
-#         print('Set idx 0')
-#         min_k = ranking[0]
-#         break
-
-#     idxmax = M - 1
-#     while True:
-#       max_k = ranking[idxmax]
-#       if (len(recent_add) == 0 or max_k not in recent_add or \
-#            (recent_add[0] == max_k and len(recent_add) == R)) and \
-#          (len(recent_drop) == 0 or max_k not in recent_drop or \
-#            (recent_drop[0] == max_k and len(recent_drop) == R)):
-#         # print (recent_drop, 'max_k=', max_k, '  idxmax=', idxmax, max_k in recent_drop, max_k ==12, 12 in recent_drop)
-#         break
-#       idxmax -= 1
-#       if idxmax == M-R:
-#         print('Set idx M')
-#         max_k = ranking[M-1]
-#         break
-
-#       if min_k in recent_drop:
-#         recent_drop.remove(min_k)
-#       recent_drop.append(min_k)
-
-#     if max_k in recent_drop:
-#         recent_drop.remove(max_k)
-#       recent_drop.append(max_k)
-#     if max_k in recent_add:
-#       recent_add.remove(max_k)
-#     recent_add.append(max_k)
 
 
 def fill_knap_dp(capacity, slots, items):

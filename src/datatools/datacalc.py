@@ -1,15 +1,20 @@
+"""
+Bootstrapping routines used for metric/convergence calculations
+"""
 import numpy as np
 import logging
 import math
 
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
-
-
 skew = lambda x: (np.mean(x) - np.median(x)) / np.std(x)
-
-
 
 def bootstrap_std (series, interval=.9):
   """
@@ -23,9 +28,6 @@ def bootstrap_std (series, interval=.9):
   err = stddev / math.sqrt(N)
   CI = Z * err
   return (mean, CI, stddev, err)
-
-
-
 
 def posterior_prob (source, withcount=False):
   """

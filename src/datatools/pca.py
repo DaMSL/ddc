@@ -1,11 +1,9 @@
-"""Principle Component Analysis tools
-
+"""
+  Principle Component Analysis tools
   Contains both standalone methods and a PC Analyzer Class
 """
 import abc
-
 import datetime as dt
-
 import mdtraj as md
 import numpy as np
 import logging
@@ -14,12 +12,21 @@ from sklearn.decomposition import PCA
 from sklearn.decomposition import KernelPCA
 from sklearn.decomposition import IncrementalPCA
 
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)
 
 class PCAnalyzer(object):
-
+  """ 
+  Abstract class for wrapping PCA analysis object. Use load 
+  method with database and object key to retrieve the analyzer or instantiate
+  a child class. 
+  """
   __metaclass__ = abc.ABCMeta
 
   def __init__(self):
@@ -78,7 +85,7 @@ class PCAnalyzer(object):
 
 
 class PCALinear(PCAnalyzer):
-
+  """ Simple Linear PCA """
   def __init__(self, components):
     PCAnalyzer.__init__(self)
     if isinstance(components, int):
@@ -103,7 +110,7 @@ class PCALinear(PCAnalyzer):
 
 
 class PCAIncremental(PCAnalyzer):
-
+  """ Incremental PCA -- used to batch input over time/space """
   def __init__(self, components):
     PCAnalyzer.__init__(self)
     if isinstance(components, int):
@@ -128,7 +135,7 @@ class PCAIncremental(PCAnalyzer):
     return projection
 
 class PCAKernel(PCAnalyzer):
-
+  """ Non-linear PCA as wrapper over SciKitLearn Kernels """
   def __init__(self, components, ktype='poly'):
     PCAnalyzer.__init__(self)
     if isinstance(components, int):
@@ -150,8 +157,6 @@ class PCAKernel(PCAnalyzer):
       return None
     projection = self.pca.transform(X.reshape(len(X), dimX))
     return projection
-
-
 
 
 
@@ -256,6 +261,7 @@ def stepwise_kpca(X, gamma, n_components):
 
 
 if __name__ == '__main__':
+  """ Test Methods """
   X = np.random.random(size=(1000, 12, 3))
   Y = np.random.random(size=(1000, 12, 3))
 

@@ -1,4 +1,5 @@
-"""Common definitions and methods
+"""Micro-Benchmark class
+  Used to track and time intra-code events
 """  
 import logging
 import os
@@ -18,6 +19,15 @@ __status__ = "Development"
 default_log_loc = os.environ['HOME'] + '/ddc/results/'
 
 class microbench:
+  """Defines basic capability to set up and
+  track microbench marks within places in code. To Use:
+    1. Create the class
+    2. Start the initial timer, start()
+    3. Invoke mark() to mark a time hack relative to the start time
+    4. When done, invoke show() to display
+  File logging is automatically includs to the "default_log_loc" 
+  """
+  
   def __init__(self, name, uid=None):
     setting = systemsettings()
     self._begin = None

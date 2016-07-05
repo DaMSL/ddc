@@ -1,5 +1,9 @@
 #!/usr/bin/env python
 
+"""
+Offline Analysis of DCD Trajectory
+"""
+
 import argparse
 import os
 import sys

@@ -1,10 +1,11 @@
+"""Simple test routine to check Redis Exceptions
+""" 
 import traceback
 import redis
 import time
 from datetime import datetime as dt
 
 r = redis.StrictRedis(decode_responses=True)
-
 
 iowait = 0.
 while True:

@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Common definitions and methods
 """  
 import logging
@@ -24,6 +23,7 @@ __status__ = "Development"
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 def executecmd(cmd):
+  """ Execute single shell command. Block on output and return STDOUT """
   task = proc.Popen(cmd, shell=True,
           stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
   stdout, stderr = task.communicate()
@@ -31,21 +31,22 @@ def executecmd(cmd):
 
 
 def executecmd_pid(cmd):
+  """ Execute single shell command. Block on output and return STDOUT & PID """
   task = proc.Popen(cmd, shell=True,
           stdin=None, stdout=proc.PIPE, stderr=proc.STDOUT)
   stdout, stderr = task.communicate()
   return stdout.decode(), task.pid
 
 
-
-
 def singleton(cls):
-    instances = {}
-    def getinstance(*args, **kwargs):
-        if cls not in instances:
-            instances[cls] = cls(*args)
-        return instances[cls]
-    return getinstance
+  """ The Singleton Design Pattern. Each execution of the application can
+    only create one instance of this class """
+  instances = {}
+  def getinstance(*args, **kwargs):
+      if cls not in instances:
+          instances[cls] = cls(*args)
+      return instances[cls]
+  return getinstance
 
 @singleton
 class systemsettings:
@@ -154,8 +155,6 @@ class systemsettings:
 
     self._configured = True
 
-  
-
   def manualConfig(self, application):
     if self.configured():
       return
@@ -176,8 +175,6 @@ class systemsettings:
     # Redis Service specific settings
     self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
     self._configured = True
-
-  
 
   def setnum_pc(self, n=3):
     self.NUM_PCOMP = n
@@ -209,28 +206,20 @@ class systemsettings:
 
 @singleton
 def setLogger(name='', logfile=None):
-  # global logger
-
-  # if logger is None:
-    # log_fmt = logging.Formatter(fmt='[%(asctime)s %(levelname)-5s %(name)s] %(message)s',datefmt='%H:%M:%S')
   log_fmt = logging.Formatter(fmt= '[%(module)s] %(message)s',datefmt='%H:%M:%S')
   logger = logging.getLogger(name)
   log_console = logging.StreamHandler()
   log_console.setFormatter(log_fmt)
   logger.setLevel(logging.DEBUG)
-    # logger.addHandler(log_console)
   logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
   logging.info("LOGGING IS SET UP")
-
   return logger
 
 
 def getUID():
   chrid = random.choice(string.ascii_lowercase + string.ascii_lowercase)
   unique = str(uuid.uuid1()).split('-')[0]
-
   return chrid + unique
-
 
 def wrapKey(prefix, key):
   return "%s_%s" % (prefix, key) if not key.startswith('%s_' % prefix) else key
@@ -240,6 +229,7 @@ def unwrapKey(key):
 
 
 
+# Create the Singleton Instances
 
 DEFAULT = systemsettings()
 logger=setLogger('')  # Set Top Level Logger For formatting

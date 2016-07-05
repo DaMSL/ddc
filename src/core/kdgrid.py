@@ -1,8 +1,5 @@
-#!/usr/bin/env python
 """KD Grid Implementation
-
 """
-
 from collections import deque, OrderedDict
 import sys
 import json
@@ -20,8 +17,6 @@ __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
-
-
 
 class KDGrid(object):
   """
@@ -41,6 +36,8 @@ class KDGrid(object):
     self.index = {}
     self.toindex = lambda vect: np.sum(np.greater(vect, np.ones(K)*split) * self.key)
     self.region = {}
+
+    # Statically set 10-D regions for 5 BPTI states (hard coded for simplicity)
     self.define_region(0, [-1, -1, -1, -1,  0,  0,  0,  0,  0,  0])
     self.define_region(1, [ 1,  0,  0,  0, -1, -1, -1,  0,  0,  0])
     self.define_region(2, [ 0,  1,  0,  0,  1,  0,  0, -1, -1,  0])
@@ -60,6 +57,10 @@ class KDGrid(object):
       self.index[hc].append(idx)
 
   def makeregion(self, mask, d=0):
+    """
+    Regions define a collective set of KD-hypercubes as prescribed along ea
+    dimension. Inclusion is based on comparator of LT (-1), GT (1) or both (0)
+    """
     if d == self.dim:
       return [self.toindex(mask)]
     else:
@@ -92,11 +93,3 @@ class KDGrid(object):
       for grid in self.region[label]:
         region.extend(self.grid[grid])
       return region
-
-if __name__ == "__main__":
-  kdg = KDG.KDGrid(10)
-  kdg.define_region(0, [-1, -1, -1, -1,  0,  0,  0,  0,  0,  0])
-  kdg.define_region(1, [ 1,  0,  0,  0, -1, -1, -1,  0,  0,  0])
-  kdg.define_region(2, [ 0,  1,  0,  0,  1,  0,  0, -1, -1,  0])
-  kdg.define_region(3, [ 0,  0,  1,  0,  0,  1,  0,  1,  0, -1])
-  kdg.define_region(4, [ 0,  0,  0,  1,  0,  0,  1,  0,  1,  1])

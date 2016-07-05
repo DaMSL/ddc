@@ -1,3 +1,6 @@
+"""Micro-Benchmark class
+  Used to gather metrics in code
+"""  
 import sqlite3
 import sys
 import os
@@ -13,7 +16,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
 HOME = os.environ['HOME']
 default_log_loc = HOME + '/ddc/results/'
@@ -23,6 +30,12 @@ dbDisabled = False
 
 
 class StatCollector:
+  """Defines basic capability to collect metrics. To Use:
+    1. Create the class
+    2. Invoke collect() to key-val pair to collect data (with label)
+    3. When done, invoke show() to display
+  File logging is automatically includs to the "default_log_loc" 
+  """
   def __init__(self, name, uid=None):
     setting = systemsettings()
     self.stat = OrderedDict()
@@ -46,7 +59,6 @@ class StatCollector:
     log.propagate = False
     self.log = log
 
-
   def collect(self, key, value):
     self.stat[key] = value
 
@@ -64,6 +76,7 @@ class StatCollector:
     self.stat = OrderedDict()    
 
   def postdb(self):
+    """ Not Fully Implemented """
     try:
       eid = db.get_expid(self.name)
       num = 0
@@ -83,6 +96,7 @@ class StatCollector:
 
 
 def scrap_cw(appl_name):
+  """ Legacy for backwards compatibility to collect stats from older files"""
   ts = None
   logdir=os.path.join(HOME, 'work', 'log', appl_name)
   data = {}
@@ -113,61 +127,10 @@ def scrap_cw(appl_name):
           timing.append((vals[0].strip(), vals[1].strip()))
       bench.append(timing)
 
-
   for k, v in sorted(data.items()):
     print(k, np.mean([float(p[1]) for p in v]))
 
 
-
-
-
-
-
-def genarr(sf = 1):
-  return np.random.random(int(sf * (2**27)))
-
-def iotest(sf=1):
-  for loc in ['/tmp', home+'/scratch', '/dev/shm/tmp']:
-    arr = genarr(sf)
-    data = []
-    print('\nDest: ', loc)
-    for i in range(5):
-      t = timecmd(lambda: np.save(loc+'/arr.npy', arr)) 
-      data.append(t)
-    print('Avg time [%s]  ' % loc, np.mean(data))
-
-
-def timecmd(cmd, verbose=True):
-  start = dt.datetime.now()
-  cmd()
-  end = dt.datetime.now()
-  diff = (end-start).total_seconds()
-  if verbose:
-    print ('  Time: ', diff)
-  return diff 
-
-
-  # home = os.environ['HOME']
-  # dcd = home + '/work/bpti/' + filename
-  # pdb = home + '/work/bpti/bpti-all.pdb'
-
-
-def timeld(n):
-  start = dt.datetime.now()
-  tr = md.load('bpti-all-1%03d.dcd'%n, top=pdb)
-  tr.atom_slice(tr.top.select('protein'), inplace=True)
-  filtered = tr.slice(idxfilt)
-  end = dt.datetime.now()
-  print ('Time: ', (end-start).total_seconds())
-  return filtered
-
-def timefld(n):
-  start = dt.datetime.now()
-  tr = md.load_frame('bpti-all-1%03d.dcd'%n, 23, top=pdb)
-  tr.atom_slice(tr.top.select('protein'), inplace=True)
-  end = dt.datetime.now()
-  print ('Time: ', (end-start).total_seconds())
-  return tr
 
 
 

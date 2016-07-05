@@ -35,10 +35,7 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 
 # EXPERIMENT_NUMBER = 1   # UNDERLAP (let it die)
-EXPERIMENT_NUMBER = 2   # OVERLAP (let it die)
-
-
-
+EXPERIMENT_NUMBER = 2   # OVERLAP (keep it alive)
 
 
 class RedisService(OverlayService):
@@ -899,7 +896,7 @@ class RedisClient(redis.StrictRedis):
       return False
 
 
-
+#### TESTING routines
 
 def test_redismaster():
   server = RedisService('testoverlay')
@@ -919,34 +916,29 @@ def test_redisclient(name):
     pipe.set('allkeys', str(allkeys))
   result = pipe.execute()
   print('Pipeline complete.')
-  # print('Promote. local slave')
-  # time.sleep(5)
-  # print('demote master')
-  # time.sleep(5)
-  # print('Waiting...')
   print(client.incr('foo'))
   print(client.get('foo'))
 
 
-# if __name__ == "__main__":
-#   parser = argparse.ArgumentParser()
-#   parser.add_argument('name')
-#   parser.add_argument('--client', action='store_true')
-#   parser.add_argument('--stop', action='store_true')
-#   args = parser.parse_args()
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument('name')
+  parser.add_argument('--client', action='store_true')
+  parser.add_argument('--stop', action='store_true')
+  args = parser.parse_args()
 
-#   if args.client:
-#     testClient(args.name)
-#     sys.exit(0)
+  if args.client:
+    testClient(args.name)
+    sys.exit(0)
 
-#   settings = systemsettings()
-#   settings.applyConfig('%s.json' % args.name)
+  settings = systemsettings()
+  settings.applyConfig('%s.json' % args.name)
 
-#   server = RedisService(args.name)
-#   if args.stop:
-#     server.stop()
-#   else:
-#     server.start()
+  server = RedisService(args.name)
+  if args.stop:
+    server.stop()
+  else:
+    server.start()
 
 
 

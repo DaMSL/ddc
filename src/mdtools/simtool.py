@@ -1,5 +1,6 @@
-#!/usr/bin/env python
-
+"""
+Methods to support simulation set up and execution
+"""
 import argparse
 import sys
 import os

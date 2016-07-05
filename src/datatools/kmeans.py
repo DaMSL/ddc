@@ -1,3 +1,7 @@
+"""
+KMeans Clustering implmentation based on DataScienceLab
+"""
+
 import numpy as np
 import numpy.linalg as LA
 from sklearn.cluster import KMeans
@@ -12,7 +16,6 @@ __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
-
 
 
 def KM_std(data, N):

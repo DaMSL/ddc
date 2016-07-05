@@ -1,9 +1,18 @@
+"""Implementation for data approximation. Reservoir Sampling is employed
+"""
+
 import pickle
 import numpy as np
 import logging
 import math
 
 from core.common import *
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 np.set_printoptions(precision=3, suppress=True)

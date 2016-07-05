@@ -4,6 +4,12 @@ import os
 import datatools.datareduce as datareduce
 import numpy as np
 
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
+
 logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
 def backProjection(db, index_list):

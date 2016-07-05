@@ -1,3 +1,6 @@
+"""
+Feaure Landscape
+"""
 import math
 
 import mdtraj as md
@@ -9,8 +12,11 @@ import core.ops as op
 from core.kdtree import KDTree
 
 
-
 class feal(object):
+  """ The feature landscape (feal) object defines a distribution over multiple
+  features
+  Current (initial) implementation defines class methods for  atemporal
+  """
 
   def __init__(self):
     pass

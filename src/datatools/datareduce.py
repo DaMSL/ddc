@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+"""
+Data Reduction Methods and techqniques
+"""
 
 import datetime as dt
 import os
@@ -20,17 +22,7 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-
 hyperspaces = ['cartesian', 'distance']
-
-# import pickle
-
-# ipca_p = pickle.dumps(ipca)
-# with open('ipca_pickled.dat', 'wb') as pout:
-#    pout.write(ipca_p)
-
-# pin = open('ipca_pickled.dat', 'rb')
-# ipca_in = pickle.loads(pin.read())
 
 def get_pairlist(traj):
   """Returns set of pairs of all atom indices from given trajectory

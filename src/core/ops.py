@@ -1,7 +1,15 @@
+"""Collection point for common operators used throughout the application
+"""
 import math
 import numpy as np
 import dateutil.parser as du
 import datetime as dt
+
+__author__ = "Benjamin Ring"
+__copyright__ = "Copyright 2016, Data Driven Control"
+__version__ = "0.1.1"
+__email__ = "ring@cs.jhu.edu"
+__status__ = "Development"
 
 def groupby (src):
   dest = {}

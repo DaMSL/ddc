@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+"""
+Methods to support analysis and operators working on/with DEShaw BPTI data
+"""
 
 import os
 from collections import namedtuple

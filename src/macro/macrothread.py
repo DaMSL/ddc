@@ -37,6 +37,9 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 
 class macrothread(object):
+  """ 
+  The Macrothread Abstract Class 
+  """
   __metaclass__ = abc.ABCMeta
 
   def __init__(self, fname, name):

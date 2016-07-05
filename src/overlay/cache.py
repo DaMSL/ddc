@@ -5,6 +5,8 @@
     Cache is designed to hold high dimensional points. An abstract
     class is provides for future implementation using differing
     cache and storage policies
+
+  STATUS:  Not Integrated into the project
 """
 import abc
 import os
