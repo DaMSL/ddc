@@ -8,7 +8,7 @@ import time
 import logging
 from collections import namedtuple, deque
 
-
+ 
 # For efficient zero-copy file x-fer
 import mdtraj as md
 import numpy as np
@@ -155,7 +155,7 @@ if __name__ == '__main__':
   parser.add_argument('-d', '--dcd')
   args = parser.parse_args()
 
-  catalog = redis.StrictRedis(port=6381, decode_responses=True)
+  catalog = redis.StrictRedis(port=6380, decode_responses=True)
 
   task = offlineAnalysis(catalog)
 

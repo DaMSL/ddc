@@ -410,6 +410,54 @@ class controlJob(macrothread):
 
 
       ###### EXPERIMENT #5:  BIASED (Umbrella) SAMPLER
+      if EXPERIMENT_NUMBER == 5:
+        if self.catalog.exists('label:deshaw'):
+          logging.info("Loading DEShaw historical points.... From Catalog")
+          rmslabel = [eval(x) for x in self.catalog.lrange('label:deshaw', 0, -1)]
+        else:
+          logging.info("Loading DEShaw historical points.... From File (and recalculating)")
+          rmslabel = deshaw.labelDEShaw_rmsd()
+
+        deshaw_samples = {b:[] for b in binlist}
+        for i, b in enumerate(rmslabel):
+          deshaw_samples[b].append(i)
+
+        coord_origin = []
+
+        conv_vals = np.array([v for k, v in sorted(convergence_rms.items())])
+        norm_pdf_conv = conv_vals / sum(conv_vals)
+        logging.info("Umbrella Samping PDF (Bootstrapping):")
+        sampled_distro_perbin = {b: 0 for b in binlist}
+
+        while numresources > 0:
+          # First sampling is BIASED
+          selected_bin = np.random.choice(len(binlist), p=norm_pdf_conv)
+          A, B = binlist[selected_bin]
+          sampled_distro_perbin[binlist[selected_bin]] += 1
+          if bincounts[selected_bin] is not None and bincounts[selected_bin] > 0:
+            # Secondary Sampling is Uniform
+            sample_num = np.random.randint(bincounts[selected_bin])
+            logging.debug('SAMPLER: selecting sample #%d from bin %s', 
+              sample_num, str(binlist[selected_bin]))
+            index = self.catalog.lindex('varbin:rms:%d_%d' % binlist[selected_bin], 
+              sample_num)
+            selected_index_list.append(index)
+            coord_origin.append(('sim', index, binlist[selected_bin], '%d-D'%A))
+            numresources -= 1
+          elif len(deshaw_samples[binlist[selected_bin]]) > 0:
+            index = np.random.choice(deshaw_samples[binlist[selected_bin]])
+            logging.debug('SAMPLER: selecting DEShaw frame #%d from bin %s', 
+              index, str(binlist[selected_bin]))
+            # Negation indicates an historical index number
+            selected_index_list.append(-index)
+            coord_origin.append(('deshaw', index, binlist[selected_bin], '%d-D'%A))
+            numresources -= 1
+          else:
+            logging.info("NO Candidates for bin: %s", binlist[selected_bin])
+
+
+
+      ###### EXPERIMENT #10:  MutiVariate Nearest Neighbor (MVNN) SAMPLER
       if EXPERIMENT_NUMBER == 10:
 
         # Create the KD Tree from all feature landscapes (ignore first 5 features)

@@ -50,7 +50,7 @@ class ExprAnl:
   def __init__(self, host='localhost', port=6379, adaptive_cent=False):
     self.r = redis.StrictRedis(port=port, host=host, decode_responses=True)
     # self.rms = [np.fromstring(i) for i in self.r.lrange('subspace:rms', 0, -1)]
-    self.seq = ['jc_'+x[0] for x in sorted(self.r.hgetall('anl_sequence').items(), key=lambda x:x[1])]
+    self.seq = ['jc_'+x[0] for x in sorted(self.r.hgetall('anl_sequence').items(), key=lambda x: int(x[1]))]
     self.conf=[self.r.hgetall(i) for i in self.seq]
     self.trlist = {}
     self.wells = [[] for i in range(5)]
@@ -61,7 +61,8 @@ class ExprAnl:
     self.feal_list = None
     self.checked_rmsd = []
     self.cent_ds = np.load('../bpti-alpha-dist-centroid.npy')
-    self.cent_c = np.load('../data/gen-alpha-cartesian-centroid.npy')
+    # self.cent_c = np.load('../data/gen-alpha-cartesian-centroid.npy')
+    self.cent_c = np.load('../data/init-centroids.npy')
     self.cw = [.92, .92, .96, .99, .99]  
 
     if adaptive_cent:
@@ -110,13 +111,13 @@ class ExprAnl:
         noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
         source_pts = np.array([noisefilt(self.trlist[trnum].xyz, i) for i in range(self.trlist[trnum].n_frames)])
       else:
-        source_pts = self.trlist[trnum]
-      self.rmsd_c[trnum] = [[LA.norm(self.cent_c[i]-pt) for i in range(5)] for pt in source_pts.xyz]
-      self.rmsd_cw[trnum] = [[self.cw[i]*LA.norm(self.cent_c[i]-pt) for i in range(5)] for pt in source_pts.xyz]
-      ds = dr.distance_space(source_pts)
-      self.rmsd_ds[trnum] = [[LA.norm(self.cent_ds[i]-pt) for i in range(5)] for pt in ds]
-      self.rmsd_dsw[trnum] = [[self.cw[i]*LA.norm(self.cent_ds[i]-pt) for i in range(5)] for pt in ds]
-    return self.rmsd_c[trnum]
+        source_pts = self.trlist[trnum].xyz
+      # self.rmsd_c[trnum] = [[LA.norm(self.cent_c[i]-pt) for i in range(5)] for pt in source_pts.xyz]
+      self.rmsd_cw[trnum] = [[self.cw[i]*LA.norm(self.cent_c[i]-pt) for i in range(5)] for pt in source_pts]
+      # ds = dr.distance_space(source_pts)
+      # self.rmsd_ds[trnum] = [[LA.norm(self.cent_ds[i]-pt) for i in range(5)] for pt in ds]
+      # self.rmsd_dsw[trnum] = [[self.cw[i]*LA.norm(self.cent_ds[i]-pt) for i in range(5)] for pt in ds]
+    return self.rmsd_cw[trnum]
 
   def feal(self, trnum, winsize=None, var=False):
     feal_list = []
@@ -149,11 +150,11 @@ class ExprAnl:
     tup = []
 
     # Proximity (feature 5..9)
-    for n, dist in enumerate(rms):
-      # tup.append(log_prox(dist))
-      maxd = 10.  #11.34
-      # tup.append(scaleto*max(maxd-dist, 0)/maxd)
-      tup.append(max(maxd-dist, 0))
+    # Normalized and adjusted to smooth implicit water
+    A, B = np.argsort(rms)[:2]
+    prox = op.makeLogisticFunc(scaleto, scaleto, (rms[B]+rms[A])/2)
+    for d in rms:
+      tup.append(prox(d))
 
     # Relative Distance (akin to LLE) (feature 10..19)
     for a in range(4):
@@ -178,15 +179,16 @@ class ExprAnl:
     else:
       return np.array(meanfeal)
 
-  def all_feal(self, force=False, method='c'):
-    if method == 'c':
-      rmsd = self.rmsd_c
-    elif method == 'cw':
-      rmsd = self.rmsd_cw
-    elif method == 'ds':
-      rmsd = self.rmsd_ds
-    else:
-      rmsd = self.rmsd_dsw
+  def all_feal(self, force=False, method='cw'):
+    # if method == 'c':
+    #   rmsd = self.rmsd_c
+    # elif method == 'cw':
+    #   rmsd = self.rmsd_cw
+    # elif method == 'ds':
+    #   rmsd = self.rmsd_ds
+    # else:
+    #   rmsd = self.rmsd_dsw
+    rmsd = self.rmsd_cw
     if self.feal_list is None or force:
       self.feal_list = op.flatten([[self.feal_atemp(i) for i in rmsd[tr]] for tr in rmsd.keys()])    
     return self.feal_list
@@ -376,18 +378,20 @@ class Reweight:
 
 
 
-def calcrmslabel(exp, centroids, load=False):
+def calcrmslabel(exp, centroids, theta=.33, noise=False, load=False):
   cw = [.92, .94, .96, .99, .99]
   rmslabel = []
   if load:
     pipe = exp.r.pipeline()
   for n, tr in sorted(exp.trlist.items()):
     numConf = tr.n_frames
-    nwidth = 10
-    noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
-    rms_filtered = np.array([noisefilt(tr.xyz, i) for i in range(numConf)])
-    # Notes: Delta_S == rmslist
-    rmslist_sv = calc_rmsd(rms_filtered, centroids, weights=cw)
+    if noise:
+      nwidth = 10
+      noisefilt = lambda x, i: np.mean(x[max(0,i-nwidth):min(i+nwidth, len(x))], axis=0)
+      src = np.array([noisefilt(tr.xyz, i) for i in range(numConf)])
+    else:
+      src = tr.xyz
+    rmslist_sv = calc_rmsd(src, centroids, weights=cw)
     for rms in rmslist_sv:
       A, B = np.argsort(rms)[:2]
       delta = np.abs(rms[B] - rms[A])

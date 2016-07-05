@@ -216,7 +216,7 @@ def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
 
 
 
-def conv(series, title, xlim=None, labelList=None, step=1, xlabel=None):
+def conv(series, title, xlim=None, ylim=None, labelList=None, step=1, xlabel=None):
   seriesList = [series[key] for key in elabels]
   colorList  = [ecolors[key] for key in elabels]
   plt.clf()
@@ -228,6 +228,8 @@ def conv(series, title, xlim=None, labelList=None, step=1, xlabel=None):
     plt.xlabel(xlabel)
   if xlim is not None:
     ax.set_xlim(xlim)
+  if ylim is not None:
+    ax.set_ylim(ylim)
   plt.legend()
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
@@ -393,7 +395,7 @@ def bargraph_simple(data, title, err=None):
 
 
 
-def feadist(data, title, err=None, pcount=None, norm=1, negval=False):
+def feadist(data, title, fname=None, err=None, pcount=None, norm=1, negval=False):
   plt.cla()
   plt.clf()
   numlabels = 5
@@ -427,8 +429,8 @@ def feadist(data, title, err=None, pcount=None, norm=1, negval=False):
   plt.axvline(9.9, color='k', linewidth=2)
   ymin = -norm if negval else 0
   ymax = norm
-  # plt.annotate('Count Obs with\nlowest RMSD', xy=(.1, -.1*norm))
-  # plt.annotate('Proximity to\nCentroids', xy=(5.1, -.1*norm))
+  plt.annotate('Count of Obs with\nlowest RMSD', xy=(.1, -2))
+  plt.annotate('Proximity to\nCentroids', xy=(5.1, -2))
   if pcount is not None:
     plt.annotate('HC Size: %d' % pcount, xy=(5.1, -.2*norm))
   # plt.annotate('Distance Delta for each pair of RMSD', xy=(10.1, -.1*norm))
@@ -444,9 +446,11 @@ def feadist(data, title, err=None, pcount=None, norm=1, negval=False):
     ax.set_ylim(-norm-1, norm+1)
   else:
     ax.set_ylim(-1, norm)
-  fig.suptitle(title)
+  fig.suptitle(title, va='baseline')
   plt.tight_layout()
-  plt.savefig(SAVELOC + '/' + title + '.png')
+  if fname is None:
+    fname = title
+  plt.savefig(SAVELOC + '/' + fname + '.png')
   plt.close()  
   plt.show()
 
@@ -478,9 +482,10 @@ def histogram(data, title, ylim=None):
   ax.set_xlim(0, nbars)
   if ylim is not None:
     ax.set_ylim(ylim)
-  plt.xticks(X+.5, sets)
-  plt.legend()
-  fig.suptitle(title)
+  plt.xticks(X+.5, sets, fontsize=20)
+  plt.yticks(fontsize=18)
+  plt.legend(prop={'size': 16})
+  # fig.suptitle(title, va='top', fontsize=32)
   fig.set_size_inches(16,6)
   plt.tight_layout()
   plt.savefig(SAVELOC + '/histogram' + '.png')
@@ -638,7 +643,6 @@ def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap
   # # put the major ticks at the middle of each cell
   ax.set_xticks(np.arange(len(rows))+.5)
   ax.set_yticks(np.arange(len(cols))+.5)
-
   vmin = 0
   if vmax is None:
     vmax = 1. if np.max(data) <= 1. else np.max(data)
@@ -665,7 +669,21 @@ def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap
   plt.show()
 
 
-
+def heatmap_bar(data, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
+  rows = [5, 10, 25, 50, 75, 100, 200]
+  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  heatmap = ax.pcolormesh(np.asarray(data), cmap=colmap, vmax=vmax)
+  fig.colorbar(heatmap)
+  ax.set_yticklabels(rows)
+  ax.set_yticks(np.arange(len(rows))+.5)
+  fig.set_size_inches(16,2)
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
+  plt.close()  
+  plt.show()
 
 
 

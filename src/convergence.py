@@ -71,13 +71,13 @@ el2 = {label: redis.StrictRedis(port=6401+i, decode_responses=True) \
   for i, label in enumerate(['elas5', 'elas10', 'elas15', 'elas25', 'elas50'])}
 
 
-colormap = {'Uniform': "red",
-            'Biased': 'olive',
-            'Parallel':'purple', 
-            'Serial':'blue',
-            'MVNN': "darkgreen", 
+colormap = {'Uniform': "darkgreen",
+            'Biased': 'mediumblue',
+            'Parallel':'maroon', 
+            'Serial':'darkorange',
+            'MVNN': "darkmagenta", 
             'Knapsack': "slategrey", 
-            'reweight':'y',
+            'Reweight':'r',
             'runtime_1000': "r",
             'runtime_250': "b", 
             'elas_base': "r", 'elas_500': "g", 'elas_250': "b",
@@ -87,7 +87,8 @@ labelList = [('serial','Serial'),
              ('parallel','Parallel'), 
              ('uniform3','Uniform'), 
              ('biased4','Biased'), 
-             ('feal1','MVNN')] 
+             ('feal1','MVNN'),
+             ('reweight4','Reweight')] 
 labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
 
 
@@ -100,10 +101,10 @@ ntr = {}
 
 def preload_data():
   global nex, ntr
-  ser = F.ExprAnl(port=6380); ser.load(76)
-  para = F.ExprAnl(port=6381)
-  para.loadtraj(list(range(23)), first=26500)
-  _=[para.rms(i) for i in range(25)]
+  ser = F.ExprAnl(port=6380); ser.load(128)
+  para = F.ExprAnl(port=6381); para.load(23)
+  # para.loadtraj(list(range(23)), first=26500)
+  # _=[para.rms(i) for i in range(25)]
   unif = F.ExprAnl(port=6382); unif.load(770)
   bias = F.ExprAnl(port=6383); bias.load(770)
   rwgt = F.ExprAnl(port=6387); rwgt.load(750)
@@ -114,9 +115,8 @@ def preload_data():
   print((dt.datetime.now()-st).total_seconds())
 
   labels=['C0', 'C1', 'C2', 'C3', 'C4', 'S0', 'S1', 'S2', 'S3', 'S4', '0-1', '0-2','0-3', '0-4', '1-2', '1-3','1-4','2-3','2-4','3-4']
-
   nex = {'Serial':ser, 'Parallel':para,'Uniform':unif,'Biased':bias, 'MVNN':mvnn, 'Reweight':rwgt}
-  ntr = {'Serial':76, 'Parallel':23,'Uniform':770,'Biased':750, 'MVNN':1722, 'Reweight':750}
+  ntr = {'Serial':128, 'Parallel':23,'Uniform':770,'Biased':770, 'MVNN':1722, 'Reweight':750}
 
 
 
@@ -129,10 +129,11 @@ def obs2tw(obslist):
   return out
 
 def getobs(name):
+  burnin = {'serial':0, 'parallel':0,'uniform3':25000,'biased4':50000, 'feal1':25000, 'reweight4':50000}
   eid = db.get_expid(name)
   t = db.runquery('select idx, obs from obs where expid=%d order by idx'%eid)
-  return [i[1] for i in t]
-
+  b = 0 if name not in burnin else burnin[name]
+  return [i[1] for i in t[b:b+510000]]
 
 def getdistinct(obslist):
   V = set()
@@ -296,8 +297,9 @@ def convtw(data, slist=None, cumulative=False, STEPSIZE=25):
 
 def plotconv_tw(data, STEPSIZE=5, xlim=None, labels=None):
   global colormap
-  colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
   labelList = [(k,k) for k in sorted(data.keys())] if labels is None else labels
+  colorList = [colormap[L] for e,L in labelList]
+  # colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
   for A in [0, 1, 2, 3, 4]:
     print('Plotting graphs for state %d' % A)
     plt.clf()
@@ -306,7 +308,7 @@ def plotconv_tw(data, STEPSIZE=5, xlim=None, labels=None):
     # for (e, L), C in zip(labelList, colorList):
     for e, L in labelList:
       X = data[e]['wtcnt']['%d-Well' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L)
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L, linewidth=2)
     plt.title('Convergence for State %d (WELL)'% A)
     plt.xlabel('Convergence: State %d WELL (total time in ns)'%A)
     if xlim is not None:
@@ -320,7 +322,7 @@ def plotconv_tw(data, STEPSIZE=5, xlim=None, labels=None):
     maxlen = min([len(data[e]['wtcnt']['%d-Tran' %A]) for e in data.keys()])
     for e, L in labelList:
       X = data[e]['wtcnt']['%d-Tran' %A][:maxlen]
-      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L)
+      plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L, linewidth=2)
     plt.title('Convergence for State %d (Transitions)'% A)
     plt.xlabel('Convergence: State %d TRANSITIONS (total time in ns)'%A)
     if xlim is not None:
@@ -329,11 +331,11 @@ def plotconv_tw(data, STEPSIZE=5, xlim=None, labels=None):
     plt.savefig(SAVELOC + 'conv-tran-%s.png' % (A))
     plt.close()
 
-
-def plottw_agg(data, STEPSIZE=5, xlim=None, labels=None):
+def plottw_agg(data, STEPSIZE=5, xlim=None, labels=labelList):
   global colormap
-  colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
+  # colorList = plt.cm.brg(np.linspace(0, 1, len(data.keys())))
   labelList = [(k,k) for k in sorted(data.keys())] if labels is None else labels
+  colorList = [colormap[L] for e,L in labelList]
   cl = ['3-Tran', '1-Tran', '0-Tran', '0-Well', '4-Well', '1-Well', '4-Tran', '3-Well', '2-Tran', '2-Well']
   agg = {name: [] for name in data.keys()}  
   for name in data.keys():
@@ -345,7 +347,7 @@ def plottw_agg(data, STEPSIZE=5, xlim=None, labels=None):
   maxlen = min([len(agg[e]) for e in data.keys()])
   for e, L in labelList:
     X = agg[e][:maxlen]
-    plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L)
+    plt.plot(np.arange(len(X))*(STEPSIZE), X, color=colormap[L], label=L, linewidth=2)
   plt.title('Total Convergence')
   plt.xlabel('Total time (in ns)')
   if xlim is not None:
@@ -355,19 +357,20 @@ def plottw_agg(data, STEPSIZE=5, xlim=None, labels=None):
   plt.close()
 
 
-elist = ['serial', 'parallel', 'uniform3', 'biased4', 'feal1']  #, 'knap1'] 
+elist = ['serial', 'parallel', 'uniform3', 'biased4', 'feal1', 'reweight4']  #, 'knap1'] 
              # ('knap1','Knapsack')] 
 
 def graphexprA(elist=elist, step=5, labels=labelList):
   data = {name: {'obs': getobs(name)} for name in elist}
   data = convtw(data, STEPSIZE=step)
-  plotconv_tw(data, STEPSIZE=step, xlim=(20,200), labels=labelList)
+  plotconv_tw(data, STEPSIZE=step, xlim=(25,500), labels=labelList)
+  plottw_agg(data, STEPSIZE=step, xlim=(25,500), labels=labelList)
+  return data
 
 def graphagg(elist=elist, step=5, labels=labelList):
   data = {name: {'obs': getobs(name)} for name in elist}
   data = convtw(data, STEPSIZE=step)
   plottw_agg(data, STEPSIZE=step, xlim=(20,200), labels=labelList)
-
 
 def calc_feal(r):
   rmslist = [np.fromstring(i) for i in r.lrange('subspace:rms', 0, -1)]
@@ -376,7 +379,6 @@ def calc_feal(r):
   for f in feal:
     r.rpush('subspace:feal', f.tostring())
   pipe.execute()
-
 
 def plotsep(boot, step=10, tag=''):
   N = min([len(v) for v in boot.values()])
@@ -433,12 +435,32 @@ MASK = [[5, 10, 11, 12, 13],
         [7, 11, 14, 17, 18],
         [8, 12, 15, 17, 19],
         [9, 13, 16, 18, 19]]
-def calc_boot(ex, size, method=None, limit=375000, state=None):
+def calc_boot(ex, size, method=None, burnin=0, limit=500000, force=False, state=None):
   print(ex.r.get('name'), '-', end=' ')
-  if method is None:
-    feal = ex.all_feal()[:limit]
-  else:
-    feal = ex.all_feal(True, method)[:limit]
+  feal = ex.all_feal(force=force)[burnin:limit]
+  i = 0
+  boot = []
+  ci = []
+  while i+size < len(feal):
+    arr = np.array(feal[i:i+size]).T
+    feal_ci = []
+    straps = np.array([bootstrap_std(arr[feat]) for feat in range(20)])
+    for feat in range(20):
+      feal_ci.append(straps[feat][1])
+    ci.append(feal_ci)
+    # ci.append(np.mean(arr, axis=1))
+    feal_ci = []
+    for feat in range(20):
+      calc = bootstrap_std([x[feat] for x in ci])
+      feal_ci.append(calc[1]/calc[0])
+    boot.append(feal_ci)
+    i += size
+  return boot
+
+
+def calc_boot_orig(ex, size, method=None, limit=412000, state=None):
+  print(ex.r.get('name'), '-', end=' ')
+  feal = ex.all_feal()[:limit]
   i = 0
   boot = [[] for k in range(5)]
   ci = [[] for k in range(5)]
@@ -448,20 +470,17 @@ def calc_boot(ex, size, method=None, limit=375000, state=None):
       feal_ci = []
       straps = np.array([bootstrap_std(arr[feat]) for feat in range(5, 20)])
       for feat in MASK[state]:
-        # if np.isnan(straps[feat-5].any()):
-        #   feal_ci.append(1.)
-        # else:
-          # feal_ci.append(straps[feat-5][1]/straps[feat-5][0])
           feal_ci.append(straps[feat-5][1])
       ci[state].append(feal_ci)
       feal_ci = []
       for feat in range(5):
         calc = bootstrap_std([x[feat] for x in ci[state]])
-        # feal_ci.append(calc[1]/calc[0])
         feal_ci.append(calc[1])
       boot[state].append(feal_ci)
     i += size
   return boot
+
+
 
 # def boot:
     # boot.append(op.bootstrap_block(feal[:i+size], size))
@@ -563,7 +582,6 @@ def graphexprB(elist, step=5, tw=True):
       series[tw][k] = data
   for k, v in series.items():
     P.lines(v, 'convB-'+k, step=step)
-
 
 def graphexprC(elist, step=5, tw=True):
   obsbin = {name: getobs(name) for name in elist}
@@ -705,6 +723,30 @@ def elas_boot(ex, size, method=None, limit=375000, state=None):
     snum += 1
   return plotlist
 
+
+
+def sequence_expr(eid):
+  sw_list=db.runquery('select start,time,numobs from sw where expid=%d order by start'%eid)
+  print('Simulations read: ', len(sw_list))
+  end_ts = lambda x: du.parse(x[0]).timestamp() + x[1]
+
+  # Account for any gaps in execution & adjust (ensure real time is logically grouped)
+  ts_0 = du.parse(sw_list[0][0]).timestamp()
+  last = ts_0
+  sw_seq = []
+  gap = 0
+  cutoff = 30*60  # 30 min gap is bad
+  swbystart = sorted(sw_list, key=lambda i: i[0])
+  for s, t, n in swbystart:
+    sim_start = du.parse(s).timestamp() - ts_0
+    if sim_start - last > cutoff:
+      print('FOUND GAP:', int(sim_start - last))
+      gap += sim_start - last + cutoff
+    new_start = sim_start - gap
+    end = new_start + t
+    sw_seq.append({'start': new_start, 'end':end, 'numobs':n})
+    last = sim_start
+  return sw_seq
 
 def all_elas():
   rlist = [5, 10, 25, 50, 75, 100, 200]
