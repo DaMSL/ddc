@@ -32,7 +32,7 @@ def get_pairlist(traj):
   pairs = np.array([(i, j) for i in range(N-1) for j in range(i+1, N)])
   return pairs
 
-def distance_space(traj, top=None):
+def distance_space(traj, top=None, pairs=None):
   """Convert a trajectory (or traj list) to distance space
      By default, this will compute ALL pair-wise distances and return
      a vector (or list of vectors if list of trajectories is provided)
@@ -46,10 +46,12 @@ def distance_space(traj, top=None):
     else:
       traj = md.Trajectory(traj, top)
   if isinstance(traj, list):
-    pairs = get_pairlist(traj[0])
+    if pairs is None:
+      pairs = get_pairlist(traj[0])
     return [md.compute_distances(k,pairs) for k in traj]
   else:
-    pairs = get_pairlist(traj)
+    if pairs is None:
+      pairs = get_pairlist(traj)
     return md.compute_distances(traj,pairs)
 
 def calc_var(xyz, size_ns, framestep, slide=None):

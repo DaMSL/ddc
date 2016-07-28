@@ -1,16 +1,16 @@
-import os
+import os 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
+import matplotlib.ticker as ticker
 
 from collections import OrderedDict
 import numpy as np
 
 HOME = os.environ['HOME']
 SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
-
 
 
 elabels = ['Serial', 'Parallel','Uniform','Biased', 'MVNN', 'Reweight']
@@ -21,6 +21,25 @@ ecolors = {'Serial': 'darkorange',
            'MVNN': 'darkmagenta', 
            'Reweight': 'red'}
 
+arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim']
+
+def graph_args(kwargs):
+  arg = {k: kwargs.get(k, None) for k in arg_list}
+  if arg['ylabel'] is not None:
+    plt.ylabel(arg['ylabel'])
+  if arg['xlabel'] is not None:
+    plt.xlabel(arg['xlabel'])
+  plt.ylim(arg['ylim'])
+  plt.xlim(arg['xlim'])
+  title = 'graph' if arg['title'] is None else arg['title']
+  plt.title(title)
+  fname = title if arg['fname'] is None else arg['fname']
+  plt.savefig(SAVELOC + '/' + fname + '.png')
+  plt.close()
+
+
+
+
 # ecolors = {'Serial': '#FF8C00', 
 #            'Parallel': '#803030',
 #            'Uniform': '#187018',
@@ -29,17 +48,30 @@ ecolors = {'Serial': 'darkorange',
 #            'Reweight': 'red'}
 ####  SCATTER PLOTS
 
-def scatter(X, Y, title, size=1, L=None):
+def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, xlim=None, ylim=None, ):
   plt.cla()
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   if L is None:
     plt.scatter(X, Y, s=size, lw=0)
+    # plt.plot(X, Y)
   else:
     plt.scatter(X, Y, c=L, s=size, lw=0)
-  plt.ylabel(title)
+  # for i in range(0, 10000, 1000):
+  #   plt.axvline(i, color='k')
+  plt.title(title)
+  if ylabel is not None:
+    plt.ylabel(ylabel)
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+  if ylim is not None:
+    plt.ylim(ylim)
+  if xlim is not None:
+    plt.xlim(xlim)
   # plt.legend()
-  plt.savefig(loc + '/' + title + '.png')
+  if fname is None:
+    fname = title
+  plt.savefig(loc + '/' + fname + '.png')
   plt.close()
 
 def scatter3D(X, Y, Z, title, L=None):
@@ -149,8 +181,47 @@ def scat_layered (series, title, size=10, xlabel=None, xlim=None):
 
 
 
-#####   LINE Graph
+def deshaw_rmsd(Y, title, label, size=1, fname=None):
+  plt.cla()
+  plt.clf()
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  col = ['red', 'blue', 'green', 'purple', 'black']
+  X = np.arange(len(Y))
+  colors = [col[l] for l in label]
+  # print(colors[230:240])
+  plt.scatter(X, Y, color=colors, s=size)
+  plt.xlim(0, len(Y))
+  plt.title(title)
+  patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(col)]
+  plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
+  if fname is None:
+    fname = title
+  plt.savefig(loc + '/' + fname + '.png')
+  plt.close()
 
+def step_rmsd(Y, title, label, fname=None, ylim=None):
+  plt.cla()
+  plt.clf()
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  col = ['red', 'blue', 'green', 'purple', 'black']
+  colors = [col[l] for l in label]
+  x0 = 0
+  for (x, y), L in zip(Y, label):
+    plt.plot((x0, x0+x), (y, y), color=col[L])
+    x0 += x
+  plt.xlim(0, x0)
+  plt.title(title)
+  patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(col)]
+  plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
+  if fname is None:
+    fname = title
+  plt.savefig(loc + '/' + fname + '.png')
+  plt.close()
+
+
+
+#####   LINE Graph
+ 
 def line(X, title):
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
@@ -172,6 +243,24 @@ def linegraphcsv(X, title, nolabel=False):
   """ Plots line series for a csv list
   """
 
+def steps(data, title, ylabel=None):
+  plt.clf()
+  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  for d, col in zip(data, ('b', 'g', 'k')):
+    x0 = 0
+    for x,y in d:
+      plt.plot((x0, x0+x), (y,y), c=col)
+      x0 += x
+  if ylabel is not None:
+    plt.ylabel(ylabel)
+  plt.xlabel('Time (in ps)')
+  patches = [mpatches.Patch(color='b', label='Biased'),
+             mpatches.Patch(color='g', label='Uniform'), 
+             mpatches.Patch(color='k', label='Naive')]
+  plt.legend(handles=patches, loc='lower right', prop={'family': 'monospace'})  
+  plt.legend()
+  plt.savefig(loc + '/' + title + '.png')
+  plt.close()  
 
 def seriesLines(X, series, title, xlabel=None):
   labelList = sorted(series.keys())
@@ -188,12 +277,11 @@ def seriesLines(X, series, title, xlabel=None):
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-
-def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
+def lines(series, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
   if isinstance(series, list):
     seriesList = series
-    if labelList is None:
-      labelList = ['Series %d' % (i+1) for i in range(len(seriesList))]
+    # if labelList is None:
+    labelList = ['Series %d' % (i+1) for i in range(len(seriesList))]
   elif isinstance(series, dict):
     labelList = sorted(series.keys())
     seriesList = [series[key] for key in labelList]
@@ -205,14 +293,17 @@ def lines(series, title, xlim=None, labelList=None, step=1, xlabel=None):
   ax = plt.subplot(111)
   for X, C, L in zip(seriesList, colorList, labelList):
     plt.plot(np.arange(len(X))*(step), X, color=C, label=L)
-  plt.title(title)
-  if xlabel is not None:
-    plt.xlabel(xlabel)
-  if xlim is not None:
-    ax.set_xlim(xlim)
-  plt.legend()
-  plt.savefig(SAVELOC + '/' + title + '.png')
-  plt.close()
+  plt.legend(loc='upper left')
+  graph_args(kwargs)
+  # plt.title(title)
+  # if xlabel is not None:
+  #   plt.xlabel(xlabel)
+  # if xlim is not None:
+  #   ax.set_xlim(xlim)
+  # plt.savefig(SAVELOC + '/' + title + '.png')
+  # plt.close()
+
+
 
 
 
@@ -255,9 +346,9 @@ def transition_line(X, A, B, title='', trans_factor=.33):
   gradB = crossover + np.argmax(np.gradient(X[crossover:zoneB]))
   thetaA = X[gradA]
   thetaB = X[gradB]
-  print('states',A,B, sep=',')
-  print('idxlist',zoneA, gradA, gradB, zoneB, sep=',')
-  print('theta',thetaA, thetaB, sep=',')
+  # print('states',A,B, sep=',')
+  # print('idxlist',zoneA, gradA, gradB, zoneB, sep=',')
+  # print('theta',thetaA, thetaB, sep=',')
 
   # ID # Pts in each
   a_pts  = gradA
@@ -265,7 +356,7 @@ def transition_line(X, A, B, title='', trans_factor=.33):
   ba_pts = gradB - crossover
   b_pts  = len(X) - gradB
 
-  print('numpts',a_pts,ab_pts,ba_pts, b_pts,sep=',')
+  # print('numpts',a_pts,ab_pts,ba_pts, b_pts,sep=',')
 
   plt.scatter(crossover, X[crossover], color='r', s=30, marker='o', label='Crossover')
   plt.scatter(gradA, X[gradA], color='g', s=30, marker='o', label='LocalMax (%d,%d)'%(A,B))
@@ -504,6 +595,18 @@ def pie(data, title):
   plt.close()
 
 
+def stateviz(data, title):
+  labelList = [0,1,2,3,6]
+  plt.clf()
+  ax = plt.subplot(111)
+  circle = plt.Circle((0,0), 1, fill=False)
+  plt.pie(data, labels=labelList, radius=.5, startangle=90)
+  ax.add_artist(circle)
+  plt.title(title)
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/pie_' + title + '.png')
+  plt.close()
+
 
 
 
@@ -628,6 +731,7 @@ cdict = {
 mycmap = LinearSegmentedColormap('mycmap', cdict)
 plt.register_cmap(cmap=mycmap)
 
+
 def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.cla()
@@ -667,6 +771,93 @@ def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap
   plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
   plt.close()  
   plt.show()
+
+def heatmap_simple(data, title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
+  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  vmin = min(0, np.min(data))
+  if vmax is None:
+    vmax = np.max(data)
+
+  # heatmap = ax.matshow(data, interpolation='nearest')
+  # fig.colorbar(heatmap)
+  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
+  # heatmap = ax.pcolormesh(data, cmap='OrRd')
+  # heatmap = ax.pcolormesh(data, cmap=colmap)
+  fig.colorbar(heatmap)
+
+  # Lcolor = ['k', 'grey', 'r', 'g', 'b']
+  # if labels is None:
+  #   print("LABEL MARKGIN IS ON")
+  #   return
+  # for i, L in enumerate(labels):
+  #   plt.scatter(i, 118, color=Lcolor[L], size=2)
+
+  # # put the major ticks at the middle of each cell
+      
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+
+  if xlabel is not None:
+    plt.ylabel(ylabel)
+
+  ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*nsscale))
+  ax.xaxis.set_major_formatter(ticks)
+  ax.yaxis.set_major_formatter(ticks)
+
+  fig.suptitle('Heatmap: '+title)
+  # fig.set_size_inches(16,12)
+  plt.tight_layout()
+  if fname is None:
+    fname = title
+  plt.savefig(SAVELOC + '/heatmap_' + fname + '.png')
+  plt.close()  
+  plt.show()
+
+
+def rmsd_matrix(data, labels, title, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
+  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  vmin = min(0, np.min(data))
+  if vmax is None:
+    vmax = np.max(data)
+
+  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
+  fig.colorbar(heatmap)
+
+  offset = len(data)/5
+
+  for x, y in enumerate(labels):
+    plt.scatter(x, offset*y+(offset/2), color='k')
+
+  for i in range(5):
+    plt.annotate('State %d' % i, xy=(10, 10+(offset/2)+offset*i))
+
+
+  if xlabel is not None:    plt.xlabel(xlabel)
+  if xlabel is not None:    plt.ylabel(ylabel)
+
+  plt.xlim(0, len(data))
+  plt.ylim(0, len(data))
+
+  ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*nsscale))
+  ax.xaxis.set_major_formatter(ticks)
+  ax.yaxis.set_major_formatter(ticks)
+
+  fig.suptitle('DEShaw: '+title)
+  # fig.set_size_inches(16,12)
+  plt.tight_layout()
+  if fname is None:
+    fname = title
+  plt.savefig(SAVELOC + '/heatmap_' + fname + '.png')
+  plt.close()  
+  plt.show()
+
+
 
 
 def heatmap_bar(data, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
@@ -800,3 +991,4 @@ def printtiming(bench):
   for k in markpts:
     if len(totals[k]) > 0:
       print ('%-22s  %6.2f' % (k, np.mean(totals[k])))
+

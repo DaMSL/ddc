@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import math
 import redis
-
+ 
 from numpy import linalg as LA
 from scipy import ndimage
 
@@ -36,9 +36,48 @@ def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None, weights=N
     # TODO:  Check Axis here
     rmsd[n] = np.array([cw[i]*LA.norm(pt - centroid[i]) for i in range(5)])
   return rmsd
+ 
+
+def calc_rmsd2(traj, centroid):
+  """Calculate the RMSD from each point in traj to each of the centroids
+  Input passed can be either a trajectory or an array-list object
+  Title, if defined, will be used in the output filename
+  """
+  # TODO: Check dimenstionality of source points and centroid for given space
+  observations = traj.xyz if isinstance(traj, md.Trajectory) else traj
+  if observations.shape[1:] != centroid.shape[1:]:
+    raise ValueError('Trajectory shape, %s, does match centroid shape, %s' %
+      (observations.shape[1:], centroid.shape[1:]))
+  rmsd = np.zeros(shape=(len(observations), len(centroid)))
+  for n, pt in enumerate(observations):
+    # TODO:  Check Axis here
+    rmsd[n] = np.array([LA.norm(pt - centroid[i]) for i in range(5)])
+  return rmsd
 
 
 
+def calc_cmd(alpha, beta, r_0=7.5):
+  # Cacl Ca, Cb:
+  n_atoms = len(alpha)
+  Ca = np.ones(shape=(n_atoms, n_atoms))
+  Cb = np.ones(shape=(n_atoms, n_atoms))
+  sum_ab = 0
+  deb = 0
+  for i in range(n_atoms):
+    for j in range(n_atoms):
+      if i == j:
+        continue
+      ra_ij = LA.norm(alpha[i] - alpha[j])
+      if deb%1000 == 0:
+        print(ra_ij)
+      deb += 1
+      ra_ij /= r_0
+      Ca[i][j] = (1 - np.power(ra_ij, 2)) / (1 - np.power(ra_ij, 3))
+      rb_ij = LA.norm(beta[i] - beta[j]) / r_0
+      Cb[i][j] = (1 - np.power((rb_ij), 2)) / (1 - np.power((rb_ij), 3))
+      sum_ab += np.power((Ca[i][j] - Cb[i][j]), 2)
+  Nab = np.sqrt(np.sum(Ca) * np.sum(Cb))
+  return np.sqrt(sum_ab / Nab)
 
 
 def calc_deshaw_centroid_alpha_cartesian(ptlist=None):

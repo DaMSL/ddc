@@ -1,6 +1,6 @@
 """
 Methods to support analysis and operators working on/with DEShaw BPTI data
-"""
+""" 
 
 import os
 from collections import namedtuple
@@ -47,7 +47,8 @@ topo = topo_prot
 FILTER = {
       'minimal': topo.top.select_atom_indices('minimal'),
       'heavy'  : topo.top.select_atom_indices('heavy'),
-      'alpha'  : topo.top.select_atom_indices('alpha')
+      'alpha'  : topo.top.select_atom_indices('alpha'),
+      'protein'  : topo.top.select('protein')
     }
 
 topo_alpha = topo_prot.atom_slice(FILTER['alpha'])
@@ -115,16 +116,32 @@ def load_all_traj():
     print((end-start).total_seconds())
   return tr
 
-def loadpts(skip=40, filt=None):
+def load_all_traj_skip(skip=200):
+  """Load all pre-labeled states from DEShaw (as list of int)
+  """
+  pdb='/bpti/bpti-prot/bpti-prot.pdb'
+  dcd = lambda x: '/bpti/bpti-prot/bpti-prot-%02d.dcd' % x
+  tr = []
+  for i in range(42):
+    print ('loading ', i)
+    tr.append(md.load(DCD_PROT(i), top=PDB_PROT, stride=skip))
+  return tr
+
+
+def loadpts(skip=40, filt=None, ref_frame=None):
   """Loads all DEShaw Points as one long NDarray. Skip value is used 
   to load fewer frames
   """
   pts = []
   for i in range(42):
     print('loading file: ', i)
-    traj = md.load(DCD_PROT(i), top=PDB_PROT, stride=skip)
     if filt is not None:
-      traj.atom_slice(filt, inplace=True)
+      traj = md.load(DCD_PROT(i), top=PDB_PROT, atom_indices=filt, stride=skip)
+    else:
+      traj = md.load(DCD_PROT(i), top=PDB_PROT, stride=skip)
+    traj.center_coordinates()
+    if ref_frame is not None:
+      traj.superpose(ref_frame)
     for i in traj.xyz:
       pts.append(i)
   return np.array(pts)
