@@ -57,8 +57,10 @@ def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, x
     # plt.plot(X, Y)
   else:
     plt.scatter(X, Y, c=L, s=size, lw=0)
-  # for i in range(0, 10000, 1000):
-  #   plt.axvline(i, color='k')
+  col = ['red', 'blue', 'green', 'purple', 'black']
+  patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(col)]
+  plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
+
   plt.title(title)
   if ylabel is not None:
     plt.ylabel(ylabel)
@@ -222,7 +224,7 @@ def step_rmsd(Y, title, label, fname=None, ylim=None):
 
 #####   LINE Graph
  
-def line(X, title):
+def line(X, title, vlines=[]):
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   if isinstance(X, dict):
@@ -234,6 +236,8 @@ def line(X, title):
   else:
     print("Not Implemented for:", str(type(X)))
     return
+  for v in vlines:
+    plt.axvline(v, color='k')
   plt.xlabel(title)
   plt.legend()
   plt.savefig(loc + '/' + title + '.png')
@@ -772,7 +776,7 @@ def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap
   plt.close()  
   plt.show()
 
-def heatmap_simple(data, title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
+def heatmap_simple(data, title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, vlines=[], colmap='gnuplot2_r'):
   SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
   plt.cla()
   plt.clf()
@@ -795,8 +799,10 @@ def heatmap_simple(data, title, labels=None, fname=None, nsscale=1, vmax=None, x
   # for i, L in enumerate(labels):
   #   plt.scatter(i, 118, color=Lcolor[L], size=2)
 
-  # # put the major ticks at the middle of each cell
-      
+  for v in vlines:
+    plt.axvline(v, color='k', linewidth=1)
+    plt.axhline(v, color='k', linewidth=1)
+     
   if xlabel is not None:
     plt.xlabel(xlabel)
 

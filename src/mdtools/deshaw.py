@@ -40,7 +40,9 @@ label =namedtuple('window', 'time state')
 
 #  GLOBAL Topology and Filter data
 # TODO: Move to class
-topo_all = md.load(PDB_ALL)
+if os.path.exists(PDB_ALL):
+  topo_all = md.load(PDB_ALL)
+
 topo_prot = md.load(PDB_PROT)
 topo = topo_prot
 
@@ -91,8 +93,6 @@ def loadlabels_aslist(filename=None):
   # Account for the last one:
   label.append(label[-1])
   return label
-
-labels = loadlabels_aslist()
 
 def getLabelList(labels):
   """Get list of states (future: for dynamic state discovery)
