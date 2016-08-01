@@ -20,6 +20,21 @@ class SemiConform(object):
     SemiConform.glid += 1
 
 
+class Conform(object):
+  glid = 0
+  def __init__(self, length, rms, dih, label):
+    self.id = Conform.glid
+    self.length = length
+    self.rms = rms
+    self.dih = dih
+    self.label = label
+    self.next = None
+    self.prev = None
+    Conform.glid += 1
+
+
+
+
 def collect_ministable(traj, theta=.1):
   fnum = 0
   windows=[]
@@ -208,6 +223,7 @@ def rms_window_mean(A, theta=.5, min_length=10):
   return window_list
 
 
+
 def spatio_temp_cluster(A, theta=.5, min_length=10):
   N = len(A)
   M = rmsd_matrix(A)
@@ -234,3 +250,19 @@ def spatio_temp_cluster(A, theta=.5, min_length=10):
   if t-start >= min_length:
     window_list.append((start, t-1))
   return window_list
+
+
+
+def read_log(fname):
+  data = [0]
+  with open(fname) as src:
+    for line in src.readlines():
+      if line.startswith('Output'):
+        elm = line.split()
+        if elm[6][:-1].isdigit():
+          data.append(int(elm[6][:-1]))
+        else:
+          print("BAD Format in log file: ", line)
+          break
+  return data
+

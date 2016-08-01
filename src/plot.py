@@ -23,6 +23,10 @@ ecolors = {'Serial': 'darkorange',
 
 arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim']
 
+def prep_graph():
+  plt.cla()
+  plt.clf()
+
 def graph_args(kwargs):
   arg = {k: kwargs.get(k, None) for k in arg_list}
   if arg['ylabel'] is not None:
@@ -75,6 +79,57 @@ def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, x
     fname = title
   plt.savefig(loc + '/' + fname + '.png')
   plt.close()
+
+def scatter2D(X, Y, title, size=1, **kwargs):
+  prep_graph()
+  plt.scatter(X, Y, s=size, lw=0)
+  graph_args(kwargs)
+
+
+def network2D(nodeList, edgeList, **kwargs):
+  prep_graph()
+  fig, ax = plt.subplots()
+  for n0, n1 in edgeList:
+    x0, y0 = nodeList[n0]['x'], nodeList[n0]['y']
+    x1, y1 = nodeList[n1]['x'], nodeList[n1]['y']
+    plt.plot((x0, x1), (y0, y1), linewidth=1, zorder=1, color='lightgrey')
+  for node in nodeList.values():
+    x0, y0 = node['x'], node['y']
+    plt.scatter(x0, y0, c='blue', s=2*node['size'], zorder=2, lw=0)
+  fig.set_size_inches(16, 16)
+  graph_args(kwargs)
+
+
+def nodeGraph1D(nodelist, **kwargs):
+  prep_graph()
+  fig, ax = plt.subplots()
+  ax.axes.get_yaxis().set_visible(False)
+  plt.subplot(2,1,1)
+  plt.title('RMSD Distribution')
+  xvals = [i['x'] for i in nodelist]
+  width = (max(xvals) - min(xvals)) / (len(xvals))
+  print(max(xvals), min(xvals), len(xvals), width)
+  plt.axhline(0, color='lightgrey', linewidth=1, zorder=1)
+  for n in nodelist:
+    # plt.scatter(n['x'], 0, c='blue', s=3*n['size'], zorder=2, lw=0)
+    plt.bar(n['x'], n['size'], width, color='blue', zorder=2, lw=1)
+  plt.subplot(2,1,2)
+  yvals = [i['y'] for i in nodelist]
+  width = (max(yvals) - min(yvals)) / (len(yvals))
+  print(width)
+  plt.title('Backbone-DiH Distribution')
+  plt.axhline(0, color='lightgrey', linewidth=1, zorder=1)
+  for n in nodelist:
+    plt.bar(n['y'], n['size'], width, color='blue', zorder=2, lw=1)
+    # plt.scatter(n['y'], 0, c='blue', s=3*n['size'], zorder=2, lw=0)
+  graph_args(kwargs)
+
+
+
+  # for n in node['edges']:
+  #   x1, y1 = nodeList[n]['x'], nodeList[n]['y']
+  #   plt.plot((x0, x1), (y0, y1), linewidth=1, color='k')
+
 
 def scatter3D(X, Y, Z, title, L=None):
   plt.cla()
@@ -247,6 +302,32 @@ def linegraphcsv(X, title, nolabel=False):
   """ Plots line series for a csv list
   """
 
+def step_lines(series, title, xlabel=None, scale=None):
+  labelList = sorted(series.keys())
+  seriesList = [series[key] for key in labelList]
+  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  plt.clf()
+  ax = plt.subplot(111)
+  for S, C in zip(seriesList, colorList):
+    x0 = 0
+    for x, y in S:
+      plt.plot((x0, x0+x), (y, y), color=C)
+      x0 += x
+  plt.title(title)
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+
+  if scale is not None:
+    ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*scale))
+    ax.xaxis.set_major_formatter(ticks)
+
+  patches = [mpatches.Patch(color=C, label='%d'%L) for C, L in zip(colorList, labelList)]
+  plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
+  plt.savefig(SAVELOC + '/' + title + '.png')
+  plt.close()
+
+
+
 def steps(data, title, ylabel=None):
   plt.clf()
   loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
@@ -306,10 +387,6 @@ def lines(series, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, 
   #   ax.set_xlim(xlim)
   # plt.savefig(SAVELOC + '/' + title + '.png')
   # plt.close()
-
-
-
-
 
 def conv(series, title, xlim=None, ylim=None, labelList=None, step=1, xlabel=None):
   seriesList = [series[key] for key in elabels]
@@ -382,15 +459,11 @@ def transition_line(X, A, B, title='', trans_factor=.33):
   plt.savefig(loc + '/transition%s_%d_%d'%(title,A,B) + '.png')
   plt.close()  
 
-
 def bootCI(boot, step=10, tag=''):
   N = min([len(v) for v in boot.values()])
   merge = {}
   merge = {k: [np.mean([min(1., boot[k][i][1][f]) for f in range(5, 20)]) for i in range(N)] for k in boot.keys()}
   lines(merge, 'ConvCI_Merged_%s'%tag, step=step, xlabel='Simulation Time (in ns)')
-
-
-
 
 def elas_graph (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=None):
   keys = sorted(series.keys())
@@ -454,7 +527,6 @@ def bargraph(data, title, label=None):
   plt.close()  
   plt.show()
 
-
 def bargraph_simple(data, title, err=None):
   plt.cla()
   plt.clf()
@@ -487,8 +559,6 @@ def bargraph_simple(data, title, err=None):
   plt.savefig(SAVELOC + '/bar_' + title + '.png')
   plt.close()  
   plt.show()
-
-
 
 def feadist(data, title, fname=None, err=None, pcount=None, norm=1, negval=False):
   plt.cla()
@@ -548,8 +618,6 @@ def feadist(data, title, fname=None, err=None, pcount=None, norm=1, negval=False
   plt.savefig(SAVELOC + '/' + fname + '.png')
   plt.close()  
   plt.show()
-
-
 
 def histogram(data, title, ylim=None):
   # colorList = plt.cm.brg(np.linspace(0, 1, len(data)))
