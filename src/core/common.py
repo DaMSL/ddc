@@ -57,13 +57,14 @@ class systemsettings:
   def configured(self):
     return self._configured
 
-  def applyConfig(self, ini_file=None):
+  def applyConfig(self, ini_file=None, force_config=False):
 
-    if self.configured():
+    if self.configured() and not force_config:
       return
 
     if ini_file is not None:
       self._confile = ini_file
+
     logging.info("Applying System Settings from inifile:  %s", self._confile)   
 
     with open(self._confile) as f:
@@ -73,11 +74,11 @@ class systemsettings:
 
     # System Environment Settings
     self.EXPERIMENT_NUMBER    = ini.get('experiment_number', -1)
+
     # For now exit to remind me to set this
     if self.EXPERIMENT_NUMBER < 0:
       logging.error('NO Experiment Number set in JSON. Please set it.')
       sys.exit(1)
-
 
     #  READ & SET for EACH 
     application = os.path.basename(self._confile).split('.')[0]
@@ -114,10 +115,7 @@ class systemsettings:
     self.MAX_RESERVOIR_SIZE = 1000
 
     # Controller Settings
-    self.SIMULATE_RATIO = ini.get('simulation_ratio', 1)
-    # self.CANDIDATE_POOL_SIZE = ini.get('candidate_pool_size', 100)
-    # self.MAX_JOBS_IN_QUEUE   = ini.get('max_jobs_in_queue', 100)
-    # self.MAX_NUM_NEW_JC      = ini.get('max_num_new_jc', 10)
+    self.SIMULATE_RATIO = ini.get('simulation_ratio', 1)   # FOR DEBUGGING
   
     # Potentailly Dynamic
     self.PARTITION = ini.get('partition', 'shared')

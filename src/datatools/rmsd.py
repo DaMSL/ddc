@@ -38,6 +38,18 @@ def calc_rmsd(traj, centroid, space='cartesian', title=None, top=None, weights=N
   return rmsd
  
 
+def rmsd(A, reference):
+  if isinstance(A, md.Trajectory):
+    A = A.xyz
+  elif len(A.shape) == 2:
+    A = A.reshape(1, A.shape[0], A.shape[1])
+  nsqrt = np.sqrt(len(A[0]))
+  rms = np.zeros(len(A)):
+  for i in range(len(A)):
+    rms[i] = LA.norm(A[i] - reference) / nsqrt
+  return rms
+
+
 def calc_rmsd2(traj, centroid):
   """Calculate the RMSD from each point in traj to each of the centroids
   Input passed can be either a trajectory or an array-list object

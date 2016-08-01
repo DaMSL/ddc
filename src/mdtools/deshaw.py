@@ -47,11 +47,14 @@ topo_prot = md.load(PDB_PROT)
 topo = topo_prot
 
 FILTER = {
-      'minimal': topo.top.select_atom_indices('minimal'),
-      'heavy'  : topo.top.select_atom_indices('heavy'),
-      'alpha'  : topo.top.select_atom_indices('alpha'),
+      'minimal'  : topo.top.select_atom_indices('minimal'),
+      'heavy'    : topo.top.select_atom_indices('heavy'),
+      'alpha'    : topo.top.select_atom_indices('alpha'),
+      'backbone' : topo.top.select('backbone'),
       'protein'  : topo.top.select('protein')
     }
+
+
 
 topo_alpha = topo_prot.atom_slice(FILTER['alpha'])
 

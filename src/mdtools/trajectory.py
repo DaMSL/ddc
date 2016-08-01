@@ -1,4 +1,3 @@
-
 import numpy as np
 import numpy.linalg as LA
 import mdtraj as md
@@ -72,17 +71,6 @@ def myrms(A, B):
   for a, b in zip(A,B):
     d += ((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
   return np.sqrt(d/len(A))
-
-
-def rms_abs(A, B):
-  if A.shape != B.shape:
-    print("ERROR!")
-    return -1
-  d = 0
-  for a, b in zip(A,B):
-    d += ((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
-  return d/len(A)
-
 
 def mdrmsd(A, B):
   if A.shape != B.shape:
