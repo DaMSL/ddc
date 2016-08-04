@@ -1,7 +1,7 @@
 import numpy as np
 import numpy.linalg as LA
 import mdtraj as md
- 
+  
 
 class SemiConform(object):
   glid = 0

@@ -128,27 +128,29 @@ def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=N
     del newsimJob['coord']
     return jcuid, newsimJob
 
-def generateExplJC(trajectory_file, psf_key='psf:bptisolv', jcid=None):
+def generateExplJC(basin, psf, jcid=None):
     """Creates input parameters for a running explcit solvenet simulation.
     """
     config = systemsettings()
-    logging.debug("Generating new simulation coordinates from:  %s", str(trajectory))
+    logging.debug("Generating new simulation coordinates from:  %s", str(basin['id']))
     # Get a new uid (if needed)
     jcuid = getUID() if jcid is None else jcid
 
     # Prep file structure
     jobdir = os.path.join(config.JOBDIR,  jcuid)
-    pdbfile = coordfile = trajectory_file
-    psffile = catalog.get(psf_key)
+    pdbfile = coordfile = basin['pdbfile']
+    psffile = psf
 
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
 
     # Create new params
     newsimJob = dict(workdir=jobdir,
-        coord   = coordFile,
-        pdb     = newPdbFile,
-        psf     = newPsfFile)
+        coord   = coordfile,
+        pdb     = pdbfile,
+        psf     = psffile,
+        src_traj = basin['traj'],
+        src_basin = basin['id'])
 
     return jcuid, newsimJob
 

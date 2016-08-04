@@ -34,28 +34,45 @@ class TimeScape:
     return data
 
 class Basin(object):
-  def __init__ (self, traj, traj_id, window, mindex):
+  def __init__ (self, traj_id, window, mindex, traj=None, uid=None):
     self.start, self.end = window
     self.len = self.end - self.start
     self.mindex = mindex
-    self.minima = traj.slice(mindex)
-    self.id = getUID()
+    self.minima = None if traj is None else traj.slice(mindex)
+    if uid is None:
+      self.id = getUID()
+    else:
+      self.id = uid
     self.prev = None
     self.next = None
     self.traj = traj_id
 
   def kv(self):
     d = self.__dict__
-    del d['minima']
+    if self.minima is not None:
+      del d['minima']
     return d
 
     
 
-class TimeScapeTrajectory(object):
-  """Wrapper class for the TimeScapes API"""
-  """ Placeholder for full integration """
+class TimeScapeParser(object):
+  """ 
+  Class to parse and manage TimeScape Output. Use of this class
+  assumes that the TimeScape program has already run. Ergo
+  the Trajectory passed in and processed is the FULL underlying
+  trajectory -- a frame_rate is provided to the load_basin program
+  to convert indexing from a pre-processed file (found in output)
+  to a full tranjectory (for follow on manipulation) """
 
-  def __init__(self, pdb, loc, traj_id, dcd=None, traj=None):
+  def __init__(self, pdb, loc, traj_id, dcd=None, traj=None, uniqueid=False):
+    """
+      pdb - topology for loading f
+      loc - output dir location (which should also include src dcd)
+      traj_id - identifier for FULL underlying scs
+      dcd - pre-proprocessed DCD passed to TimeScape
+      traj - FULL trajectory
+    """
+
     self.pdb = pdb
     if dcd is None:
       self.dcd = os.path.join(loc, traj_id + '.dcd')
@@ -63,13 +80,17 @@ class TimeScapeTrajectory(object):
       self.dcd = dcd
     self.out = loc
     self.traj = traj
-    self.traj_id = traj
+    self.traj_id = traj_id
     self.basins = []
+    self.unique_basin_id = uniqueid
 
   def load_traj(self):
     self.traj = md.load(self.dcd, top=self.pdb)
 
-  def load_basins(self):
+  def load_basins(self, frame_rate=1, force_load=False):
+    """
+    frame_rate is measured in #frames / ps
+    """
     segfile = self.out + '_segmentation.dat'
     basin_list = []
     with open(segfile) as src:
@@ -81,28 +102,34 @@ class TimeScapeTrajectory(object):
         bnum = int(line.split()[-1])
         if cur_basin == bnum:
           continue
-        basin_list.append((last_trans, index))
+        basin_list.append((last_trans*frame_rate, index*frame_rate))
         last_trans = index
         cur_basin = bnum
       basin_list.append((last_trans, index))
 
-    if self.traj is None:
+    if self.traj is None and force_load:
       self.load_traj()
 
-    minima_list = self.get_minima()
-    index = 0
+    minima_list = [i*frame_rate for i in self.get_minima()]
+    basin_index = 0
     last = None
-    while index < len(minima_list):
+    while basin_index < len(minima_list):
       # TODO:  Do we handle First & Last basin in trajectory
-      window = basin_list[index+1]
-      minima = minima_list[index]
-      basin = Basin(self.traj, self.traj_id, window, minima)
+      window = basin_list[basin_index]
+      minima = minima_list[basin_index]
+      
+      if self.unique_basin_id:
+        basin_id = None 
+      else:
+        basin_id = str(self.traj_id) + '_' + str(basin_index)
+
+      basin = Basin(self.traj_id, window, minima, traj=self.traj, uid=basin_id)
       if last is not None:
         basin.prev = last.id
         self.basins[-1].next = basin.id
       self.basins.append(basin)
       last = basin
-      index += 1
+      basin_index += 1
     return basin_list
 
   def read_log(self, fname):

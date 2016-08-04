@@ -77,7 +77,7 @@ def initializecatalog(catalog):
   for k, v in initvals.items():
     logging.debug("Initializing data elm %s  =  %s", k, str(v))
 
-def load_seeds(catalog):
+def load_seeds(catalog, calc_seed_rms=False):
     settings = systemsettings()
     idx_list  = [0,1,2,3,4,20,23,24,30,32,34,40,41,42]
     slist = {k: 'seed%d'%k for k in idx_list}
@@ -85,6 +85,9 @@ def load_seeds(catalog):
     logging.info('Loading %d seeds for experiment %s', len(slist.keys()), catalog.get('name'))
 
     seed_dir = os.path.join(settings.WORKDIR, 'seed')
+    seed_frame_rate = 0.25  # in ps
+    seed_ts_factor = 16     # TimeScape ran on 4ps frame rate (16x source)
+
     pdb_file = os.path.join(settings.workdir, catalog.get('pdb:topo'))
     print("PDB FILE: ", settings.workdir, pdb_file)
     topo = md.load(pdb_file)
@@ -98,17 +101,24 @@ def load_seeds(catalog):
 
     hfilt = bpti.get_filter('heavy')
 
+    ts_rate = catalog.get('timescape:agility:rate')
+
     for idx in idx_list:
       s, t = slist[idx], tlist[idx]
       logging.info('Trajectory SEED:  %s', s)
       tfile = os.path.join(seed_dir, t)
-      traj = md.load(tfile, top=topo)
-      traj.superpose(topo)
+      rms_file = os.path.join(seed_dir, 'rms', 'rms%d'%idx)
 
-      protein = traj.atom_slice(bpti.get_filter('protein'))
-
-      ####  METRIC GOES HERE
-      rms = 10*md.rmsd(protein, ref_traj, 0, hfilt, hfilt, precentered=True)
+      if calc_seed_rms:
+        traj = md.load(tfile, top=topo)
+        traj.superpose(topo)
+        protein = traj.atom_slice(bpti.get_filter('protein'))
+        ####  METRIC GOES HERE
+        rms = 10*md.rmsd(protein, ref_traj, 0, hfilt, hfilt, precentered=True)
+        np.save(rms_file, rms)
+      else:
+        traj = None
+        rms = np.load(rms_file + '.npy')
 
       # Push to Catalog
       file_idx = catalog.rpush('xid:filelist', tfile) - 1
@@ -119,9 +129,10 @@ def load_seeds(catalog):
       # Process Trajectory as basins
       logging.info("  Seed Loaded, RMS Complete. Loading TimeScape Data...")
       seed_name = 'seed%d'%idx
-      ts_traj = TimeScapeTrajectory(pdb_file, os.path.join(seed_dir, 'out', seed_name),\
+      ts_traj = TimeScapeParser(pdb_file, 
+          os.path.join(seed_dir, 'out', seed_name),
           seed_name, dcd=tfile, traj=traj)
-      ts_traj.load_basins()
+      ts_traj.load_basins(frame_rate=seed_ts_factor)
 
       for i, basin in enumerate(ts_traj.basins):
         logging.info('  Processing basin #%2d', i)
@@ -130,15 +141,16 @@ def load_seeds(catalog):
         bid = basin.id
         # Store on Disk and in redis
         jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
-        minima_frame = traj.slice(basin.mindex)
+        if traj is None:
+          mimima_frame = md.load_frame(tfile, basin.mindex)
+        else:
+          minima_frame = traj.slice(basin.mindex)
         minima_frame.save_pdb(jc_filename)
 
+
         a, b = basin.start, basin.end
-
-        ###### TODO:   FACTOR IN SAMPLE RATE 
-
         basin_rms = np.median(rms[a:b])
-        
+       
         basin_hash = basin.kv()
         basin_hash['pdbfile'] = jc_filename
         logging.info('  Basin data dump: %s', basin_hash)
@@ -154,7 +166,7 @@ def sample_uniform(basin_list, num):
   candidates = np.random.choice(basin_list, size=num, replace=need_replace)
   return candidates  
 
-def seed_jobs(catalog, num=1):
+def make_jobs(catalog, num=1):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
   Selects equal `num` of randomly start frames from each bin
@@ -171,33 +183,33 @@ def seed_jobs(catalog, num=1):
 
   dcdfreq = int(catalog.get('dcdfreq'))
   runtime = int(catalog.get('runtime'))
-  sim_step_size = int(catalog.get('sim_step_size'))
-  force_field_dir = catalog.get('ffield_dir')
+  sim_step_size = float(catalog.get('sim_step_size'))
+  force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
 
   # TODO:  Apply sampling Algorith HERE
   seedlist = sample_uniform(basinlist, num)
 
   # Create new jobs from selected basins
+  psf = os.path.join(settings.workdir, catalog.get('psf:bptisolv'))
   for seed in seedlist:
     logging.debug('\nSeeding Job: %s ', seed)
     basin = catalog.hgetall('basin:%s'%seed)
 
     # Generate new set of params/coords
-    jcID, params = generateExplJC(traj)
+
+    jcID, params = generateExplJC(basin, psf)
 
     # Update Additional JC Params and Decision History, as needed
     config = dict(params,
         name    = jcID,
         runtime = runtime,
         dcdfreq = dcdfreq,
-        interval = dcdfreq * sim_step_size,                       
+        interval = int(dcdfreq * sim_step_size),
         ffield_dir = force_field_dir,
         temp    = 310,
         timestep = 0,
         gc      = 1,
         origin  = 'seed',
-        src_traj = seed.traj,
-        src_basin = seed.id,
         application   = settings.name)
 
     # Push to catalog
@@ -289,11 +301,11 @@ if __name__ == '__main__':
     initializecatalog(catalog)
 
   if args.seed or args.all:
-    load_seeds(catalog)
+    load_seeds(catalog, calc_seed_rms=False)
 
   if args.initjobs or args.all:
     numresources = int(catalog.get('numresources'))
-    seed_jobs(catalog, numresources)
+    make_jobs(catalog, numresources)
 
   elif args.onejob:
     seed_jobs(catalog, 1)

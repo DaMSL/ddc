@@ -39,7 +39,8 @@ from overlay.overlayException import OverlayNotAvailable
 from bench.timer import microbench
 from bench.stats import StatCollector
 
-from mdtools.timescape import TimeScapeWrapper
+from mdtools.timescape import TimeScapeParser
+from mdtools.simtool import Peptide
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -75,7 +76,9 @@ class simulationJob(macrothread):
     self.addImmut('sim_step_size')
     self.addImmut('max_observations')    
     self.addImmut('pdb:ref:0')
-    self.addImmut('pdb:protein')
+    self.addImmut('pdb:topo')
+    self.addImmut('timescape:agility:delta')
+    self.addImmut('timescape:agility:rate')
     self.addAppend('xid:filelist')
 
     # Local Data to this running instance
@@ -303,7 +306,8 @@ class simulationJob(macrothread):
   # 1. With combined Sim-analysis: file is loaded locally from shared mem
     logging.debug("2. Load DCD")
 
-    topo = md.load(self.data['pdb:topo'])
+    topofile = os.path.join(settings.workdir, self.data['pdb:topo'])
+    topo = md.load(topofile)
 
     # Load full higher dim trajectory
     # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
@@ -333,13 +337,18 @@ class simulationJob(macrothread):
       #  Store Data
 
     # TODO: VERTIFY this filter
-    pfilt = DE.FILTER['protein']
-    hfilt = DE.FILTER['heavy']
+    bpti = Peptide('bpti', topo)
+    hfilt = bpti.get_filter('heavy')
+    pfilt = bpti.get_filter('protein')
+    traj_prot = traj.atom_slice(pfilt)
+    traj_heavy = traj.atom_slice(hfilt)
 
-    landmark  = md.load(self.data['pdb:ref:0'])
+    lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
+    landmark  = md.load(lm_file)
 
     # Calculate RMSD for ea (note conversion nm -> angstrom)
-    rmsd = 10 * md.rmsd(traj, landmark, 0, hfilt, hfilt, precentered=True)
+    logging.info('Running Metrics on local output:  RMSD')
+    rmsd = 10 * md.rmsd(traj_prot, landmark, 0, hfilt, hfilt, precentered=True)
 
     # Calc Phi/Psi angles
     # phi_angles = md.compute_phi(traj)[1][0]
@@ -350,38 +359,56 @@ class simulationJob(macrothread):
     # psi = np.array([LA.norm(a - psi_lm) for a in psi_angles])
 
     # Execute Timescapes agility program to detect spatial-temporal basins
-    # FILTER/PREP FILE (if needed)
-    # TODO: STD Filenames
-    tmp_out = '/tmp/ddc/traj'
+    # Get the frame rate to save from catalog:
+    logging.debug('Preprocessing output for TimeScapes: agility')
+    traj_frame_per_ps = int(job['interval']) / 1000.   # jc interval is in fs
+    ts_frame_per_ps = int(self.data['timescape:agility:rate'])  # this value is in ps
+    frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
+
+    # FOR DEBUGGING
+    frame_rate = 1
+
+
+    # Prep file and save locally
+    tmp_out = '/tmp/ddc/traj_ts'
     tmp_dcd = tmp_out + '.dcd'
     tmp_pdb = tmp_out + '.pdb'
-    heavy = traj.slice(range(0, traj.n_frames, 4)).atom_slice(hfilt)
-    heavy.slice(0).save_pdb(temp_pdb)
-    heavy.save_dcd(temp_dcd)
+    output_prefix = os.path.join(job['workdir'], job['name'])
+    heavy = traj_heavy.slice(range(0, traj.n_frames, frame_rate))
+    heavy.slice(0).save_pdb(tmp_pdb)
+    heavy.save_dcd(tmp_dcd)
 
     # Gaussuan Full Width at Half-Max value affects sliding window size
     # ref:  http://timescapes.biomachina.org/guide.pdf
-    gauss_wght_delta = 20       
+    gauss_wght_delta = int(self.data['timescape:agility:delta'])
 
-    cmd = 'agility.py %s %s %d %s' %(tmp_pdb, tmp_dcd, gauss_wght_delta, tmp_out)
+    # Execute timescapes' agility.py on the pre-processed trajectory
+    cmd = 'agility.py %s %s %d %s' %(tmp_pdb, tmp_dcd, gauss_wght_delta, output_prefix)
+    logging.info('Running Timescapes:\n  %s', cmd)
     stdout = executecmd(cmd)
+    logging.info('TimeScapes COMPLETE:\n%s', stdout)
 
-    ts = TimeScapeWrapper(tmp_pdb, tmp_dcd, tm_out)
+    logging.debug('Parsing Timescapes output')
+    ts_parse = TimeScapeParser(tmp_pdb, output_prefix, job['name'], 
+      dcd=dcdFile, traj=traj, uniqueid=False)
+    ts_parse.load_basins(frame_rate=frame_rate)
 
     minima_coords = {}
     basin_rms = {}
     basins = {}
-    for i, basin in enumerate(ts_traj.basins):
+    for i, basin in enumerate(ts_parse.basins):
       logging.info('  Processing basin #%2d', i)
       bid = basin.id
 
-      # Slice out minima coord
+      # Slice out minima coord  & save to disk (for now)
       minima_coords[bid] = traj.slice(basin.mindex)
+      jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
+      minima_coords[bid].save_pdb(jc_filename)
 
       # METRIC CALCULATION
       a, b = basin.start, basin.end
-      basin_rms[bid] = np.median(rms[a:b])
-      
+      basin_rms[bid] = np.median(rmsd[a:b])
+
       # Collect Basin metadata
       basin_hash = basin.kv()
       basin_hash['pdbfile'] = jc_filename
@@ -389,10 +416,6 @@ class simulationJob(macrothread):
 
       logging.info('  Basin data dump: %s', basin_hash)
 
-    # Save all coord files to disk (may just store all in memory)
-    for bid, frame in minima_coords:
-      jc_filename = os.path.join(settings.DATADIR, 'basin_%s.pdb' % bid)
-      frame.save_pdb(jc_filename)
 
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
     # try:
@@ -436,11 +459,10 @@ class simulationJob(macrothread):
     self.data[key]['xid:end'] = start_index + traj.n_frames
     bench.mark('Indx_Update')
 
-
-    # COPY OUT TimeScapes Logs (to help debug):
-    ts_logfiles = [f for f in os.listdir(tmp_out) if f.endswith('log')]
-    for f in ts_logfiles:
-      shutil.copy(f, os.path.join(settings.jobdir, job['name']))
+    # # COPY OUT TimeScapes Logs (to help debug):
+    # ts_logfiles = [f for f in os.listdir(tmp_out) if f.endswith('log')]
+    # for f in ts_logfiles:
+    #   shutil.copy(f, os.path.join(settings.jobdir, job['name']))
 
   # ---- POST PROCESSING
     if USE_SHM:
@@ -455,7 +477,7 @@ class simulationJob(macrothread):
     stat.show()
 
     # Return # of observations (frames) processed
-    return [numConf]
+    return [traj.n_frames]
 
 if __name__ == '__main__':
   mt = simulationJob(__file__)

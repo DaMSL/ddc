@@ -54,10 +54,6 @@ parameters          %(ffield_dir)s/toppar_all36_carb_chemmod.str
 #############################################################
 
 # Input
-#paraTypeCharmm      on
-#parameters          %(parm)s
-#amber              on
-#parmfile           %(parm)s
 temperature         $temperature
 
 # Implicit Solvent
@@ -91,6 +87,11 @@ PMEInterpOrder       6
 PMEGridSizeX        60
 PMEGridSizeY        60
 PMEGridSizeZ        60
+
+cellBasisVector1    52.0   0.   0.  ;# vector to the next image
+cellBasisVector2     0.    52.0 0.
+cellBasisVector3     0.    0    52.0
+cellOrigin           0.    0.   0.  ;# the *center* of the cell
 
 # Constant Pressure Control (variable volume)
 useGroupPressure       yes;            
