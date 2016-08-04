@@ -81,14 +81,15 @@ class systemsettings:
       sys.exit(1)
 
     #  READ & SET for EACH 
+    # Application name is the name of the .ini file 
     application = os.path.basename(self._confile).split('.')[0]
-    self.APPL_LABEL  = application
-    self.name = application   #Alias
-    self.WORKDIR     = ini.get('workdir', '.')
+    self.name = self.APPL_LABEL = application   #Alias
+    self.workdir = self.WORKDIR = ini.get('workdir', '.')
 
-    self.LOGDIR = os.path.join(self.WORKDIR, 'log', application)
-    self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
-    self.DATADIR = os.path.join(self.WORKDIR, 'data', application)
+    # Associated sub-dirs are automatically created in the working dir
+    self.logdir = self.LOGDIR = os.path.join(self.WORKDIR, 'log', application)
+    self.jobdir = self.JOBDIR = os.path.join(self.WORKDIR, 'jc', application)
+    self.datadir = self.DATADIR = os.path.join(self.WORKDIR, 'data', application)
 
     # Overlay Service generic (or should this be unique to ea. service????)
     self.MONITOR_WAIT_DELAY    = ini.get('monitor_wait_delay', 30)
@@ -97,11 +98,11 @@ class systemsettings:
     self.SERVICE_HEARTBEAT_DELAY = ini.get('catalog_heartbeat_delay', 15)
 
     # Redis Service specific settings
-    self.REDIS_CONF_TEMPLATE = 'templates/redis.conf.temp'
+    self.REDIS_CONF_TEMPLATE = ini.get('redis_conf_template', 6379)
     self.CATALOG_PORT = ini.get('catalog_port', 6379)
 
     # CACHE SERVICE PARAMS  (in GB)
-    self.CACHE_CAPACITY = 80
+    self.CACHE_CAPACITY = ini.get('cache_capacity', 80)
 
     # Alluxio Service specific settings
     # FOR shared Lustre (not working!)

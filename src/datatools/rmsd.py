@@ -44,7 +44,7 @@ def rmsd(A, reference):
   elif len(A.shape) == 2:
     A = A.reshape(1, A.shape[0], A.shape[1])
   nsqrt = np.sqrt(len(A[0]))
-  rms = np.zeros(len(A)):
+  rms = np.zeros(len(A))
   for i in range(len(A)):
     rms[i] = LA.norm(A[i] - reference) / nsqrt
   return rms

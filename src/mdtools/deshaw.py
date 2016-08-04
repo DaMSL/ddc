@@ -48,11 +48,13 @@ topo = topo_prot
 
 FILTER = {
       'minimal'  : topo.top.select_atom_indices('minimal'),
-      'heavy'    : topo.top.select_atom_indices('heavy'),
       'alpha'    : topo.top.select_atom_indices('alpha'),
+      'heavy'    : topo.top.select('name =~ "[C.,N.,O.]"'),
       'backbone' : topo.top.select('backbone'),
       'protein'  : topo.top.select('protein')
     }
+
+# OLD HEAVY:  prot.top.select('name =~ "[C.,N.,O.]"')
 
 
 

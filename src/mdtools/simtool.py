@@ -127,3 +127,57 @@ def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=N
     os.remove(coordFile)
     del newsimJob['coord']
     return jcuid, newsimJob
+
+def generateExplJC(trajectory_file, psf_key='psf:bptisolv', jcid=None):
+    """Creates input parameters for a running explcit solvenet simulation.
+    """
+    config = systemsettings()
+    logging.debug("Generating new simulation coordinates from:  %s", str(trajectory))
+    # Get a new uid (if needed)
+    jcuid = getUID() if jcid is None else jcid
+
+    # Prep file structure
+    jobdir = os.path.join(config.JOBDIR,  jcuid)
+    pdbfile = coordfile = trajectory_file
+    psffile = catalog.get(psf_key)
+
+    if not os.path.exists(jobdir):
+      os.makedirs(jobdir)
+
+    # Create new params
+    newsimJob = dict(workdir=jobdir,
+        coord   = coordFile,
+        pdb     = newPdbFile,
+        psf     = newPsfFile)
+
+    return jcuid, newsimJob
+
+
+class Peptide (object):
+
+    def __init__(self, name, traj):
+        self.name = name
+        self.traj = traj
+
+    @classmethod
+    def filter(self, traj, filt):
+
+        if filt == 'protein':
+            return traj.top.select('protein')
+
+        if filt == 'alpha':
+            return traj.top.select_atom_indices('alpha')
+
+        if filt == 'heavy':
+            prot = traj.atom_slice(Peptide.filter(traj, 'protein'))
+            return prot.top.select("name =~ '[C.,N.,O.]'")
+
+        if filt == 'backbone':
+            prot = traj.atom_slice(Peptide.filter(traj, 'protein'))
+            return prot.top.select("backbone")
+
+        logging.warning('CAUTION: FILTER NOT PRE-DEFINED')
+        return traj.top.select(filt)
+
+    def get_filter(self, filt):
+        return Peptide.filter(self.traj, filt)
