@@ -128,10 +128,11 @@ def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=N
     del newsimJob['coord']
     return jcuid, newsimJob
 
-def generateExplJC(basin, psf, jcid=None):
+def generateExplJC(basin, jcid=None):
     """Creates input parameters for a running explcit solvenet simulation.
     """
     config = systemsettings()
+    logging.debug('BASIN:  %s', basin)
     logging.debug("Generating new simulation coordinates from:  %s", str(basin['id']))
     # Get a new uid (if needed)
     jcuid = getUID() if jcid is None else jcid
@@ -139,7 +140,6 @@ def generateExplJC(basin, psf, jcid=None):
     # Prep file structure
     jobdir = os.path.join(config.JOBDIR,  jcuid)
     pdbfile = coordfile = basin['pdbfile']
-    psffile = psf
 
     if not os.path.exists(jobdir):
       os.makedirs(jobdir)
@@ -148,11 +148,35 @@ def generateExplJC(basin, psf, jcid=None):
     newsimJob = dict(workdir=jobdir,
         coord   = coordfile,
         pdb     = pdbfile,
-        psf     = psffile,
         src_traj = basin['traj'],
         src_basin = basin['id'])
 
     return jcuid, newsimJob
+
+
+def getSimParameters(state, origin='gen'):
+    """ Load standard set of sim parameters from
+        the current global state and return a dict 
+        for processing into a new job candidate simulation
+    """
+    settings = systemsettings()
+    keys = settings.sim_params.keys()
+    params = {}
+    for k in keys:
+        if k not in keys:
+            logging.error('ERROR. Simulation Param, %s, is not loaded into state')
+            return
+        params[k] = state[k]
+
+    params['psffile'] = os.path.join(settings.workdir, params['psffile'])
+    params['ffield_dir'] = os.path.join(settings.workdir, params['ffield_dir'])
+    params['interval'] = int(int(params['dcdfreq']) * float(params['sim_step_size']))
+    params['gc'] = 1
+    params['origin'] = origin
+    params['application'] = settings.name
+
+    return params
+
 
 
 class Peptide (object):

@@ -20,13 +20,13 @@ from core.kdtree import KDTree
 import core.ops as ops
 import datatools.datareduce as datareduce
 from datatools.rmsd import *
-from mdtools.simtool import generateExplJC, Peptide
+from mdtools.simtool import *
 import mdtools.deshaw as deshaw
 import bench.db as db
 import plot as P
 
 from mdtools.timescape import *
-
+from sampler.basesample import *
 
 # For changes to schema
 def updateschema(catalog):
@@ -45,6 +45,11 @@ def updateschema(catalog):
     dtype_map[k] = str(v)
 
   for k, v in settings.init.items():
+    if k not in dtype_map:
+      dtype_map[k] = type(v).__name__
+      settings.schema[k] = type(v).__name__
+
+  for k, v in settings.sim_params.items():
     if k not in dtype_map:
       dtype_map[k] = type(v).__name__
       settings.schema[k] = type(v).__name__
@@ -72,7 +77,13 @@ def initializecatalog(catalog):
   catalog.set('name', settings.name)
 
   # Set defaults vals for schema
-  initvals = {i:settings.init[i] for i in settings.init.keys() if settings.schema[i] in ['int', 'float', 'list', 'dict', 'str']}
+  initvals = {}
+  for k, val in settings.init.items():
+    initvals[k] = val
+
+  for k, val in settings.sim_params.items():
+    initvals[k] = val
+
   catalog.save(initvals)
   for k, v in initvals.items():
     logging.debug("Initializing data elm %s  =  %s", k, str(v))
@@ -80,6 +91,7 @@ def initializecatalog(catalog):
 def load_seeds(catalog, calc_seed_rms=False):
     settings = systemsettings()
     idx_list  = [0,1,2,3,4,20,23,24,30,32,34,40,41,42]
+    seed_frame_length = 8000
     slist = {k: 'seed%d'%k for k in idx_list}
     tlist = {k: 'tr%d.dcd'%k for k in idx_list}
     logging.info('Loading %d seeds for experiment %s', len(slist.keys()), catalog.get('name'))
@@ -123,7 +135,7 @@ def load_seeds(catalog, calc_seed_rms=False):
       # Push to Catalog
       file_idx = catalog.rpush('xid:filelist', tfile) - 1
       start_index = catalog.llen('xid:reference')
-      catalog.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
+      catalog.rpush('xid:reference', *[(file_idx, x) for x in range(seed_frame_length)])
       catalog.rpush('metric:rms', *rms)
 
       # Process Trajectory as basins
@@ -135,16 +147,11 @@ def load_seeds(catalog, calc_seed_rms=False):
       ts_traj.load_basins(frame_rate=seed_ts_factor)
 
       for i, basin in enumerate(ts_traj.basins):
-        logging.info('  Processing basin #%2d', i)
-
         pipe = catalog.pipeline()
         bid = basin.id
         # Store on Disk and in redis
         jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
-        if traj is None:
-          mimima_frame = md.load_frame(tfile, basin.mindex)
-        else:
-          minima_frame = traj.slice(basin.mindex)
+        minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
         minima_frame.save_pdb(jc_filename)
 
 
@@ -153,18 +160,13 @@ def load_seeds(catalog, calc_seed_rms=False):
        
         basin_hash = basin.kv()
         basin_hash['pdbfile'] = jc_filename
-        logging.info('  Basin data dump: %s', basin_hash)
+        logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
 
         pipe.rpush('basin:list', bid)
         pipe.hset('basin:rms', bid, basin_rms)
         pipe.hmset('basin:%s'%bid, basin_hash)
         pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
         pipe.execute()
-
-def sample_uniform(basin_list, num):
-  need_replace = (len(basin_list) < num)
-  candidates = np.random.choice(basin_list, size=num, replace=need_replace)
-  return candidates  
 
 def make_jobs(catalog, num=1):
   """
@@ -186,31 +188,28 @@ def make_jobs(catalog, num=1):
   sim_step_size = float(catalog.get('sim_step_size'))
   force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
 
-  # TODO:  Apply sampling Algorith HERE
-  seedlist = sample_uniform(basinlist, num)
+  # Apply sampling Algorith HERE
+  if settings.EXPERIMENT_NUMBER == 12:
+    sampler = UniformSampler(basinlist)
+
+  seedlist = sampler.execute(num)
 
   # Create new jobs from selected basins
-  psf = os.path.join(settings.workdir, catalog.get('psf:bptisolv'))
+  psf = os.path.join(settings.workdir, catalog.get('psffile'))
+
+  sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
+  global_params = getSimParameters(sim_init, 'seed')
+
   for seed in seedlist:
     logging.debug('\nSeeding Job: %s ', seed)
     basin = catalog.hgetall('basin:%s'%seed)
 
     # Generate new set of params/coords
-
-    jcID, params = generateExplJC(basin, psf)
+    jcID, config = generateExplJC(basin)
 
     # Update Additional JC Params and Decision History, as needed
-    config = dict(params,
-        name    = jcID,
-        runtime = runtime,
-        dcdfreq = dcdfreq,
-        interval = int(dcdfreq * sim_step_size),
-        ffield_dir = force_field_dir,
-        temp    = 310,
-        timestep = 0,
-        gc      = 1,
-        origin  = 'seed',
-        application   = settings.name)
+    config.update(global_params)
+    config['name'] = jcID
 
     # Push to catalog
     logging.info("New Simulation Job Created: %s", jcID)

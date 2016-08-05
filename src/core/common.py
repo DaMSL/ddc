@@ -143,6 +143,7 @@ class systemsettings:
 
     self.schema = defaults['schema']
     self.init = defaults['init']
+    self.sim_params = defaults['simulation']
 
 
     # make_config_file = 'default.conf'

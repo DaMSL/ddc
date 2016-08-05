@@ -2,34 +2,34 @@
 {
     "schema": {
         "jcqueue": "list",
-        "completesim": "list",
         "xid:filelist": "list",
         "xid:reference": "list",
-        "label:rms": "list"
+        "basin:stream": "list"
     },
     "init": {
         "numresources": 2,
         "simDelay": 60,
         "ctlDelay": 60,
         "simSplitParam": 2,
-        "runtime": 10000,
-        "dcdfreq": 100,
-        "ctlIndexHead": 0,
-      	"ctlBatchSize_min": 1500,
-      	"ctlBatchSize_max": 20000,
-        "max_observations": 20000,
+        "ctl_min_basin": 1,
+        "ctl_index_head": 1,
+        "max_observations": 120000,
         "ctlSplitParam": 1,
-        "timestep": 0,
         "terminate": "no",
-        "sim_conf_template": "templates/bpti.solv.temp",
-        "psf:bptisolv": "solvent/bptisolv.psf",
-        "ffield_dir": "solvent/toppar",
-        "sim_step_size": 2.5,
         "pdb:topo": "seed/coord.pdb",
         "pdb:ref:0": "seed/coord-prot.pdb",
         "timescape:agility:rate": 4,
         "timescape:agility:delta": 20
-
+    },
+    "simulation": {
+        "timestep": 0,
+        "runtime": 20000,
+        "dcdfreq": 100,
+        "temperature": 300,
+        "sim_step_size": 2.5,
+        "psffile": "solvent/bptisolv.psf",
+        "ffield_dir": "solvent/toppar",
+        "sim_conf_template": "templates/bpti.solv.temp"
     },
     "settings": {
         "experiment_number": 12,
@@ -41,7 +41,7 @@
         "cache_capacity": 80,
         "redis_conf_template": "templates/redis.conf.temp",
         "monitor_wait_delay": 30,
-        "partition": "shared,parallel",
+        "partition": "debug",
         "workdir": "/home-1/bring4@jhu.edu/work"
     }
 }

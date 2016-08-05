@@ -66,19 +66,19 @@ class simulationJob(macrothread):
     macrothread.__init__(self, fname, 'sim')
 
     # State Data for Simulation MacroThread -- organized by state
-    self.setStream('jcqueue', 'completesim')
-    self.addImmut('simSplitParam')
-    self.addImmut('simDelay')
-    self.addImmut('terminate')
-    self.addImmut('sim_conf_template')
-    self.addImmut('dcdfreq')
-    self.addImmut('runtime')
-    self.addImmut('sim_step_size')
-    self.addImmut('max_observations')    
-    self.addImmut('pdb:ref:0')
-    self.addImmut('pdb:topo')
-    self.addImmut('timescape:agility:delta')
-    self.addImmut('timescape:agility:rate')
+    self.setStream('jcqueue', 'basin:stream')
+    # self.addImmut('simSplitParam')
+    # self.addImmut('simDelay')
+    # self.addImmut('terminate')
+    # self.addImmut('sim_conf_template')
+    # self.addImmut('dcdfreq')
+    # self.addImmut('runtime')
+    # self.addImmut('sim_step_size')
+    # self.addImmut('max_observations')    
+    # self.addImmut('pdb:ref:0')
+    # self.addImmut('pdb:topo')
+    # self.addImmut('timescape:agility:delta')
+    # self.addImmut('timescape:agility:rate')
     self.addAppend('xid:filelist')
 
     # Local Data to this running instance
@@ -366,8 +366,8 @@ class simulationJob(macrothread):
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
 
     # FOR DEBUGGING
+    logging.warning("DEBUGGING IS ON..... FRAME RATE MANUAL SET TO 1")
     frame_rate = 1
-
 
     # Prep file and save locally
     tmp_out = '/tmp/ddc/traj_ts'
@@ -396,9 +396,12 @@ class simulationJob(macrothread):
     minima_coords = {}
     basin_rms = {}
     basins = {}
+
+    downstream_list = []
     for i, basin in enumerate(ts_parse.basins):
       logging.info('  Processing basin #%2d', i)
       bid = basin.id
+      downstream_list.append(bid)
 
       # Slice out minima coord  & save to disk (for now)
       minima_coords[bid] = traj.slice(basin.mindex)
@@ -438,6 +441,7 @@ class simulationJob(macrothread):
           pipe.multi()
 
           pipe.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
+          pipe.rpush('metric:rms', *rmsd)
 
           logging.debug('Updating %s basins', len(basins))
           for bid in basins.keys():
@@ -477,7 +481,7 @@ class simulationJob(macrothread):
     stat.show()
 
     # Return # of observations (frames) processed
-    return [traj.n_frames]
+    return downstream_list
 
 if __name__ == '__main__':
   mt = simulationJob(__file__)

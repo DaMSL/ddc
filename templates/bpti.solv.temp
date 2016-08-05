@@ -8,11 +8,11 @@
 #############################################################
 ## ADJUSTABLE PARAMETERS                                   ##
 #############################################################
-structure          %(psf)s
+structure          %(psffile)s
 coordinates        %(pdb)s
 cwd                %(workdir)s
 
-set temperature    %(temp)s
+set temperature    %(temperature)s
 set outputname     %(outputloc)s%(name)s
 
 firsttimestep      0

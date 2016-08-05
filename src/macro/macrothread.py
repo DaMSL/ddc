@@ -236,7 +236,7 @@ class macrothread(object):
     logging.debug("Loaded state for %s:", self.name)
     for k,v in data.items():
       self.data[k] = v
-      logging.debug("  %10s", k)
+      logging.debug("  %-15s   %s", k, str(v)[:15])
 
 
     logging.debug("Setting origin for append-only")
@@ -401,9 +401,12 @@ class macrothread(object):
     #   use after:job_id[:jobid...] w/ #SBATCH --dependency=<dependency_list>
 
     # Consume upstream input data
-    if isinstance(defer, list) and len(defer) > 0:
-      self.catalog.removeItems(self.upstream, defer)
+    logging.debug('Consuming Upstream Data....')
+    if isinstance(defer, list):
+      logging.debug('Deferring a list and removing %d items tasked to run immed', len(immed))
+      self.catalog.removeItems(self.upstream, immed)
     elif defer is not None:
+      logging.debug('Slicing %d items', defer)
       self.catalog.slice(self.upstream, defer)
 
     # Other interal thread state is saved back to catalog
@@ -581,6 +584,14 @@ class macrothread(object):
 
     # Load data from Catalog
     logging.info("Loading Thread State for from catalog:")
+
+    # Load Standard set of simple params (init and simulation vals)
+    # By default these are immutable. For any vals which may change or update
+    # during execution, they should be explicitly set in the _mut or _append
+    self.load(list(settings.init.keys()))
+    self.load(list(settings.sim_params.keys()))
+
+    # Load additional State values  
     self.load(self._mut, self._immut, self._append)
 
     if args.workinput:
