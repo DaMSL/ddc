@@ -33,6 +33,85 @@ class TimeScape:
             break
     return data
 
+  @classmethod
+  def windows(cls, fname):
+    tran = TimeScape.read_log(fname)
+    W = []
+    for i in range(1, len(tran)):
+      W.append((tran[i-1], tran[i]))
+    return W
+
+  @classmethod
+  def contact_map(cls, fname, natoms, nframes):
+    cmap = np.zeros(shape=(nframes, natoms, natoms))
+    # for i in range(natoms):
+    #   cmap[0][i][i] = 1
+    event_list = []
+    with open(fname) as src:
+      for line in src.readlines():
+        if line.startswith('+++') or line.startswith('---'):
+          elm = line.split()
+          polar, step,r1,r2 = elm[0],int(elm[5][:-1]),int(elm[7])-1,int(elm[10][:-1])-1
+          event_list.append((polar, step, r1, r2))
+    cur_frame = 0
+    debug = 0
+    for ev, step, r1, r2 in event_list:
+      if step > cur_frame:
+        for fr in range(cur_frame+1, step+1):
+          cmap[fr] = cmap[cur_frame]
+        cur_frame = step
+      val = 1 if ev == '+++' else 0
+      cmap[step][r1][r2] = cmap[step][r2][r1] = val
+    for fr in range(cur_frame+1, nframes):
+      cmap[fr] = cmap[cur_frame]
+    return cmap
+
+
+  @classmethod
+  def event_list(cls, fname, e_type='all'):
+    if e_type not in ['all', 'init', 'form', 'break']:
+      print('Must use e_type of:  form, break, both')
+      return
+    event_list = []
+    with open(fname) as src:
+      for line in src.readlines():
+        if not(line.startswith('+++') or line.startswith('---')):
+          continue
+        elm = line.split()
+        ev1, ev2, step,r1,r2 = elm[1],elm[2],int(elm[5][:-1]),int(elm[7])-1,int(elm[10][:-1])-1
+        if ev1 == 'initial' and e_type in ['all', 'init']:
+          event_list.append(('init', step, r1, r2))
+        elif ev2 == 'formed' and e_type in ['all', 'form']:
+          event_list.append(('form', step, r1, r2))
+        elif ev2 == 'broken' and e_type in ['all', 'break']:
+          event_list.append(('break', step, r1, r2))
+    return event_list
+
+
+    # def basin_contact_map(cls, prefix, natoms, nframes):
+    #   trans = TimeScape.read_log(prefix+'_transitions.log')
+    #   events = TimeScape.event_list(prefix + '_events.log')
+    #   cmap = np.zeros(shape=(len(trans)-1, natoms, atoms))
+    #   W = [(trans[i], trans[i+1]) for i in range(0, len(trans)-1)]
+    #   last_tran = trans[-1]
+    #   basin_event = [[] for i in range(len(W))]
+    #   for etype, step, a, b in events:
+    #     val = 
+
+    #   with open(fname) as src:
+    #     for line in src.readlines():
+    #       if not(line.startswith('+++') or line.startswith('---')):
+    #         continue
+    #       elm = line.split()
+    #       ev, step,r1,r2 = elm[0],int(elm[5][:-1]),int(elm[7])-1,int(elm[10][:-1])-1
+    #       if step == 0:
+    #         continue
+    #       if ev == '+++' and e_type in ['both', 'form']:
+    #         event_list.append((step, r1, r2))
+    #       if ev == '---' and e_type in ['both', 'break']:
+    #         event_list.append((step, r1, r2))
+
+
 class Basin(object):
   def __init__ (self, traj_id, window, mindex, traj=None, uid=None):
     self.start, self.end = window

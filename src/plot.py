@@ -35,6 +35,9 @@ def graph_args(kwargs):
     plt.xlabel(arg['xlabel'])
   plt.ylim(arg['ylim'])
   plt.xlim(arg['xlim'])
+  if 'vlines' in kwargs:
+    for v in kwargs['vlines']:
+      plt.axvline(v, color='k')
   title = 'graph' if arg['title'] is None else arg['title']
   plt.title(title)
   fname = title if arg['fname'] is None else arg['fname']
@@ -50,6 +53,7 @@ def graph_args(kwargs):
 #            'Biased': '#3030CD',  
 #            'MVNN': '#C030C0', 
 #            'Reweight': 'red'}
+
 ####  SCATTER PLOTS
 
 def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, xlim=None, ylim=None, ):
@@ -80,11 +84,6 @@ def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, x
   plt.savefig(loc + '/' + fname + '.png')
   plt.close()
 
-def scatter2D(X, Y, title, size=1, **kwargs):
-  prep_graph()
-  plt.scatter(X, Y, s=size, lw=0)
-  graph_args(kwargs)
-
 
 def network2D(nodeList, edgeList, **kwargs):
   prep_graph()
@@ -98,7 +97,6 @@ def network2D(nodeList, edgeList, **kwargs):
     plt.scatter(x0, y0, c='blue', s=2*node['size'], zorder=2, lw=0)
   fig.set_size_inches(16, 16)
   graph_args(kwargs)
-
 
 def nodeGraph1D(nodelist, **kwargs):
   prep_graph()
@@ -130,22 +128,27 @@ def nodeGraph1D(nodelist, **kwargs):
   #   x1, y1 = nodeList[n]['x'], nodeList[n]['y']
   #   plt.plot((x0, x1), (y0, y1), linewidth=1, color='k')
 
+def scatter2D(X, Y, size=1, L=None, **kwargs):
+  prep_graph()
+  if L is None:
+    plt.scatter(X, Y, lw=0)
+  else:
+    plt.scatter(X, Y, c=L, lw=0)
+  graph_args(kwargs)
 
-def scatter3D(X, Y, Z, title, L=None):
-  plt.cla()
-  plt.clf()
-  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+
+
+def scatter3D(X, Y, Z, L=None, **kwargs):
+  prep_graph()
   fig = plt.figure()
   ax = Axes3D(fig)
   if L is None:
     ax.scatter(X, Y, Z, lw=0)
   else:
     ax.scatter(X, Y, Z, c=L, lw=0)
-  plt.ylabel(title)
-  # plt.legend()
-  plt.savefig(loc + '/' + title + '_3d.png')
-  plt.close() 
-
+  if 'zlabel' in kwargs:
+    ax.set_zlabel = kwargs['zlabel']
+  graph_args(kwargs)
 
 def scats (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=None):
   if isinstance(series, dict):
@@ -180,8 +183,6 @@ def scats (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=Non
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-
-
 def scat_Transtions (series, title, size=10, xlabel=None, xlim=None, labels=None):
   plt.clf()
   ax = plt.subplot(111)
@@ -205,8 +206,6 @@ def scat_Transtions (series, title, size=10, xlabel=None, xlim=None, labels=None
   plt.legend(handles=patches, loc='lower right')  
   plt.savefig(SAVELOC + '/scat_' + title + '.png')
   plt.close()
-
-
 
 def scat_layered (series, title, size=10, xlabel=None, xlim=None):
   marker_list = ('o', 'v', '*', 'H', 'D', '^', '<', '>', '8', 's', 'p', 'h', 'd')
@@ -235,8 +234,6 @@ def scat_layered (series, title, size=10, xlabel=None, xlim=None):
   plt.legend(handles=patches+markers, loc='upper right')  
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
-
-
 
 def deshaw_rmsd(Y, title, label, size=1, fname=None):
   plt.cla()
@@ -277,26 +274,21 @@ def step_rmsd(Y, title, label, fname=None, ylim=None):
 
 
 
-#####   LINE Graph
+#####   LINE Graph 
  
-def line(X, title, vlines=[]):
-  plt.clf()
-  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+def line(X, **kwargs):
+  prep_graph()
+  plt.rcParams['agg.path.chunksize'] = 100000
   if isinstance(X, dict):
     for k, v in X.items():
-      print('Plotting: ', k)
       plt.plot(np.arange(len(v)), v, label=k)
   elif isinstance(X, np.ndarray):
     plt.plot(np.arange(len(X)), X)
   else:
     print("Not Implemented for:", str(type(X)))
     return
-  for v in vlines:
-    plt.axvline(v, color='k')
-  plt.xlabel(title)
-  plt.legend()
-  plt.savefig(loc + '/' + title + '.png')
-  plt.close()  
+  plt.legend(loc='upper left')
+  graph_args(kwargs)
 
 def linegraphcsv(X, title, nolabel=False):
   """ Plots line series for a csv list
@@ -527,9 +519,8 @@ def bargraph(data, title, label=None):
   plt.close()  
   plt.show()
 
-def bargraph_simple(data, title, err=None):
-  plt.cla()
-  plt.clf()
+def bargraph_simple(data, err=None, **kwargs):
+  prep_graph()
   fig, ax = plt.subplots()
   labels = None
   if isinstance(data, list):
@@ -550,15 +541,16 @@ def bargraph_simple(data, title, err=None):
   if labels is not None:
       plt.xticks(X+.5, labels, rotation='vertical')
   # vmax = 1. if np.max(Y) <= 1. else np.max(Y)
-  vmax = np.max(Y)
-  if err is not None:
-    vmax += np.max(error)
-  ax.set_ylim(0, vmax)
-  fig.suptitle(title)
+  if 'title' not in kwargs:
+    kwargs['title'] = 'bargraph'
+
+  if 'ylim' not in kwargs:
+    vmax = np.max(Y)
+    if err is not None:
+      vmax += np.max(error)
+    kwargs['ylim'] = (0, vmax)
   plt.tight_layout()
-  plt.savefig(SAVELOC + '/bar_' + title + '.png')
-  plt.close()  
-  plt.show()
+  graph_args(kwargs)
 
 def feadist(data, title, fname=None, err=None, pcount=None, norm=1, negval=False):
   plt.cla()
@@ -931,6 +923,25 @@ def rmsd_matrix(data, labels, title, fname=None, nsscale=1, vmax=None, xlabel=No
   plt.close()  
   plt.show()
 
+
+
+
+def heatmap_board(data, colmap='gnuplot2_r', vmax=None, **kwargs): # title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, vlines=[], ):
+  prep_graph()
+  fig, ax = plt.subplots()
+  vmin = min(0, np.min(data))
+  if vmax is None:
+    vmax = np.max(data)
+
+  # heatmap = ax.matshow(data, interpolation='nearest', cmap=colmap)
+  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
+  fig.colorbar(heatmap)
+
+  plt.xticks(range(len(data)))
+  plt.yticks(range(len(data)))
+
+  plt.tight_layout()
+  graph_args(kwargs)
 
 
 
