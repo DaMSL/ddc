@@ -647,6 +647,12 @@ def histogram(data, title, ylim=None):
   plt.close()  
 
 
+def histo_simple(data, bins=20, **kwargs):
+  prep_graph()
+  plt.hist(data, bins=bins)
+  graph_args(kwargs)
+
+
 ##### PIE CHARTS
 def pie(data, title):
   labelList = data.keys()
