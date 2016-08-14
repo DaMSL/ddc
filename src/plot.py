@@ -23,9 +23,15 @@ ecolors = {'Serial': 'darkorange',
 
 arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim']
 
+st_col = ['red', 'blue', 'green', 'purple', 'black']
+
 def prep_graph():
   plt.cla()
   plt.clf()
+
+def state_legend(loc='upper left'):
+  patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(st_col)]
+  plt.legend(handles=patches, loc=loc, prop={'family': 'monospace'})
 
 def graph_args(kwargs):
   arg = {k: kwargs.get(k, None) for k in arg_list}
@@ -124,6 +130,21 @@ def nodeGraph1D(nodelist, **kwargs):
 
 
 
+# class Arrow3D(FancyArrowPatch):
+#   """
+#    re: http://stackoverflow.com/questions/22867620/putting-arrowheads-on-vectors-in-matplotlibs-3d-plot
+#   """
+#   def __init__(self, xs, ys, zs, *args, **kwargs):
+#       FancyArrowPatch.__init__(self, (0,0), (0,0), *args, **kwargs)
+#       self._verts3d = xs, ys, zs
+
+#   def draw(self, renderer):
+#       xs3d, ys3d, zs3d = self._verts3d
+#       xs, ys, zs = proj3d.proj_transform(xs3d, ys3d, zs3d, renderer.M)
+#       self.set_positions((xs[0],ys[0]),(xs[1],ys[1]))
+#       FancyArrowPatch.draw(self, renderer)
+
+
   # for n in node['edges']:
   #   x1, y1 = nodeList[n]['x'], nodeList[n]['y']
   #   plt.plot((x0, x1), (y0, y1), linewidth=1, color='k')
@@ -135,7 +156,6 @@ def scatter2D(X, Y, size=1, L=None, **kwargs):
   else:
     plt.scatter(X, Y, c=L, lw=0)
   graph_args(kwargs)
-
 
 
 def scatter3D(X, Y, Z, L=None, **kwargs):
@@ -272,6 +292,24 @@ def step_rmsd(Y, title, label, fname=None, ylim=None):
   plt.savefig(loc + '/' + fname + '.png')
   plt.close()
 
+def edges(A, B, L=None, size=10, **kwargs):
+  prep_graph()
+  if L is None:
+    L = ['k' for i in range(len(A))]
+  if (A.shape[1] == 3):
+      fig = plt.figure()
+      ax = Axes3D(fig)
+      ax.scatter(A[:,0], A[:,1], A[:,2], c=L, marker='o', s=20, lw=0)
+      ax.scatter(B[:,0], B[:,1], B[:,2], c=L, marker='^', s=2, lw=0)
+      for a,b,c in zip(A,B,L):
+        plt.plot([a[0],b[0]], [a[1],b[1]], [a[2],b[2]], color=c)
+  else:
+      plt.scatter(A[:,0], A[:,1], c=L, s=size, marker='o', lw=0)
+      plt.scatter(B[:,0], B[:,1], c=L, s=size, marker='^', lw=0)
+      for a,b,c in zip(A,B,L):
+        plt.plot([a[0],b[0]], [a[1],b[1]], color=c)
+  graph_args(kwargs)
+
 
 
 #####   LINE Graph 
@@ -317,8 +355,6 @@ def step_lines(series, title, xlabel=None, scale=None):
   plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
-
-
 
 def steps(data, title, ylabel=None):
   plt.clf()
@@ -518,6 +554,26 @@ def bargraph(data, title, label=None):
   plt.savefig(SAVELOC + '/bar_' + title + '.png')
   plt.close()  
   plt.show()
+
+def stackhisto(data, **kwargs):
+  """
+   Assumes a dict of labels to a list of ints representing counts
+  """
+  prep_graph()
+  X = 0
+  for k, v in sorted(data.items()):
+    y0 = 0
+    print(X, k, v)
+    for i, y1 in enumerate(v):
+      if (k == 55.0):
+        print(X, y1, y0, st_col[i])
+      plt.bar(X, y1, bottom=y0, color=st_col[i])
+      y0 += y1
+    X += 1
+  plt.xticks(np.arange(X)+.5, np.arange(X))
+  state_legend()
+  graph_args(kwargs)
+
 
 def bargraph_simple(data, err=None, **kwargs):
   prep_graph()

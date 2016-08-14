@@ -4,6 +4,8 @@ import logging
 import math
 import redis
 
+import itertools as itr
+
 from core.common import *
  
 
@@ -15,6 +17,10 @@ __copyright__ = "Copyright 2016, Data Driven Control"
 __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
+
+
+
+
 
 
 class TimeScape:
@@ -133,6 +139,61 @@ class Basin(object):
     return d
 
     
+
+
+second_sc_atom = {
+  'ALA': 'CA',
+  'ARG': 'CZ',
+  'ASN': 'CG',
+  'ASP': 'CG',
+  'CYS': 'CB', 
+  'GLN': 'CD', 
+  'GLU': 'CD', 
+  'GLY': 'CA', 
+  'HSD': 'CE1', 
+  'HSE': 'CE1', 
+  'HSP': 'CE1', 
+  'ILE': 'CG1', 
+  'LEU': 'CD1', 
+  'LYS': 'CE', 
+  'MET': 'SD', 
+  'PHE': 'CE1', 
+  'PRO': 'CD', 
+  'SER': 'CB', 
+  'THR': 'CB', 
+  'TRP': 'CE3',
+  'TYR': 'CZ',
+  'VAL': 'CB'
+}
+
+def side_chain_atoms(traj):
+  if isinstance(traj, md.Topology):
+    top = traj
+  elif isinstance(traj, md.Trajectory):
+    top = traj.top
+  else:
+    print("Only implemented for MDTrajectories and Topologies")
+  atom_indices = np.zeros(top.n_residues, dtype=np.int32)
+  for i, res in enumerate(top.residues):
+    aname = second_sc_atom[res.name]
+    idx = top.select('(resid==%d) and (name %s)' % (i, aname))[0]
+    print(i, res.name, aname, idx)
+    atom_indices[i] = idx
+  return atom_indices
+
+def side_chain_pairs(traj):
+  atom_idx = side_chain_atoms(traj)
+  return list(itr.combinations(atom_idx, 2))  
+
+
+
+
+
+
+
+##################
+
+
 
 class TimeScapeParser(object):
   """ 
