@@ -582,13 +582,13 @@ class macrothread(object):
 
     self.catalog.loadSchema()   # Should this be called from within the catalog module?
 
-    # Load data from Catalog
+    # Load current STATE from Catalog
     logging.info("Loading Thread State for from catalog:")
 
     # Load Standard set of simple params (init and simulation vals)
     # By default these are immutable. For any vals which may change or update
     # during execution, they should be explicitly set in the _mut or _append
-    self.load(list(settings.init.keys()))
+    self.load(list(settings.state.keys()))
     self.load(list(settings.sim_params.keys()))
 
     # Load additional State values  

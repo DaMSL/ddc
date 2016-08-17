@@ -141,8 +141,12 @@ class systemsettings:
     #     trace dirty flagging (which reduces I/O) and provides a capability to 
     #     synchronize between threads thru the catalog
 
+
+    # schema : data types to support K-V operations (place holder for now)
     self.schema = defaults['schema']
-    self.init = defaults['init']
+
+    # 
+    self.state = defaults['state']
     self.sim_params = defaults['simulation']
 
 

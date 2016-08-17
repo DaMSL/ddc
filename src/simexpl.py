@@ -40,7 +40,7 @@ from bench.timer import microbench
 from bench.stats import StatCollector
 
 from mdtools.timescape import TimeScapeParser
-from mdtools.simtool import Peptide
+from mdtools.structure import Protein
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -67,18 +67,6 @@ class simulationJob(macrothread):
 
     # State Data for Simulation MacroThread -- organized by state
     self.setStream('jcqueue', 'basin:stream')
-    # self.addImmut('simSplitParam')
-    # self.addImmut('simDelay')
-    # self.addImmut('terminate')
-    # self.addImmut('sim_conf_template')
-    # self.addImmut('dcdfreq')
-    # self.addImmut('runtime')
-    # self.addImmut('sim_step_size')
-    # self.addImmut('max_observations')    
-    # self.addImmut('pdb:ref:0')
-    # self.addImmut('pdb:topo')
-    # self.addImmut('timescape:agility:delta')
-    # self.addImmut('timescape:agility:rate')
     self.addAppend('xid:filelist')
 
     # Local Data to this running instance
@@ -125,6 +113,10 @@ class simulationJob(macrothread):
     self.delay = self.data['simDelay']
 
   def fetch(self, i):
+
+    # First, Define Protein Object
+    self.protein = Protein('bpti', self.catalog)
+
     # Load parameters from catalog
     key = wrapKey('jc', i)
     params = self.catalog.hgetall(key)
@@ -285,6 +277,8 @@ class simulationJob(macrothread):
       # shutil.copy(ramdisk + job['name'] + '.dcd', job['workdir'])
       # And copy to Lustre (usng zero-copy):
       if USE_SHM:
+
+        # ALT:  X-Mit to Cache Service and let cache write to disk lazily
         src  = open(dcd_ramfile, 'rb')
         dest = open(dcdFile, 'w+b')
         offset = 0
@@ -306,8 +300,8 @@ class simulationJob(macrothread):
   # 1. With combined Sim-analysis: file is loaded locally from shared mem
     logging.debug("2. Load DCD")
 
-    topofile = os.path.join(settings.workdir, self.data['pdb:topo'])
-    topo = md.load(topofile)
+    # topofile = os.path.join(settings.workdir, self.data['pdb:topo'])
+    topo = self.protein.top
 
     # Load full higher dim trajectory
     # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
@@ -337,18 +331,24 @@ class simulationJob(macrothread):
       #  Store Data
 
     # TODO: VERTIFY this filter
-    bpti = Peptide('bpti', topo)
-    hfilt = bpti.get_filter('heavy')
-    pfilt = bpti.get_filter('protein')
+    hfilt = self.protein.hfilt()
+    pfilt = self.protein.pfilt()
     traj_prot = traj.atom_slice(pfilt)
     traj_heavy = traj.atom_slice(hfilt)
 
-    lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
-    landmark  = md.load(lm_file)
+
+    # Calculate output Distance Space
+    # Use of the second side chain atom is discussed in the ref paper on Timescape
+    # The atom pairs and selected atoms are in the timescape module
+    sc_pairs = TS.side_chain_pairs(traj_prot)
+    dist_space = DR.distance_space(traj_prot, pairs=sc_pairs)
+
+    # lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
+    # landmark  = md.load(lm_file)
 
     # Calculate RMSD for ea (note conversion nm -> angstrom)
-    logging.info('Running Metrics on local output:  RMSD')
-    rmsd = 10 * md.rmsd(traj_prot, landmark, 0, hfilt, hfilt, precentered=True)
+    # logging.info('Running Metrics on local output:  RMSD')
+    # rmsd = 10 * md.rmsd(traj_prot, landmark, 0, hfilt, hfilt, precentered=True)
 
     # Calc Phi/Psi angles
     # phi_angles = md.compute_phi(traj)[1][0]
@@ -360,9 +360,9 @@ class simulationJob(macrothread):
 
     # Execute Timescapes agility program to detect spatial-temporal basins
     # Get the frame rate to save from catalog:
-    logging.debug('Preprocessing output for TimeScapes: agility')
+    logging.debug('Preprocessing output for TimeScapes: terrain')
     traj_frame_per_ps = int(job['interval']) / 1000.   # jc interval is in fs
-    ts_frame_per_ps = int(self.data['timescape:agility:rate'])  # this value is in ps
+    ts_frame_per_ps = int(self.data['timescape:rate'])  # this value is in ps
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
 
     # FOR DEBUGGING
@@ -380,10 +380,13 @@ class simulationJob(macrothread):
 
     # Gaussuan Full Width at Half-Max value affects sliding window size
     # ref:  http://timescapes.biomachina.org/guide.pdf
-    gauss_wght_delta = int(self.data['timescape:agility:delta'])
+    gmd_cut1 = int(self.data['timescape:gmd:low'])
+    gmd_cut2 = int(self.data['timescape:gmd:hi'])
+    gauss_wght_delta = int(self.data['timescape:delta'])
 
-    # Execute timescapes' agility.py on the pre-processed trajectory
-    cmd = 'agility.py %s %s %d %s' %(tmp_pdb, tmp_dcd, gauss_wght_delta, output_prefix)
+    # Execute timescapes' terrain.py on the pre-processed trajectory
+    cmd = 'terrain.py %s %s %d %d %d GMD %s' %
+      (tmp_pdb, tmp_dcd, gmd_cut1, gmc_cut2, gauss_wght_delta, output_prefix)
     logging.info('Running Timescapes:\n  %s', cmd)
     stdout = executecmd(cmd)
     logging.info('TimeScapes COMPLETE:\n%s', stdout)
@@ -391,30 +394,39 @@ class simulationJob(macrothread):
     logging.debug('Parsing Timescapes output')
     ts_parse = TimeScapeParser(tmp_pdb, output_prefix, job['name'], 
       dcd=dcdFile, traj=traj, uniqueid=False)
-    ts_parse.load_basins(frame_rate=frame_rate)
+    basin_list = ts_parse.load_basins(frame_rate=frame_rate)
+    corr_matrix = ts_parse.correlation_matrix()
 
     minima_coords = {}
     basin_rms = {}
     basins = {}
 
     downstream_list = []
-    for i, basin in enumerate(ts_parse.basins):
+    for i, basin in enumerate(basin_list):
       logging.info('  Processing basin #%2d', i)
       bid = basin.id
       downstream_list.append(bid)
 
       # Slice out minima coord  & save to disk (for now)
+      #  TODO:  Store in memory in cache
       minima_coords[bid] = traj.slice(basin.mindex)
       jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
       minima_coords[bid].save_pdb(jc_filename)
 
       # METRIC CALCULATION
       a, b = basin.start, basin.end
-      basin_rms[bid] = np.median(rmsd[a:b])
+      corr_vector = np.mean(corr_matrix[a:b], axis=0)
+      dspace_mean = np.mean(dist_space[a:b], axis=0)
+      dspace_std  = np.std(dist_space[a:b], axis=0)
+
+      # basin_rms[bid] = np.median(rmsd[a:b])
 
       # Collect Basin metadata
       basin_hash = basin.kv()
       basin_hash['pdbfile'] = jc_filename
+      basin_hash['corr_vector'] = pickle.dumps(corr_vector)
+      basin_hash['d_mu']        = pickle.dumps(dspace_mean)
+      basin_hash['d_sigma']     = pickle.dumps(dspace_std)
       basins[bid] = basin_hash
 
       logging.info('  Basin data dump: %s', basin_hash)
@@ -446,7 +458,7 @@ class simulationJob(macrothread):
           logging.debug('Updating %s basins', len(basins))
           for bid in basins.keys():
             pipe.rpush('basin:list', bid)
-            pipe.hset('basin:rms', bid, basin_rms[bid])
+            # pipe.hset('basin:rms', bid, basin_rms[bid])
             pipe.hmset('basin:%s'%bid, basins[bid])
             pipe.set('minima:%s'%bid, pickle.dumps(minima_coords[bid]))
 

@@ -4,9 +4,10 @@
         "jcqueue": "list",
         "xid:filelist": "list",
         "xid:reference": "list",
-        "basin:stream": "list"
+        "basin:stream": "list",
+        "corr_matrix": "ndarray"
     },
-    "init": {
+    "state": {
         "numresources": 2,
         "simDelay": 60,
         "ctlDelay": 60,
@@ -18,8 +19,11 @@
         "terminate": "no",
         "pdb:topo": "seed/coord.pdb",
         "pdb:ref:0": "seed/coord-prot.pdb",
-        "timescape:agility:rate": 4,
-        "timescape:agility:delta": 20
+        "timescape:rate": 4,
+        "timescape:delta": 20,
+        "timescape:gmd:low": 2,
+        "timescape:gmd:hi": 3,
+        "raritytheta": 0.15
     },
     "simulation": {
         "timestep": 0,
@@ -29,7 +33,10 @@
         "sim_step_size": 2.5,
         "psffile": "solvent/bptisolv.psf",
         "ffield_dir": "solvent/toppar",
-        "sim_conf_template": "templates/bpti.solv.temp"
+        "sim_conf_template": "templates/bpti.solv.temp",
+        "protein:bpti": {
+            "topo": "bpti/5PTI.pdb"
+        }
     },
     "settings": {
         "experiment_number": 12,

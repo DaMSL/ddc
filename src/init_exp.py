@@ -21,6 +21,7 @@ import core.ops as ops
 import datatools.datareduce as datareduce
 from datatools.rmsd import *
 from mdtools.simtool import *
+from mdtools.structure import Protein
 import mdtools.deshaw as deshaw
 import bench.db as db
 import plot as P
@@ -84,9 +85,68 @@ def initializecatalog(catalog):
   for k, val in settings.sim_params.items():
     initvals[k] = val
 
+  # Manually Load Protein PDF into catalog (for now)
+  # TODO:  Make this config and/or in setting depending on # of proteins to run
+  bpti_pdb = os.path.join(settings.workdir, 'bpti', '5PTI.pdb')
+  catalog.hset('protein:bpti', bpti_pdb)
+
   catalog.save(initvals)
   for k, v in initvals.items():
     logging.debug("Initializing data elm %s  =  %s", k, str(v))
+
+
+def load_historical_data(catalog):
+  """ Load all DEShaw data into basins for processing """
+  settings = systemsettings()
+  home = os.getenv('HOME')
+  deds = np.load(home + '/work/timescape/deds.npy')
+  print("DEShaw Distance Space loaded:  ", deds.shape)
+  basin_list = []
+  file_pref = home+'/work/timescape/desh_'
+  for i in range(42):
+    m = TS.TimeScape.read_log(file_pref + '%02d_minima.log'%i)
+    t = TS.TimeScape.read_log(file_pref + '%02d_transitions.log'%i)
+    cm = TS.TimeScape.contact_map(file_pref + '%02d_events.log'%i, 58, 100000 if i < 41 else 25000)
+    print("Processing Traj: ", i, len(m), len(t), len(cm))
+    for w in range(1, min(len(m), len(t)-1)):
+      a, b = t[w-1], t[w]
+      offset = i*100000
+      basin_list.append(Basin(i, (a,b), m[t-1], uid='%07d'%(offset+a)))
+    
+
+      basin_hash = basin.kv()
+      basin_hash['corr_vector'] = pickle.dumps(corr_vector)
+      basin_hash['d_mu']        = pickle.dumps(dspace_mean)
+      basin_hash['d_sigma']     = pickle.dumps(dspace_std)
+
+
+  # Create new jobs from selected basins
+  dcdfreq = int(catalog.get('dcdfreq'))
+  runtime = int(catalog.get('runtime'))
+  sim_step_size = float(catalog.get('sim_step_size'))
+  force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
+  psf = os.path.join(settings.workdir, catalog.get('psffile'))
+  sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
+  global_params = getSimParameters(sim_init, 'seed')
+
+  for seed in seedlist:
+    logging.debug('\nSeeding Job: %s ', seed)
+    basin = catalog.hgetall('basin:%s'%seed)
+
+    # Generate new set of params/coords
+    jcID, config = generateExplJC(basin)
+
+    # Update Additional JC Params and Decision History, as needed
+    config.update(global_params)
+    config['name'] = jcID
+
+    # Push to catalog
+    logging.info("New Simulation Job Created: %s", jcID)
+    for k, v in config.items():
+      logging.debug("   %s:  %s", k, str(v))
+    catalog.rpush('jcqueue', jcID)
+    catalog.hmset(wrapKey('jc', jcID), config)
+
 
 def load_seeds(catalog, calc_seed_rms=False):
     settings = systemsettings()
@@ -100,46 +160,47 @@ def load_seeds(catalog, calc_seed_rms=False):
     seed_frame_rate = 0.25  # in ps
     seed_ts_factor = 16     # TimeScape ran on 4ps frame rate (16x source)
 
-    pdb_file = os.path.join(settings.workdir, catalog.get('pdb:topo'))
-    print("PDB FILE: ", settings.workdir, pdb_file)
-    topo = md.load(pdb_file)
-    bpti = Peptide('bpti', topo)
+    bpti = Protein(bpti, catalog, load=True)
+    pdb_file = bpti.pdbfile
 
+    print("PDB FILE: ", settings.workdir, pdb_file)
+    topo = bpti.pdb
     logging.info('Topology file: %s  <%s>', pdb_file, str(topo))
 
-    ref_file = os.path.join(settings.workdir, catalog.get('pdb:ref:0'))
-    ref_traj = md.load(ref_file)
-    logging.info('RMS Reference file: %s  <%s>', ref_file, str(ref_traj))
+    # ref_file = os.path.join(settings.workdir, catalog.get('pdb:ref:0'))
+    # ref_traj = md.load(ref_file)
+    # logging.info('RMS Reference file: %s  <%s>', ref_file, str(ref_traj))
 
     hfilt = bpti.get_filter('heavy')
 
-    ts_rate = catalog.get('timescape:agility:rate')
+    ts_rate = catalog.get('timescape:rate')
 
     for idx in idx_list:
       s, t = slist[idx], tlist[idx]
       logging.info('Trajectory SEED:  %s', s)
       tfile = os.path.join(seed_dir, t)
-      rms_file = os.path.join(seed_dir, 'rms', 'rms%d'%idx)
 
-      if calc_seed_rms:
-        traj = md.load(tfile, top=topo)
-        traj.superpose(topo)
-        protein = traj.atom_slice(bpti.get_filter('protein'))
-        ####  METRIC GOES HERE
-        rms = 10*md.rmsd(protein, ref_traj, 0, hfilt, hfilt, precentered=True)
-        np.save(rms_file, rms)
-      else:
-        traj = None
-        rms = np.load(rms_file + '.npy')
+      # FOR RMSD CALCULATIONS
+      # rms_file = os.path.join(seed_dir, 'rms', 'rms%d'%idx)
+      # if calc_seed_rms:
+      #   traj = md.load(tfile, top=topo)
+      #   traj.superpose(topo)
+      #   protein = traj.atom_slice(bpti.get_filter('protein'))
+      #   ####  METRIC GOES HERE
+      #   rms = 10*md.rmsd(protein, ref_traj, 0, hfilt, hfilt, precentered=True)
+      #   np.save(rms_file, rms)
+      # else:
+      #   traj = None
+      #   rms = np.load(rms_file + '.npy')
 
       # Push to Catalog
       file_idx = catalog.rpush('xid:filelist', tfile) - 1
       start_index = catalog.llen('xid:reference')
       catalog.rpush('xid:reference', *[(file_idx, x) for x in range(seed_frame_length)])
-      catalog.rpush('metric:rms', *rms)
+      # catalog.rpush('metric:rms', *rms)
 
       # Process Trajectory as basins
-      logging.info("  Seed Loaded, RMS Complete. Loading TimeScape Data...")
+      logging.info("  Seed Loaded. Loading TimeScape Data...")
       seed_name = 'seed%d'%idx
       ts_traj = TimeScapeParser(pdb_file, 
           os.path.join(seed_dir, 'out', seed_name),

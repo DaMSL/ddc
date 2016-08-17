@@ -33,7 +33,8 @@ import datatools.kmeans as KM
 # from datatools.pca import calc_kpca, calc_pca, project_pca
 from datatools.pca import PCAnalyzer, PCAKernel, PCAIncremental
 from datatools.approx import ReservoirSample
-from mdtools.simtool import generateExplJC, getSimParameters, Peptide 
+from mdtools.simtool import generateExplJC, getSimParameters
+from mdtools.structure import Protein 
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
@@ -65,27 +66,19 @@ class controlJob(macrothread):
       self.addMut('jcqueue')
       self.addMut('converge')
       self.addMut('ctl_index_head')
-      # self.addImmut('ctlSplitParam')
-      # self.addImmut('ctlDelay')
-      # self.addImmut('terminate')
-      # self.addImmut('numresources')
-      # self.addImmut('ctl_min_basin')
-      # self.addImmut('dcdfreq')
-      # self.addImmut('runtime')
-      # self.addImmut('max_observations')
-      # self.addImmut('sim_step_size')
       self.addImmut('basin:list')
       self.addImmut('basin:rms')
       self.addAppend('timestep')
       self.addMut('runtime')
-
+      self.addMut('corr_matrix')
+      self.addMut['dspace_mu']
+      self.addMut['dspace_sigma']
+      self.addMut['raritytheta']
 
       self.addMut('ctlCountHead')
       self.addImmut('exploit_factor')
       self.addImmut('observe:count')
           
-
-
       # Update Base Slurm Params
       self.slurmParams['cpus-per-task'] = 24
 
@@ -118,24 +111,38 @@ class controlJob(macrothread):
       if len(basinlist) < minproc:
         return [], None
       else:
-        # Process all new basins
+        # Process all new basins: remove from downstream and create key for 
+        #  next control job
+        ctl_job_id = 'ctl:' + seqNumFromID
+        self.addMut(ctl_job_id, self.data['basin:stream'])
         self.data['basin:stream'] = []
-        return [len(basinlist)], len(basinlist)
+        return [ctl_job_id], []
         
-    def fetch(self, batchSize):
-      """Fetch determines the next thru index for this control loop
-      Note that batchSize is measured in ps. Thru Index should return
-      the next index to process
-      """
-      start_index = max(0, self.data['ctl_index_head'])
-      thru_index = min(start_index + int(batchSize), self.catalog.llen('basin:list')) - 1
-      return thru_index
+    def fetch(self, item):
+      """Retrieve this control job's list of basin ID's to process"""
+      # First, Define Protein Object
+      self.protein = Protein('bpti', self.catalog)
+
+      # Load corr_matrices for all new basins
+      self.cmat = {}
+
+      new_basin_list = self.catalog.lrange(item, 0, -1)
+      for b in new_basin_list:
+        key = 'basin:' + b
+        self.data[key] = self.catalog.hgetall(key)
+        self.cmat[b] = self.catalog.loadNPArray('basin:cmat:' + b)
+        # self.dmu[b] = self.catalog.loadNPArray('basin:dmu:' + b)
+        # self.dsigma[b] = self.catalog.loadNPArray('basin:dsigma:' + b)
+      return new_basin_list
+      # start_index = max(0, self.data['ctl_index_head'])
+      # thru_index = min(start_index + int(batchSize), self.catalog.llen('basin:list')) - 1
+      # return thru_index
 
     def configElasPolicy(self):
       self.delay = self.data['ctlDelay']
 
     
-    def execute(self, thru_index):
+    def execute(self, new_basin_list):
       """Executing the Controler Algorithm. Load pre-analyzed lower dimensional
       subspaces, process user query and identify the sampling space with 
       corresponding distribution function for each user query. Calculate 
@@ -161,9 +168,7 @@ class controlJob(macrothread):
 
       # create the "binlist":
       numresources = self.data['numresources']
-
-
-    # LOAD all new subspaces (?) and values
+      topo = self.protein.top
 
       ##### BARRIER
       self.wait_catalog()
@@ -205,6 +210,87 @@ class controlJob(macrothread):
         # For now retrieve immediately from catalog
         for bid in basin_id_list:
           basin_list.append(self.catalog.hgetall('basin:%s'%bid))
+
+      if EXPERIMENT_NUMBER == 13:
+
+        # Preprocess
+        N_features_src = topo.n_residues
+        N_features_corr = (N_features_src**2 - N_features_src) // 2 
+        upt = np.triu_indices(N_features_src, 1)
+
+        basin_corr_matrix_prev =  self.data['corr_matrix']
+        dspace_mu_prev = self.data['dspace_mu']
+        dspace_sigma_prev = self.data['dspace_sigma']
+
+        # Merge new basins with basin_corr_matrix
+        # Get list of new basin IDs
+
+        cmat, ds_mean, ds_std = [], [], []
+        for bid in new_basin_list:
+          key = 'basin:' + bid
+          basin = self.data[key]
+
+          # TODO:  HOW TO STORE THIS???? 
+          cmat.append(pickle.loads(basin['corr_vector']))
+          ds_mean.append(pickle.loads(basin['d_mu']))
+          ds_std.append(pickle.loads(basin['d_sigma']))
+
+          # TODO: FINISH NOISE MODEL
+
+        # Merge new values with old values:
+        if basin_corr_matrix_prev is None:
+          C_T = basin_corr_matrix = np.array(cmat)
+        else:
+          C_T = basin_corr_matrix = np.vstack((basin_corr_matrix_prev, cmat))
+  
+        if dspace_mu_prev is None:
+          D_mu = np.array(ds_mean)
+        else:
+          D_mu = np.vstack((dspace_mu_prev, ds_mean))
+        
+        if dspace_sigma_prev is None:
+          D_sigma = np.array(ds_std)
+        else:
+          D_sigma = np.vstack((dspace_sigma_prev, ds_std)) 
+  
+        D_noise = np.zeros(shape=(N_obs, M_reduced))
+
+
+        # Filter out features in M which are trivial (all 0 or all 1)
+        allCorr  = [i for i in range(N_features_corr) if (C_T[:,i]==0).all()]
+        allUncor = [i for i in range(N_features_corr) if (C_T[:,i]==1).all()]
+
+        # Use Set ops to reduce feature space and create a new M
+        selected_features = list(sorted(set(range(N_features_corr)) - set(allF) - set(allT)))
+        N_features_reduced = len(selected_features)
+        corr_matrix = C_T[:,selected_features]
+
+        N_obs = len(C_T)
+
+        # For each feature select corr basins and group by feature
+        feature_set = [set([i for i in range(N_obs) if CM[i][f] == 1.]) for f in range(N_features_reduced)]
+        feature_score = [len(v) for v in feature_set]
+        basin_score_vect = corr_matrix*feature_score  * NOISE # Vector Score
+
+        # OR APPLY NOISE HERE
+
+        basin_score_scalar = np.array([np.sum(basin_score_vect[i]) / np.sum(corr_matrix[i]) for i in range(N_obs)]) 
+        basin_rank = np.argsort(basin_score_scalar)
+
+        top_N = N_obs * self.data['raritytheta']  # or some rarity threshold
+
+        # Apply a skew distribution function (weight extremes)
+        skew_dist_func = lambda x: (x - len(top_N)/2)**2
+        skew_dist = [skew_dist_func(i) for i in range(top_N)]
+        norm_sum = np.sum(skew_dist)
+        skew_pdf = [skew_dist[i]/norm_sum for i in range(top_N)]
+
+
+
+
+
+
+        
 
     # Generate new starting positions
       global_params = getSimParameters(self.data, 'gen')

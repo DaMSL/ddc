@@ -176,34 +176,3 @@ def getSimParameters(state, origin='gen'):
     params['application'] = settings.name
 
     return params
-
-
-
-class Peptide (object):
-
-    def __init__(self, name, traj):
-        self.name = name
-        self.traj = traj
-
-    @classmethod
-    def filter(self, traj, filt):
-
-        if filt == 'protein':
-            return traj.top.select('protein')
-
-        if filt == 'alpha':
-            return traj.top.select_atom_indices('alpha')
-
-        if filt == 'heavy':
-            prot = traj.atom_slice(Peptide.filter(traj, 'protein'))
-            return prot.top.select("name =~ '[C.,N.,O.]'")
-
-        if filt == 'backbone':
-            prot = traj.atom_slice(Peptide.filter(traj, 'protein'))
-            return prot.top.select("backbone")
-
-        logging.warning('CAUTION: FILTER NOT PRE-DEFINED')
-        return traj.top.select(filt)
-
-    def get_filter(self, filt):
-        return Peptide.filter(self.traj, filt)
