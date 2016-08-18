@@ -218,9 +218,11 @@ class TimeScapeParser(object):
   def load_traj(self):
     self.traj = md.load(self.dcd, top=self.pdb)
 
-  def load_basins(self, frame_rate=1, force_load=False):
-    """
-    frame_rate is measured in #frames / ps
+  def load_basins(self, frame_ratio=1, force_load=False):
+    """  frame_ratio is the ratio in frame frequence between the 
+    FULL sorce tractory (i.e. 1 frame per ps) and the TimeScape
+    Analyzed trajectory (i.e. 1 frame every 4 ps)
+      # FRAME SRC :  
     """
 
     #  Parse segmentation file to get each basin's window
@@ -235,7 +237,7 @@ class TimeScapeParser(object):
         bnum = int(line.split()[-1])
         if cur_basin == bnum:
           continue
-        basin_list.append((last_trans*frame_rate, index*frame_rate))
+        basin_list.append((last_trans*frame_ratio, index*frame_ratio))
         last_trans = index
         cur_basin = bnum
       basin_list.append((last_trans, index))
@@ -245,7 +247,8 @@ class TimeScapeParser(object):
       self.load_traj()
 
     # Derive Correlation Matrix and get local minima frame indices
-    minima_list = [i*frame_rate for i in self.get_minima()]
+    # NOTE: minima index is in reference to FULL trajectory
+    minima_list = [i*frame_ratio for i in self.get_minima()]
     basin_index = 0
     last = None
 
@@ -269,10 +272,10 @@ class TimeScapeParser(object):
       self.basins.append(basin)
       last = basin
       basin_index += 1
-    return basin_list
+    return self.basins
 
 
-  def correlation_matrix(selfs):
+  def correlation_matrix(self):
     """Parses the event log output from TimeScapes and recreates the trajectory
     correlation matrix. Each frame is a [0,1] matrix indiciating if features
     i and j are correlated based on the TimeScape Event output. Since this is a 
@@ -280,10 +283,11 @@ class TimeScapeParser(object):
     if self.traj is None:
       self.load_traj()
 
-    # Initialize data
-    nframe, natoms = self.traj.n_frames, self.traj.n_atoms
-    fname = self.out.'_events.log'
-    cmap = np.zeros(shape=(nframes, natoms, natoms))
+    # Initialize data -- Correlation should exclude any solvent
+    protein = self.traj.atom_slice(self.traj.top.select('protein'))
+    nframes, nresid = protein.n_frames, protein.n_residues
+    fname = self.out + '_events.log'
+    cmap = np.zeros(shape=(nframes, nresid, nresid))
     event_list = []
 
     #  Read in all events line by line
@@ -312,8 +316,8 @@ class TimeScapeParser(object):
       cmap[fr] = cmap[cur_frame]
 
     # Only return upper triangle as a (nframes X M) matrix
-    upper_tri = np.triu_indices(natoms, 1)
-    return cmap[upt]
+    upper_tri = np.triu_indices(nresid, 1)
+    return cmap[upper_tri]
 
   def read_log(self, fname):
     data = [0]

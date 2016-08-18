@@ -28,7 +28,7 @@ from datatools.feature import feal
 
 from macro.macrothread import macrothread
 import mdtools.deshaw as DE
-import datatools.datareduce as dr
+import datatools.datareduce as DR
 from datatools.rmsd import calc_rmsd
 # from datatools.pca import project_pca, calc_pca, calc_kpca
 from datatools.pca import PCAnalyzer, PCAKernel
@@ -39,7 +39,7 @@ from overlay.overlayException import OverlayNotAvailable
 from bench.timer import microbench
 from bench.stats import StatCollector
 
-from mdtools.timescape import TimeScapeParser
+from mdtools.timescape import TimeScapeParser, side_chain_pairs
 from mdtools.structure import Protein
 
 __author__ = "Benjamin Ring"
@@ -301,18 +301,16 @@ class simulationJob(macrothread):
     logging.debug("2. Load DCD")
 
     # topofile = os.path.join(settings.workdir, self.data['pdb:topo'])
-    topo = self.protein.top
+    topo = self.protein.pdb
 
     # Load full higher dim trajectory
     # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
     if traj is None:
       if USE_SHM:
-        traj = md.load(dcd_ramfile, top=topo)
+        traj = md.load(dcd_ramfile, top=job['pdb'])
       else:
-        traj = md.load(dcdFile, top=topo)
+        traj = md.load(dcdFile, top=job['pdb'])
 
-    # Superpose Coordinates to Common Reference
-    traj.superpose(topo)
 
     bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
@@ -336,11 +334,13 @@ class simulationJob(macrothread):
     traj_prot = traj.atom_slice(pfilt)
     traj_heavy = traj.atom_slice(hfilt)
 
+    # Superpose Coordinates to Common Reference
+    traj_prot.superpose(topo)
 
     # Calculate output Distance Space
     # Use of the second side chain atom is discussed in the ref paper on Timescape
     # The atom pairs and selected atoms are in the timescape module
-    sc_pairs = TS.side_chain_pairs(traj_prot)
+    sc_pairs = side_chain_pairs(traj_prot)
     dist_space = DR.distance_space(traj_prot, pairs=sc_pairs)
 
     # lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
@@ -366,7 +366,7 @@ class simulationJob(macrothread):
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
 
     # FOR DEBUGGING
-    logging.warning("DEBUGGING IS ON..... FRAME RATE MANUAL SET TO 1")
+    logging.warning("DEBUGGING IS ON..... FRAME RATE MANUALLY SET TO 1")
     frame_rate = 1
 
     # Prep file and save locally
@@ -385,8 +385,8 @@ class simulationJob(macrothread):
     gauss_wght_delta = int(self.data['timescape:delta'])
 
     # Execute timescapes' terrain.py on the pre-processed trajectory
-    cmd = 'terrain.py %s %s %d %d %d GMD %s' %
-      (tmp_pdb, tmp_dcd, gmd_cut1, gmc_cut2, gauss_wght_delta, output_prefix)
+    cmd = 'terrain.py %s %s %d %d %d GMD %s' %\
+      (tmp_pdb, tmp_dcd, gmd_cut1, gmd_cut2, gauss_wght_delta, output_prefix)
     logging.info('Running Timescapes:\n  %s', cmd)
     stdout = executecmd(cmd)
     logging.info('TimeScapes COMPLETE:\n%s', stdout)
@@ -394,7 +394,7 @@ class simulationJob(macrothread):
     logging.debug('Parsing Timescapes output')
     ts_parse = TimeScapeParser(tmp_pdb, output_prefix, job['name'], 
       dcd=dcdFile, traj=traj, uniqueid=False)
-    basin_list = ts_parse.load_basins(frame_rate=frame_rate)
+    basin_list = ts_parse.load_basins(frame_ratio=frame_rate)
     corr_matrix = ts_parse.correlation_matrix()
 
     minima_coords = {}
@@ -429,7 +429,8 @@ class simulationJob(macrothread):
       basin_hash['d_sigma']     = pickle.dumps(dspace_std)
       basins[bid] = basin_hash
 
-      logging.info('  Basin data dump: %s', basin_hash)
+      logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
+        basin_hash['start'], basin_hash['end'])
 
 
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
@@ -453,7 +454,6 @@ class simulationJob(macrothread):
           pipe.multi()
 
           pipe.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
-          pipe.rpush('metric:rms', *rmsd)
 
           logging.debug('Updating %s basins', len(basins))
           for bid in basins.keys():

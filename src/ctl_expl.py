@@ -213,7 +213,7 @@ class controlJob(macrothread):
 
       if EXPERIMENT_NUMBER == 13:
 
-        # Preprocess
+        # PREPROCESS
         N_features_src = topo.n_residues
         N_features_corr = (N_features_src**2 - N_features_src) // 2 
         upt = np.triu_indices(N_features_src, 1)
@@ -222,9 +222,8 @@ class controlJob(macrothread):
         dspace_mu_prev = self.data['dspace_mu']
         dspace_sigma_prev = self.data['dspace_sigma']
 
-        # Merge new basins with basin_corr_matrix
+        # MERGE: new basins with basin_corr_matrix, d_mu, d_sigma
         # Get list of new basin IDs
-
         cmat, ds_mean, ds_std = [], [], []
         for bid in new_basin_list:
           key = 'basin:' + bid
@@ -253,42 +252,16 @@ class controlJob(macrothread):
         else:
           D_sigma = np.vstack((dspace_sigma_prev, ds_std)) 
   
-        D_noise = np.zeros(shape=(N_obs, M_reduced))
+        # D_noise = np.zeros(shape=(N_obs, M_reduced))
+        sampler = CorrelationSampler(all_basins, C_T)
+        basin_id_list = sampler.execute(numresources)
+
+        # For now retrieve immediately from catalog
+        for bid in basin_id_list:
+          basin_list.append(self.catalog.hgetall('basin:%s'%bid))
 
 
-        # Filter out features in M which are trivial (all 0 or all 1)
-        allCorr  = [i for i in range(N_features_corr) if (C_T[:,i]==0).all()]
-        allUncor = [i for i in range(N_features_corr) if (C_T[:,i]==1).all()]
-
-        # Use Set ops to reduce feature space and create a new M
-        selected_features = list(sorted(set(range(N_features_corr)) - set(allF) - set(allT)))
-        N_features_reduced = len(selected_features)
-        corr_matrix = C_T[:,selected_features]
-
-        N_obs = len(C_T)
-
-        # For each feature select corr basins and group by feature
-        feature_set = [set([i for i in range(N_obs) if CM[i][f] == 1.]) for f in range(N_features_reduced)]
-        feature_score = [len(v) for v in feature_set]
-        basin_score_vect = corr_matrix*feature_score  * NOISE # Vector Score
-
-        # OR APPLY NOISE HERE
-
-        basin_score_scalar = np.array([np.sum(basin_score_vect[i]) / np.sum(corr_matrix[i]) for i in range(N_obs)]) 
-        basin_rank = np.argsort(basin_score_scalar)
-
-        top_N = N_obs * self.data['raritytheta']  # or some rarity threshold
-
-        # Apply a skew distribution function (weight extremes)
-        skew_dist_func = lambda x: (x - len(top_N)/2)**2
-        skew_dist = [skew_dist_func(i) for i in range(top_N)]
-        norm_sum = np.sum(skew_dist)
-        skew_pdf = [skew_dist[i]/norm_sum for i in range(top_N)]
-
-
-
-
-
+        
 
         
 

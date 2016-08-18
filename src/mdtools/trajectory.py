@@ -33,7 +33,7 @@ class Conform(object):
 
 
 
-
+ 
 def collect_ministable(traj, theta=.1):
   fnum = 0
   windows=[]

@@ -7,7 +7,7 @@ import itertools
 import numpy as np
 import mdtraj as md
 
-
+from core.common import *
 
 
 __author__ = "Benjamin Ring"
@@ -50,19 +50,29 @@ class Protein (object):
     (e.g. atom selection strings)"""
 
     def __init__(self, name, db, load=False):
-        self.name = name
-        self.db = db
-        self.loaded = False
-        if load:
-          self.load_protein()
-
-    def load_protein(self):
+      settings = systemsettings()
+      self.name = name
+      self.db = db
       self.pdbfile = db.get('protein:' + self.name)
-      traj = md.load(self.pdbf)
+      traj = md.load(os.path.join(settings.workdir, self.pdbfile))
       traj.atom_slice(traj.top.select('protein'), inplace=True)
       self.pdb = traj
       self.top = self.pdb.top
-      self.loaded = True
+
+
+        # self.loaded = False
+        # self.pdb = None
+        # self.top = None
+        # # if load:
+        # self.load_protein()
+
+    # def load_protein(self):
+    #   self.pdbfile = db.get('protein:' + self.name)
+    #   traj = md.load(self.pdbf)
+    #   traj.atom_slice(traj.top.select('protein'), inplace=True)
+    #   self.pdb = traj
+    #   self.top = self.pdb.top
+    #   self.loaded = True
 
     def pfilt(self):
       """Protein Filter"""
@@ -74,12 +84,12 @@ class Protein (object):
 
     def hfilt(self):
       """Heavy Filter"""
-      prot = self.atom_slice(Protein.filter(traj, 'protein'))
+      prot = self.pdb.atom_slice(self.pfilt())
       return prot.top.select("name =~ '[C.,N.,O.,S.]'")
 
     def bfilt(self):
       """Backbone Filter"""
-      prot = self.atom_slice(Protein.filter(traj, 'protein'))
+      prot = self.atom_slice(self.pfilt())
       return prot.top.select("backbone")
 
     def filter(self, string):

@@ -34,9 +34,7 @@
         "psffile": "solvent/bptisolv.psf",
         "ffield_dir": "solvent/toppar",
         "sim_conf_template": "templates/bpti.solv.temp",
-        "protein:bpti": {
-            "topo": "bpti/5PTI.pdb"
-        }
+        "protein:bpti": "bpti/5PTI.pdb"
     },
     "settings": {
         "experiment_number": 12,
