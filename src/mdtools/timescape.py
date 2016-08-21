@@ -58,7 +58,7 @@ def side_chain_atoms(traj):
   for i, res in enumerate(top.residues):
     aname = second_sc_atom[res.name]
     idx = top.select('(resid==%d) and (name %s)' % (i, aname))[0]
-    print(i, res.name, aname, idx)
+    # print(i, res.name, aname, idx)
     atom_indices[i] = idx
   return atom_indices
 

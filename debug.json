@@ -46,7 +46,7 @@
         "cache_capacity": 80,
         "redis_conf_template": "templates/redis.conf.temp",
         "monitor_wait_delay": 30,
-        "partition": "debug",
+        "partition": "shared,parallel",
         "workdir": "/home-1/bring4@jhu.edu/work"
     }
 }

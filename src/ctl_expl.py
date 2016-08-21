@@ -33,14 +33,14 @@ import datatools.kmeans as KM
 # from datatools.pca import calc_kpca, calc_pca, project_pca
 from datatools.pca import PCAnalyzer, PCAKernel, PCAIncremental
 from datatools.approx import ReservoirSample
-from mdtools.simtool import generateExplJC, getSimParameters
+from mdtools.simtool import generateExplJC, getSimParameters, generateFromBasin 
 from mdtools.structure import Protein 
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
 from bench.stats import StatCollector
 
-from sampler.basesample import UniformSampler
+from sampler.basesample import UniformSampler, CorrelationSampler
 
 from datatools.feature import feal
 import plot as G
@@ -70,10 +70,10 @@ class controlJob(macrothread):
       self.addImmut('basin:rms')
       self.addAppend('timestep')
       self.addMut('runtime')
-      self.addMut('corr_matrix')
-      self.addMut['dspace_mu']
-      self.addMut['dspace_sigma']
-      self.addMut['raritytheta']
+      self.addMut('corr_vector')
+      self.addMut('dspace_mu')
+      self.addMut('dspace_sigma')
+      self.addMut('raritytheta')
 
       self.addMut('ctlCountHead')
       self.addImmut('exploit_factor')
@@ -113,10 +113,10 @@ class controlJob(macrothread):
       else:
         # Process all new basins: remove from downstream and create key for 
         #  next control job
-        ctl_job_id = 'ctl:' + seqNumFromID
+        ctl_job_id = 'ctl:' + self.seqNumFromID()
         self.addMut(ctl_job_id, self.data['basin:stream'])
         self.data['basin:stream'] = []
-        return [ctl_job_id], []
+        return [ctl_job_id], len(self.data['basin:stream'])
         
     def fetch(self, item):
       """Retrieve this control job's list of basin ID's to process"""
@@ -179,10 +179,10 @@ class controlJob(macrothread):
       start_index = max(0, self.data['ctl_index_head'])
 
       # labeled_pts_rms = self.catalog.lrange('label:rms', self.data['ctlIndexHead'], thru_index)
-      logging.debug(" Start_index=%d,  thru_index=%d", start_index, thru_index)
+      logging.debug(" Start_index=%d,  batch_size=%d", start_index, len(new_basin_list))
 
       # Simplicity: For now, read in ALL RMSD values.
-      all_rms = [float(v) for v in self.data['basin:rms'].values()]
+      # all_rms = [float(v) for v in self.data['basin:rms'].values()]
 
     # Calculate variable PDF estimations for each subspace via bootstrapping:
       logging.debug("=======================  <SUBSPACE CONVERGENCE> (skip)  ===================")
@@ -217,14 +217,21 @@ class controlJob(macrothread):
         N_features_src = topo.n_residues
         N_features_corr = (N_features_src**2 - N_features_src) // 2 
         upt = np.triu_indices(N_features_src, 1)
+    
+        # FOR NOW: Load from disk
+        logging.info('Loading Historical data')
+        de_corr_matrix = np.load('data/de_corr_matrix.npy')
+        de_dmu = np.load('data/de_ds_mu.npy')
+        de_dsig = np.load('data/de_ds_mu.npy')
 
-        basin_corr_matrix_prev =  self.data['corr_matrix']
+        basin_corr_matrix_prev =  self.data['corr_vector']
         dspace_mu_prev = self.data['dspace_mu']
         dspace_sigma_prev = self.data['dspace_sigma']
 
         # MERGE: new basins with basin_corr_matrix, d_mu, d_sigma
         # Get list of new basin IDs
         cmat, ds_mean, ds_std = [], [], []
+        logging.info('Collecting new data')
         for bid in new_basin_list:
           key = 'basin:' + bid
           basin = self.data[key]
@@ -237,49 +244,52 @@ class controlJob(macrothread):
           # TODO: FINISH NOISE MODEL
 
         # Merge new values with old values:
-        if basin_corr_matrix_prev is None:
+        logging.info('Mering new data')
+        if basin_corr_matrix_prev is None or basin_corr_matrix_prev == []:
           C_T = basin_corr_matrix = np.array(cmat)
         else:
           C_T = basin_corr_matrix = np.vstack((basin_corr_matrix_prev, cmat))
   
-        if dspace_mu_prev is None:
+        if dspace_mu_prev is None or dspace_mu_prev == []:
           D_mu = np.array(ds_mean)
         else:
           D_mu = np.vstack((dspace_mu_prev, ds_mean))
         
-        if dspace_sigma_prev is None:
+        if dspace_sigma_prev is None or dspace_sigma_prev == []:
           D_sigma = np.array(ds_std)
         else:
           D_sigma = np.vstack((dspace_sigma_prev, ds_std)) 
   
         # D_noise = np.zeros(shape=(N_obs, M_reduced))
-        sampler = CorrelationSampler(all_basins, C_T)
+        cm_all = np.vstack((de_corr_matrix, C_T))
+        dmu_all = np.vstack((de_dmu, D_mu))
+        dsig_all = np.vstack((de_dsig, D_sigma))
+        sampler = CorrelationSampler(cm_all, mu=dmu_all, sigma=dsig_all)
         basin_id_list = sampler.execute(numresources)
 
         # For now retrieve immediately from catalog
-        for bid in basin_id_list:
+        for index in basin_id_list:
+          bid = all_basins[index]
           basin_list.append(self.catalog.hgetall('basin:%s'%bid))
 
-
-        
-
-        
-
     # Generate new starting positions
-      global_params = getSimParameters(self.data, 'gen')
       jcqueue = OrderedDict()
       for basin in basin_list:
+        #  TODO:  DET HOW TO RUN FOLLOW ON FROM GEN SIMS
+        origin = 'deshaw' if basin['traj'].startswith('desh') else 'gen'
+        global_params = getSimParameters(self.data, origin)
 
-        jcID, jcConfig = generateExplJC(basin)
-        jcConfig.update(global_params)
-        jcConfig['name'] = jcID
+        jcID, config = generateFromBasin(basin)
+
+        config.update(global_params)
+        config['name'] = jcID
 
         logging.info("New Simulation Job Created: %s", jcID)
-        for k, v in jcConfig.items():
+        for k, v in config.items():
           logging.debug("   %s:  %s", k, str(v))
 
         #  Add to the output queue & save config info
-        jcqueue[jcID] = jcConfig
+        jcqueue[jcID] = config
         logging.info("New Job Candidate Completed:  %s   #%d on the Queue", jcID, len(jcqueue))
 
       bench.mark('GenInputParams')
