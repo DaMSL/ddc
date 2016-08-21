@@ -64,31 +64,43 @@ class CorrelationSampler(SamplerBasic):
    otional mean and stddev matrices are for noise calculation
   """
 
-  def __init__(self, choice_list, corr_matrix, mu=None, sigma=None):
+  def __init__(self, corr_matrix, mu=None, sigma=None, noise_factor=1.):
     SamplerBasic.__init__(self, "Biased-Correlation")
 
     if corr_matrix.ndim != 2:
       logging.error('Correlation Sampler requires input to be vectored to TxM (not TxNxN)')
       return
 
-    self.choices = choice_list
     self.N, self.K = corr_matrix.shape
     self.cm = corr_matrix
     self.mu = mu
     self.sigma = sigma
+    self.noise_factor = noise_factor
+
+
+  def reduce(self):
+    # Filter Trivial Features  (all 0's or all 1's)
+    allCorr  = [i for i in range(self.K) if (self.cm[:,i]<.001).all()]
+    allUncor = [i for i in range(self.K) if (self.cm[:,i]>.999).all()]
+
+    self.selected_features = list(sorted(set(range(self.K)) - set(allCorr) - set(allUncor)))
+    self.K_m = len(self.selected_features)
+
+    logging.info('Correlation Sampler reduced total comlexity from %d to %d dimensions', self.K, K_m)
+    self.corr_matrix = self.cm[:,self.selected_features]
 
 
   def execute(self, num, theta=.15):
     logging.info('BIASED (SKEW) CORRELATIONS SAMPLER:  sampling called for %d items', num)
 
-    # Filter Trivial Features  (al 0's or all 1's)
-    allCorr  = [i for i in range(self.N) if (self.cm[:,i]<.001).all()]
-    allUncor = [i for i in range(self.N) if (self.cm[:,i]>.999).all()]
+    # Filter Trivial Features  (all 0's or all 1's)
+    allCorr  = [i for i in range(self.K) if (self.cm[:,i]<.001).all()]
+    allUncor = [i for i in range(self.K) if (self.cm[:,i]>.999).all()]
 
-    selected_features = list(sorted(set(range(self.N)) - set(allCorr) - set(allUncor)))
+    selected_features = list(sorted(set(range(self.K)) - set(allCorr) - set(allUncor)))
     K_m = len(selected_features)
 
-    logging.info('Correlation Sampler reduced total comlexity from %d to %d dimensions', self.N, k_m)
+    logging.info('Correlation Sampler reduced total comlexity from %d to %d dimensions', self.K, K_m)
     corr_matrix = self.cm[:,selected_features]
 
     # For each feature select corr basins and group by feature
@@ -99,38 +111,44 @@ class CorrelationSampler(SamplerBasic):
     #  number of basins which also correlate with the same features
     basin_score_vect = corr_matrix*feature_score
 
+    basin_score_scalar = np.zeros(shape=(self.N))
     if self.mu is not None and self.sigma is not None:
         # APPLY NOISE HERE
-        pass
+      variance = self.sigma[:,selected_features]
+
+      # Simple Noise penalty:  n_factor * S * sigma
+      noise = self.noise_factor * basin_score_vect * variance
+      for i in range(self.N):
+          basin_score_scalar[i] = (np.sum(noise[i]) + np.sum(basin_score_vect[i])) / np.sum(corr_matrix[i])
 
     # Consolidate basin score to a single scalar
-    basin_score_scalar = np.zeros(shape=(self.N))
-    for i in range(self.N):
-      basin_score_scalar[i] = np.sum(basin_score_vect[i]) / np.sum(corr_matrix[i])
+    else:
+      for i in range(self.N):
+        basin_score_scalar[i] = np.sum(basin_score_vect[i]) / np.sum(corr_matrix[i])
 
     # Rank all basins by correlation score and select top-N
     basin_rank = np.argsort(basin_score_scalar)
     top_N = int(self.N * theta)  # or some rarity threshold
 
-    b = basin_score_scaler
-    logging.info("""Basin Scoring Calculated! Some Stats\n \
-      Total Basins:   %8d\n
-      Low Score:      %8f\n
-      High Score:     %8f\n
-      Median Score    %8f\n
-      Mean Score      %8f\n
-      Theta           %8f\n
-      Theta Score     %8f\n""", self.N, np.min(b), np.max(b),
+    b = basin_score_scalar
+    logging.info("""Basin Scoring Calculated! Some Stats\
+      Total Basins:   %8d
+      Low Score:      %8f
+      High Score:     %8f
+      Median Score    %8f
+      Mean Score      %8f
+      Theta           %8f
+      Theta Score     %8f""", self.N, np.min(b), np.max(b),
       np.median(b), np.mean(b), theta, b[basin_rank[top_N]])
 
     # Apply a skew distribution function (weight extremes)
-    skew_dist_func = lambda x: (x - top_n/2)**2
+    skew_dist_func = lambda x: .5 * (x - top_N/2)**2
     skew_dist = [skew_dist_func(i) for i in range(top_N)]
     norm_sum = np.sum(skew_dist)
     skew_pdf = [skew_dist[i]/norm_sum for i in range(top_N)]
 
     # Select candidates using skew PDF
-    need_replace = (len(self.choices) < num)
-    candidates = np.random.choice(self.choices, size=num, 
-      replace=need_replace, p=skew_pdf)
+    choices = basin_rank[:top_N]
+    need_replace = (len(choices) < num)
+    candidates = np.random.choice(choices, size=num, replace=need_replace, p=skew_pdf)
     return candidates  

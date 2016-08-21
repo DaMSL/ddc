@@ -8,7 +8,7 @@ import os
 import mdtraj as md
 
 from core.common import *
-import mdtools.deshaw as deshaw
+import mdtools.deshaw as DE
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -92,7 +92,7 @@ writepdb %(pdb)s
 
 ENDMOL''' % params
 
-def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=None):
+def generateNewJC(trajectory, topofile=DE.TOPO, parmfile=DE.PARM, jcid=None):
     """Creates input parameters for a new simulation. A source trajectory
     with starting coordinates is needed along with a topology/force field files
     (defaults are provided from DEShaw).
@@ -128,6 +128,16 @@ def generateNewJC(trajectory, topofile=deshaw.TOPO, parmfile=deshaw.PARM, jcid=N
     del newsimJob['coord']
     return jcuid, newsimJob
 
+
+def generateFromBasin(basin, jcid=None):
+    if basin['id'].isdigit():
+        fileno = int(basin['traj'][-4:])
+        frame = int(basin['mindex'])
+        return generateDEShawJC(fileno, frame, jcid)
+    else:
+        return generateExplJC(basin, jcid)
+
+
 def generateExplJC(basin, jcid=None):
     """Creates input parameters for a running explcit solvenet simulation.
     """
@@ -146,12 +156,83 @@ def generateExplJC(basin, jcid=None):
 
     # Create new params
     newsimJob = dict(workdir=jobdir,
+        name    = jcuid,
         coord   = coordfile,
         pdb     = pdbfile,
         src_traj = basin['traj'],
         src_basin = basin['id'])
 
     return jcuid, newsimJob
+
+
+def generateDEShawJC(fileno, frame, jcid=None):
+    """Creates input parameters for a running explcit solvenet simulation
+    from D.E.Shaw 1ms source trajectory. Index is the global index # from the
+    entire 1.0375ms data set.
+    """
+    config = systemsettings()
+    index = fileno * 1000 + frame
+    logging.debug("Generating new simulation coordinates from D.E.Shaw index #:  %s", str(index))
+    label = DE.loadlabels_aslist()
+
+    # Get a new uid (if needed)
+    jcuid = getUID() if jcid is None else jcid
+
+    # Prep file structure
+    jobdir = os.path.join(config.JOBDIR,  jcuid)
+
+    # 1. Load starting coordinate from source traj and save to pdb file
+    filename = DE.getDEShawfilename(fileno) % fileno
+    src_file = os.path.join(config.workdir, 'bpti', filename) 
+    tmpdir = '/tmp/ddc'
+    logging.info('Loading Source Coordinate from file: %s  (frame # %d)', src_file, frame)
+    logging.info("LABELED_STATE:   %d   (seq # %d/4125)", label[fileno], fileno)
+    coord = md.load_frame(src_file, frame, top=DE.PDB_ALL)
+    os.makedirs(tmpdir, exist_ok=True)
+    tmpfile = tmpdir + '/coord.pdb'
+    coord.save_pdb(tmpfile)
+
+    # 2. Convert topology PDB file (in place)
+    logging.info("Converting Topology to Charmm compatiable Force Fields")
+    DE.convert_topology(tmpfile, split_dir='/tmp/ddc')
+
+    # 3. Prepare new job metadata
+
+    coordFile = newPdbFile = os.path.join(jobdir, '%s.pdb' % jcuid)
+    newPsfFile = os.path.join(jobdir, '%s.psf' % jcuid)
+    newsimJob = dict(workdir=jobdir,
+        name    = jcuid,
+        tmploc  = tmpdir,
+        coord   = coordFile,
+        pdb     = newPdbFile,
+        psf     = newPsfFile,
+        src_traj = src_file,
+        src_basin = '%07d' % index)
+
+    # Add in the force field data from global config and pre-set constraint file:
+    newsimJob['ffield_dir'] = os.path.join(config.workdir, config.sim_params['ffield_dir'])
+
+    if not os.path.exists(jobdir):
+      os.makedirs(jobdir)
+
+    # 4. Run PSFGEN to set up start coords and structure file
+    logging.info("  Running PSFGen to set up simulation pdf/pdb files.")
+    stdout = executecmd(DE.psfgen(newsimJob))
+    logging.debug("  PSFGen COMPLETE!!")
+    logging.debug(stdout)
+    logging.debug(" ------------ ")
+
+    # 5. Update PDB file with unitcell data and temperature control factors
+    logging.info('Updating Unit Cell data and setting contraints in PDB')
+    DE.reset_pdb(newPdbFile)
+
+    # 5. Clean up
+    del newsimJob['tmploc']
+    # shutil.rmtree(tmpdir)
+
+    return jcuid, newsimJob
+
+
 
 
 def getSimParameters(state, origin='gen'):
@@ -168,8 +249,10 @@ def getSimParameters(state, origin='gen'):
             return
         params[k] = state[k]
 
-    params['psffile'] = os.path.join(settings.workdir, params['psffile'])
-    params['ffield_dir'] = os.path.join(settings.workdir, params['ffield_dir'])
+    rel_paths = ['psffile', 'ffield_dir']
+    for rp in rel_paths:
+        if rp in params:
+            params[rp] = os.path.join(settings.workdir, params[rp])
     params['interval'] = int(int(params['dcdfreq']) * float(params['sim_step_size']))
     params['gc'] = 1
     params['origin'] = origin

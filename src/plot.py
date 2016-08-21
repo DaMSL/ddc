@@ -574,7 +574,6 @@ def stackhisto(data, **kwargs):
   state_legend()
   graph_args(kwargs)
 
-
 def bargraph_simple(data, err=None, **kwargs):
   prep_graph()
   fig, ax = plt.subplots()

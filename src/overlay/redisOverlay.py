@@ -586,6 +586,7 @@ class RedisClient(redis.StrictRedis):
         connect_wait += (dt.now()-start).total_seconds()
         continue
       except (redis.ConnectionError, redis.TimeoutError) as e:
+        print(e)
         logging.warning('[Redis Client] Error connecting to %s', str(self.host))
         connect_wait += (dt.now()-start).total_seconds()
         start = dt.now()
@@ -594,12 +595,15 @@ class RedisClient(redis.StrictRedis):
         connection.disconnect()
         with open(self.lockfile) as master:
           config = master.read().split('\n')[0].split(',')
+          print("CONNECTION:", config)
           if config[0] == self.host and config[1] == str(self.port):
             if initial_connect:
+              print("A")
               initial_connect = False
               connect_wait += (dt.now()-start).total_seconds()
               continue
             else:
+              print("B")
               logging.warning('[Redis Client] Lock exists, but cannot connect to the master on %s', str(self.host))
               logging.debug("CLIENT_DELAY,CONN,%.1f",connect_wait)
               time.sleep(5)

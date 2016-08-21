@@ -8,10 +8,10 @@
         "corr_matrix": "ndarray"
     },
     "state": {
-        "numresources": 2,
+        "numresources": 4,
         "simDelay": 60,
         "ctlDelay": 60,
-        "simSplitParam": 2,
+        "simSplitParam": 4,
         "ctl_min_basin": 1,
         "ctl_index_head": 1,
         "max_observations": 120000,
@@ -27,18 +27,18 @@
     },
     "simulation": {
         "timestep": 0,
-        "runtime": 20000,
+        "runtime": 400000,
         "dcdfreq": 100,
         "temperature": 300,
         "sim_step_size": 2.5,
-        "psffile": "solvent/bptisolv.psf",
         "ffield_dir": "solvent/toppar",
-        "sim_conf_template": "templates/bpti.solv.temp",
+        "psffile": "bpti/bpti_converted.psf",
+        "sim_conf_template": "templates/bpti.deshaw.temp",
         "protein:bpti": "bpti/5PTI.pdb"
     },
     "settings": {
-        "experiment_number": 12,
-        "simulation_ratio": 50,
+        "experiment_number": 13,
+        "simulation_ratio": 1,
         "catalog_port": 6399,
         "catalog_idle_theta": 300,
         "catalog_startup_delay": 120,

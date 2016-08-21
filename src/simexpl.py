@@ -243,6 +243,7 @@ class simulationJob(macrothread):
           logging.info('Full (enough) Sim Completed')
           break
         logging.info('Detected a failed Simulation. Retrying the same sim.')
+        break
       
       bench.mark('SimExec:%s' % job['name'])
 
@@ -366,8 +367,8 @@ class simulationJob(macrothread):
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
 
     # FOR DEBUGGING
-    logging.warning("DEBUGGING IS ON..... FRAME RATE MANUALLY SET TO 1")
-    frame_rate = 1
+    # logging.warning("DEBUGGING IS ON..... FRAME RATE MANUALLY SET TO 1")
+    # frame_rate = 1
 
     # Prep file and save locally
     tmp_out = '/tmp/ddc/traj_ts'

@@ -8,6 +8,7 @@ import logging
 import math
 
 import mdtraj as md
+from mdtraj.formats.pdb.pdbstructure import PdbStructure
 import numpy as np
 from numpy import linalg as LA
 
@@ -59,6 +60,103 @@ FILTER = {
 
 
 topo_alpha = topo_prot.atom_slice(FILTER['alpha'])
+
+
+
+
+def convert_topology(src_filename, set_backbone=True, in_place=False, split_dir=None):
+  """ Converts the D.E.Shaw topology to Charm-usable force field with
+  TIP4P water molecules. THis re-sorts the atoms in the water solvent chains
+  (C2,C3) to group all 4 atoms as one contiguous residue. It also aliases the
+  ion charges 'pseu' atom to 'OM' for use with the standard tip4p.par parameter
+  file. The set_backbone option is to set constraint during initial minimzation"""
+
+  # Grab unit cell description (should be on first few lines:
+  cryst = None
+  with open(src_filename) as src:
+    for line in src.readlines():
+      if line.startswith('CRYST1'):
+        cryst = line
+        break
+
+  # Read in source PDB (DEShaw original format)
+  src_pdb = PdbStructure(open(src_filename))
+  atoms = list(src_pdb.iter_atoms())
+  topo = md.load(src_filename).top
+
+  # Break into 4 segments
+  segment_list = ['C1', 'C2', 'C3', 'C4']
+  segment = {l:[] for l in segment_list}
+  for i in atoms: 
+    segment[i.segment_id].append(i)
+
+  # Set temperature factor (for gradual heating) 
+  if set_backbone:
+    backbone = topo.select("backbone")
+    for i in range(0, len(segment['C1'])):
+      if i in backbone:
+        segment['C1'][i].location.temperature_factor = 1.0
+
+  # Resort water segements and alias "pseu" to OM (tip4p forcefield)
+  for wat in ['C2', 'C3']:
+    segment[wat] = sorted(segment[wat], key = lambda i: i.residue_number)
+    start_serial_num = min(segment[wat], key= lambda i: i.serial_number)
+    for i in range(0, len(segment[wat])):
+      newsn = i + start_serial_num.serial_number
+      segment[wat][i].serial_number = newsn
+      if segment[wat][i].get_name == 'pseu':
+        segment[wat][i].set_name_with_spaces(' OM ')
+
+  # FOR RE-RUNNING THE PSFGEN
+  if split_dir is not None:
+    for s in segment_list:
+      with open(split_dir + '/%s.pdb' % s, 'w') as dest:
+        for atom in segment[s]:
+          _=dest.write(str(atom) + '\n')
+
+  # Writeout new file
+  if in_place:
+    dest = open(src_filename, 'w')
+    if cryst is not None:
+      dest.write(cryst)
+    for s in segment_list:
+      for atom in segment[s]:
+        _=dest.write(str(atom) + '\n')
+    _=dest.write('END')
+    dest.close()
+
+
+
+def reset_pdb(src_filename):
+  """ Updates PDB file with crytalline unit cell data and backbone temp
+  control to enable gradual heating"""
+
+  # Standard unit cell description (first lines)
+  cryst= 'CRYST1   51.263   51.263   51.263  90.00  90.00  90.00 P 1           1\n'
+
+  # Read in source PDB (DEShaw original format)
+  src_pdb = PdbStructure(open(src_filename))
+  atoms = list(src_pdb.iter_atoms())
+  topo = md.load(src_filename).top
+
+  # Set temperature factor (for gradual heating) 
+  backbone = topo.select("backbone")
+  for i in range(0, len(atoms)):
+    if i in backbone:
+      atoms[i].location.temperature_factor = 1.0
+
+  # Write out to file
+  dest = open(src_filename, 'w')
+  if cryst is not None:
+    dest.write(cryst)
+  dest.write('REMARK Dynamically Generated from data driven controller (DDC)\n')
+  for atom in atoms:
+    _=dest.write(str(atom) + '\n')
+  _=dest.write('END')
+  dest.close()
+
+
+
 
 
 def atomfilter(filt):
@@ -255,6 +353,129 @@ def deshawReference(atomfilter='heavy'):
   traj.atom_slice(filt, inplace=True)
   DEShawReferenceFrame = traj
   return traj
+
+
+
+def psfgen(params):
+
+  force_field_list = '/top_all22_prot.inp', '/tip4p.top'
+  for f in force_field_list:
+    if not os.path.exists(params['ffield_dir'] + f):
+      logging.error('Missing Protein CHARMM Force field:  %s', params['ffield_dir'] + f)
+      raise FileNotFoundError
+
+  seg_list = ['/C1.pdb', '/C2.pdb', '/C3.pdb', '/C4.pdb']
+  for s in seg_list:
+    if not os.path.exists(params['tmploc'] + s):
+      logging.error('Missing Source Segement PDB File:  %s', params['tmploc'] + s)
+      raise FileNotFoundError
+
+  return """psfgen << ENDMOL
+
+# 1. Load Topology File
+topology %(ffield_dir)s/top_all22_prot.inp
+
+# 2. Load Protein
+segment C1 {pdb %(tmploc)s/C1.pdb}
+
+# 3. Patch protein segment
+patch DISU C1:5 C1:55
+patch DISU C1:14 C1:38
+patch DISU C1:30 C1:51
+
+# 4. Define aliases
+pdbalias atom ILE CD1 CD ;
+pdbalias atom ALA H HN ;
+pdbalias atom ALA OXT O ;
+pdbalias atom ARG H HN ;
+pdbalias atom ARG H2 HN;
+pdbalias atom ARG H3 HN;
+pdbalias atom ARG HB3 HB1 ;
+pdbalias atom ARG HD3 HD1 ;
+pdbalias atom ARG HG3 HG1 ;
+pdbalias atom ASN H HN ;
+pdbalias atom ASN HB3 HB1 ;
+pdbalias atom ASP H HN ;
+pdbalias atom ASP HB3 HB1 ;
+pdbalias atom CYS H HN ;
+pdbalias atom CYS HB3 HB1 ;
+pdbalias atom GLN H HN ;
+pdbalias atom GLN HB3 HB1 ;
+pdbalias atom GLN HG3 HG1 ;
+pdbalias atom GLU H HN ;
+pdbalias atom GLU HB3 HB1 ;
+pdbalias atom GLU HG3 HG1 ;
+pdbalias atom GLY H HN ;
+pdbalias atom GLY HA3 HA1 ;
+pdbalias atom ILE H HN ;
+pdbalias atom ILE HD11 HD1 ;
+pdbalias atom ILE HD12 HD2 ;
+pdbalias atom ILE HD13 HD3 ;
+pdbalias atom ILE HG13 HG11 ;
+pdbalias atom LEU H HN ;
+pdbalias atom LEU HB3 HB1 ;
+pdbalias atom LYS H HN ;
+pdbalias atom LYS HB3 HB1 ;
+pdbalias atom LYS HD3 HD1 ;
+pdbalias atom LYS HE3 HE1 ;
+pdbalias atom LYS HG3 HG1 ;
+pdbalias atom MET H HN ;
+pdbalias atom MET HB3 HB1 ;
+pdbalias atom MET HG3 HG1 ;
+pdbalias atom PHE H HN ;
+pdbalias atom PHE HB3 HB1 ;
+pdbalias atom PRO HB3 HB1 ;
+pdbalias atom PRO HD3 HD1 ;
+pdbalias atom PRO HG3 HG1 ;
+pdbalias atom SER H HN ;
+pdbalias atom SER HB3 HB1 ;
+pdbalias atom SER HG HG1 ;
+pdbalias atom THR H HN ;
+pdbalias atom TYR H HN ;
+pdbalias atom TYR HB3 HB1 ;
+pdbalias atom VAL H HN ;
+
+# 5. Read protein coordinates from PDB file & set coords
+coordpdb %(tmploc)s/C1.pdb C1
+
+
+# 6. Build Water Segement (HOH)
+topology %(ffield_dir)s/tip4p.top
+pdbalias residue HOH TIP4 ;
+pdbalias atom HOH O OH2 ;
+pdbalias atom HOH pseu OM;
+segment C2 {
+ auto none
+ pdb %(tmploc)s/C2.pdb
+}
+coordpdb %(tmploc)s/C2.pdb C2 ;
+
+# 7.  Build Water Segment #2 (SPC)
+pdbalias residue SPC TIP4 ;
+pdbalias atom SPC O OH2 ;
+pdbalias atom SPC pseu OM;
+segment C3 {
+ auto none
+ pdb %(tmploc)s/C3.pdb
+}
+coordpdb %(tmploc)s/C3.pdb C3 ;
+
+# 8.  Add in Chlorine
+pdbalias residue CL CLA;
+pdbalias atom CLA CL CLA ;
+segment C4 {
+ auto none
+ pdb %(tmploc)s/C4.pdb
+}
+coordpdb %(tmploc)s/C4.pdb C4
+
+guesscoord
+
+# 9. Output psf/pdb files
+writepsf %(workdir)s/%(name)s.psf
+writepdb %(workdir)s/%(name)s.pdb
+
+ENDMOL""" %  params
 
 
 

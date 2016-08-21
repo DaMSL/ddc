@@ -99,87 +99,66 @@ def load_historical_DEShaw(catalog):
   settings = systemsettings()
   home = os.getenv('HOME')
 
-  # Following is for first time load of full ms distance space
-  deds = np.load(home + '/work/timescape/deds.npy')
-  print("DEShaw Distance Space loaded:  ", deds.shape)
-  file_pref = home+'/work/timescape/desh_'
-
+  # Read in and parse TimeScape output
+  file_pref = home+'/work/timescape/desh_' #'/root/heavy/out/expl'
   basin_list = []
-  C_T, mu_T, sigma_T = [], [], []
+  logging.info('Loading all Time Scape data and processing basins')
+  for i in range(42):  
+    nframes = 100000 if i < 41 else 25000
+    minima_list = TimeScape.read_log(file_pref + '%02d_minima.log'%i)
+    window_list = TimeScape.windows(file_pref + '%02d_transitions.log'%i)
+    basin_index = 0
+    last = None
+    offset = 100000*i
+    pipe = catalog.pipeline()
+    while basin_index < len(minima_list):
+      ### MINIMA IS LOCAL TO FULL 2.5us FILE
+      ### WINDOW IS GLOBAL INDEX OVER ALL 4.125Mil Frames
+      a, b = window_list[basin_index]
+      minima = minima_list[basin_index]
+      basin_id = '%07d' % (offset + a)
+      local_file_num = offset // 1000 + minima // 1000
+      local_file_id  = 'desh_%04d' %  (local_file_num)
+      local_minima   = (minima + offset) - local_file_num * 1000
+      basin = Basin(local_file_id, (a+offset, b+offset), local_minima, uid='%07d' % (offset + a))
+      if last is not None:
+        basin.prev = last.id
+        basin_list[-1].next = basin.id
+      basin_list.append(basin)
+      last = basin
+      basin_index += 1
 
-  for i in range(42):
-    n_frames = 100000 if i < 40 else 25000
-    m = TS.TimeScape.read_log(file_pref + '%02d_minima.log'%i)
-    t = TS.TimeScape.read_log(file_pref + '%02d_transitions.log'%i)
-    corr_mat = TS.TimeScape.contact_map(file_pref + '%02d_events.log'%i, 58, 100000 if i < 41 else 25000)
-    print("Processing Traj: ", i, len(m), len(t), len(cm))
-    for w in range(1, min(len(m), len(t)-1)):
-      a, b = t[w-1], t[w]
-
-      global_w = a+offset, b+offset
-      local_w = a // n_frames + a % 1000, b // n_frames + b % 1000
-
-      offset = i*100000
-
-      #  TODO:  GET RIGHT MINIMA INDEX AND CORRECT FULL FILE
-      basin = Basin(i, (a,b), m[t-1], uid='%07d'%(offset+a))
-      basin_list.append
-    
-      # Store on Disk and in redis
-      jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
-      minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
-      minima_frame.save_pdb(jc_filename)
-
-      C_T.append(np.mean(corr_mat[a:b], axis=0))
-      mu_T.append(np.mean(deds[offset+a:offset+b], axis=0))
-      sigma_T.append(np.std(deds[offset+a:offset+b], axis=0))
-
-
-      # basin_hash = basin.kv()
-      # basin_hash['corr_vector'] = pickle.dumps(corr_vector)  
-      # basin_hash['d_mu']        = pickle.dumps(dspace_mean)
-      # basin_hash['d_sigma']     = pickle.dumps(dspace_std)
-     
       basin_hash = basin.kv()
-      basin_hash['pdbfile'] = jc_filename
-      logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
+      # fname = ('bpti-all-%03d.dcd' if local_file_num < 1000 else 'bpti-all-%04d.dcd')%local_file_num
+      # basin_hash['pdbfile'] = os.path.join(settings.workir, 'bpti', fname)
+      # logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
+      pipe.rpush('basin:list', basin_id)
+      pipe.hmset('basin:%s'%basin_id, basin_hash)
+    pipe.execute()
 
-      pipe = catalog.pipeline()
-      pipe.rpush('basin:list', bid)
-      pipe.hmset('basin:%s'%bid, basin_hash)
-      pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
-      pipe.execute()
+  # logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
+  # corr_matrix = np.load('data/de_corr_matrix.npy')
+  # dmu = np.load('data/de_ds_mu.npy')
+  # dsig = np.load('data/de_ds_mu.npy')
 
+  # logging.info("Loading Historical data into catalog:  corr_matrix: %s", corr_matrix.shape)
+  # catalog.storeNPArray(corr_matrix, 'desh:coor_vector')
+  # catalog.storeNPArray(dmu, 'desh:ds_mu')
+  # catalog.storeNPArray(dsigma, 'desh:ds_sigma')
 
-
-
-
-  # Create new jobs from selected basins
-  dcdfreq = int(catalog.get('dcdfreq'))
-  runtime = int(catalog.get('runtime'))
-  sim_step_size = float(catalog.get('sim_step_size'))
-  force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
-  psf = os.path.join(settings.workdir, catalog.get('psffile'))
-  sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
-  global_params = getSimParameters(sim_init, 'seed')
-
-  for seed in seedlist:
-    logging.debug('\nSeeding Job: %s ', seed)
-    basin = catalog.hgetall('basin:%s'%seed)
-
-    # Generate new set of params/coords
-    jcID, config = generateExplJC(basin)
-
-    # Update Additional JC Params and Decision History, as needed
-    config.update(global_params)
-    config['name'] = jcID
-
-    # Push to catalog
-    logging.info("New Simulation Job Created: %s", jcID)
-    for k, v in config.items():
-      logging.debug("   %s:  %s", k, str(v))
-    catalog.rpush('jcqueue', jcID)
-    catalog.hmset(wrapKey('jc', jcID), config)
+  logging.info('DEShaw data loaded. ALL Done!')
+  # FOR CREATING CM/MU/SIGMA vals for first time
+  # C_T = np.zeros
+  # deds = np.load(home + '/work/timescape/deds.npy')
+  # for i, basin in enumerate(basin_list):
+  #   C_T.append(np.mean(corr_mat[a:b], axis=0))
+  #   mu_T.append(np.mean(deds[offset+a:offset+b], axis=0))
+  #   sigma_T.append(np.std(deds[offset+a:offset+b], axis=0))
+   
+  # TODO:  IS THIS NEEDED FOR DEShaw Data? Store on Disk and in redis
+  # jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
+  # minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
+  # minima_frame.save_pdb(jc_filename)
 
 def load_historical_Expl(catalog):
   """ Load all DEShaw data into basins for processing """
@@ -365,37 +344,43 @@ def make_jobs(catalog, num=1):
   runtime = int(catalog.get('runtime'))
   sim_step_size = float(catalog.get('sim_step_size'))
   force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
+  sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
 
   # Apply sampling Algorithm HERE
   if settings.EXPERIMENT_NUMBER == 12:
     sampler = UniformSampler(basinlist)
+    global_params = getSimParameters(sim_init, 'seed')
+    seedlist = sampler.execute(num)
 
   elif settings.EXPERIMENT_NUMBER == 13:
-    corr_matrix = catalog.loadNPArray('corr_vector')
-    sampler = CorrelationSampler(all_basins, corr_matrix)
+    global_params = getSimParameters(sim_init, 'deshaw')
+
+    logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
+    corr_matrix = np.load('data/de_corr_matrix.npy')
+    dmu = np.load('data/de_ds_mu.npy')
+    dsig = np.load('data/de_ds_mu.npy')
+    sampler = CorrelationSampler(corr_matrix, dmu, dsig)
+    seedlist = [catalog.lindex('basin:list', i) for i in sampler.execute(num)]
+    for i in seedlist:
+      logging.info("Select index: %s", i)
 
   else:
     logging.error('No Experiment Defined.')
     return
 
-  seedlist = sampler.execute(num)
 
   # Create new jobs from selected basins
-  psf = os.path.join(settings.workdir, catalog.get('psffile'))
-
-  sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
-  global_params = getSimParameters(sim_init, 'seed')
+  # psf = os.path.join(settings.workdir, catalog.get('psffile'))
 
   for seed in seedlist:
     logging.debug('\nSeeding Job: %s ', seed)
     basin = catalog.hgetall('basin:%s'%seed)
 
     # Generate new set of params/coords
-    jcID, config = generateExplJC(basin)
+    jcID, config = generateFromBasin(basin)
 
     # Update Additional JC Params and Decision History, as needed
     config.update(global_params)
-    config['name'] = jcID
 
     # Push to catalog
     logging.info("New Simulation Job Created: %s", jcID)
@@ -486,7 +471,12 @@ if __name__ == '__main__':
     initializecatalog(catalog)
 
   if args.seed or args.all:
-    load_historical_Expl(catalog)
+    if settings.EXPERIMENT_NUMBER == 12:
+      load_historical_Expl(catalog)
+    elif settings.EXPERIMENT_NUMBER == 13:
+      load_historical_DEShaw(catalog)
+    else:
+      logging.error("NO experiment defined")
     # load_seeds(catalog, calc_seed_rms=False)
 
   if args.initjobs or args.all:
