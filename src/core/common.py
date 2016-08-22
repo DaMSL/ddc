@@ -37,6 +37,15 @@ def executecmd_pid(cmd):
   stdout, stderr = task.communicate()
   return stdout.decode(), task.pid
 
+def gettempdir():
+  """ Returns path to local shared mem directory (standardizes name) """
+  ramdisk = '/dev/shm/ddc/'
+  # ramdisk = '/tmp/ddc/'
+  if not os.path.exists(ramdisk):
+    os.mkdir(ramdisk)
+  return ramdisk
+
+
 
 def singleton(cls):
   """ The Singleton Design Pattern. Each execution of the application can

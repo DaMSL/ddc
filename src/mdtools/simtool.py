@@ -184,7 +184,7 @@ def generateDEShawJC(fileno, frame, jcid=None):
     # 1. Load starting coordinate from source traj and save to pdb file
     filename = DE.getDEShawfilename(fileno) % fileno
     src_file = os.path.join(config.workdir, 'bpti', filename) 
-    tmpdir = '/tmp/ddc'
+    tmpdir = gettempdir()
     logging.info('Loading Source Coordinate from file: %s  (frame # %d)', src_file, frame)
     logging.info("LABELED_STATE:   %d   (seq # %d/4125)", label[fileno], fileno)
     coord = md.load_frame(src_file, frame, top=DE.PDB_ALL)
@@ -194,7 +194,7 @@ def generateDEShawJC(fileno, frame, jcid=None):
 
     # 2. Convert topology PDB file (in place)
     logging.info("Converting Topology to Charmm compatiable Force Fields")
-    DE.convert_topology(tmpfile, split_dir='/tmp/ddc')
+    DE.convert_topology(tmpfile, split_dir=tmpdir)
 
     # 3. Prepare new job metadata
 
@@ -244,7 +244,7 @@ def getSimParameters(state, origin='gen'):
     keys = settings.sim_params.keys()
     params = {}
     for k in keys:
-        if k not in keys:
+        if k not in state:
             logging.error('ERROR. Simulation Param, %s, is not loaded into state')
             return
         params[k] = state[k]

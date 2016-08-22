@@ -60,6 +60,10 @@ np.set_printoptions(precision=5, suppress=True)
 class controlJob(macrothread):
     def __init__(self, fname):
       macrothread.__init__(self, fname, 'ctl')
+
+      # Set the simluation thread as the down stream macrothread node
+      self.register_downnode('sim')
+
       # State Data for Simulation MacroThread -- organized by state
       self.setStream('basin:stream', None)
 
@@ -93,6 +97,7 @@ class controlJob(macrothread):
       # Optimization on global xid list
       self.xidreference = None
 
+
     def term(self):
       numobs = self.catalog.llen('xid:reference')
       if numobs > self.data['max_observations']:
@@ -106,6 +111,11 @@ class controlJob(macrothread):
       settings = systemsettings()
       basinlist = self.data['basin:stream']
       minproc  = int(self.data['ctl_min_basin'])
+      if self.catalog.get('ctl:force') is not None:
+        logging.info("Flagged to force a control decision.")
+        minproc = 0
+        logging.info("Resetting control flag.")
+        self.catalog.delete('ctl:force')
       logging.info('# New Basins:  %d', len(basinlist))
       logging.info('Min Processing Threshold:  %d', minproc)
       if len(basinlist) < minproc:
@@ -115,8 +125,9 @@ class controlJob(macrothread):
         #  next control job
         ctl_job_id = 'ctl:' + self.seqNumFromID()
         self.addMut(ctl_job_id, self.data['basin:stream'])
+        consumed = len(self.data['basin:stream'])
         self.data['basin:stream'] = []
-        return [ctl_job_id], len(self.data['basin:stream'])
+        return [ctl_job_id], consumed
         
     def fetch(self, item):
       """Retrieve this control job's list of basin ID's to process"""
@@ -230,6 +241,7 @@ class controlJob(macrothread):
 
         # MERGE: new basins with basin_corr_matrix, d_mu, d_sigma
         # Get list of new basin IDs
+        stat.collect('new_basin', len(new_basin_list))
         cmat, ds_mean, ds_std = [], [], []
         logging.info('Collecting new data')
         for bid in new_basin_list:
@@ -274,12 +286,22 @@ class controlJob(macrothread):
 
     # Generate new starting positions
       jcqueue = OrderedDict()
+      src_traj_list = []
       for basin in basin_list:
         #  TODO:  DET HOW TO RUN FOLLOW ON FROM GEN SIMS
-        origin = 'deshaw' if basin['traj'].startswith('desh') else 'gen'
-        global_params = getSimParameters(self.data, origin)
+        src_traj_list.append(basin['traj'])
+        if basin['traj'].startswith('desh'):
+          global_params = getSimParameters(self.data, 'deshaw')
+          fileno = int(basin['traj'][-4:])
+          frame = int(basin['mindex'])
+          jcID, config = generateDEShawJC(fileno, frame, jcid)
+        else:
+          global_params = getSimParameters(self.data, 'gen')
+          src_psf = self.catalog.hget('jc_' + basin['traj'], 'psf')
+          global_params.update({'psf': src_psf})
+          jcID, config = generateExplJC(basin, jcid=None)
 
-        jcID, config = generateFromBasin(basin)
+        # jcID, config = generateFromBasin(basin)
 
         config.update(global_params)
         config['name'] = jcID
@@ -292,6 +314,7 @@ class controlJob(macrothread):
         jcqueue[jcID] = config
         logging.info("New Job Candidate Completed:  %s   #%d on the Queue", jcID, len(jcqueue))
 
+      stat.collect('src_traj_list', src_traj_list)
       bench.mark('GenInputParams')
 
     #  POST-PROCESSING  -------------------------------------
@@ -329,6 +352,8 @@ class controlJob(macrothread):
         # config['converge'] = self.data['converge']
         self.addMut(wrapKey('jc', jcid), config)
  
+      self.notify('sim')
+
       bench.mark('PostProcessing')
       print ('## TS=%d' % self.data['timestep'])
       bench.show()

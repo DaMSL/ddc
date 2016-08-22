@@ -78,6 +78,18 @@ class CorrelationSampler(SamplerBasic):
     self.noise_factor = noise_factor
 
 
+
+  def umbrella_pdf(self, vals):
+    wghts = vals - np.max(vals)
+    return wghts / np.sum(wghts)
+
+  def skew_pdf(self, n):
+    skew_dist_func = lambda x: .5 * (x - n/2)**2
+    skew_dist = [skew_dist_func(i) for i in range(n)]
+    norm_sum = np.sum(skew_dist)
+    return [skew_dist[i]/norm_sum for i in range(n)]
+
+
   def reduce(self):
     # Filter Trivial Features  (all 0's or all 1's)
     allCorr  = [i for i in range(self.K) if (self.cm[:,i]<.001).all()]
@@ -142,13 +154,10 @@ class CorrelationSampler(SamplerBasic):
       np.median(b), np.mean(b), theta, b[basin_rank[top_N]])
 
     # Apply a skew distribution function (weight extremes)
-    skew_dist_func = lambda x: .5 * (x - top_N/2)**2
-    skew_dist = [skew_dist_func(i) for i in range(top_N)]
-    norm_sum = np.sum(skew_dist)
-    skew_pdf = [skew_dist[i]/norm_sum for i in range(top_N)]
 
-    # Select candidates using skew PDF
+    # Select candidates using umbrella PDF
     choices = basin_rank[:top_N]
+    pdf = self.umbrella_pdf(basin_score_scalar[choices])
     need_replace = (len(choices) < num)
-    candidates = np.random.choice(choices, size=num, replace=need_replace, p=skew_pdf)
+    candidates = np.random.choice(choices, size=num, replace=need_replace, p=pdf)
     return candidates  

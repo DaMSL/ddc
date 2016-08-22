@@ -65,6 +65,9 @@ class simulationJob(macrothread):
   def __init__(self, fname, jobnum = None):
     macrothread.__init__(self, fname, 'sim')
 
+    # Set the controller as the down stream macrothread node
+    self.register_downnode('ctl')
+
     # State Data for Simulation MacroThread -- organized by state
     self.setStream('jcqueue', 'basin:stream')
     self.addAppend('xid:filelist')
@@ -177,10 +180,7 @@ class simulationJob(macrothread):
       # >>>>Storing DCD into shared memory on this node
 
       if USE_SHM:
-        # ramdisk = '/dev/shm/out/'
-        ramdisk = '/tmp/ddc/'
-        if not os.path.exists(ramdisk):
-          os.mkdir(ramdisk)
+        ramdisk = gettempdir()
         job['outputloc'] = ramdisk
         dcd_ramfile = os.path.join(ramdisk, job['name'] + '.dcd')
       else:
@@ -245,7 +245,8 @@ class simulationJob(macrothread):
         logging.info('Detected a failed Simulation. Retrying the same sim.')
         break
       
-      bench.mark('SimExec:%s' % job['name'])
+      bench.mark('simulation')
+      # bench.mark('SimExec:%s' % job['name'])
 
       # Internal stats
       sim_length = self.data['sim_step_size'] * int(job['runtime'])
@@ -313,7 +314,7 @@ class simulationJob(macrothread):
         traj = md.load(dcdFile, top=job['pdb'])
 
 
-    bench.mark('File_Load')
+    # bench.mark('File_Load')
     logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
 
 
@@ -370,8 +371,10 @@ class simulationJob(macrothread):
     # logging.warning("DEBUGGING IS ON..... FRAME RATE MANUALLY SET TO 1")
     # frame_rate = 1
 
-    # Prep file and save locally
-    tmp_out = '/tmp/ddc/traj_ts'
+    # Prep file and save locally in shm
+    tmploc = gettempdir()
+
+    tmp_out = tmploc + 'traj_ts'
     tmp_dcd = tmp_out + '.dcd'
     tmp_pdb = tmp_out + '.pdb'
     output_prefix = os.path.join(job['workdir'], job['name'])
@@ -402,6 +405,7 @@ class simulationJob(macrothread):
     basin_rms = {}
     basins = {}
 
+    stat.collet('num_basin', len(basin_list))
     downstream_list = []
     for i, basin in enumerate(basin_list):
       logging.info('  Processing basin #%2d', i)
@@ -433,7 +437,7 @@ class simulationJob(macrothread):
       logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
         basin_hash['start'], basin_hash['end'])
 
-
+    bench.mark('analysis')
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
     # try:
     self.wait_catalog()
@@ -474,7 +478,7 @@ class simulationJob(macrothread):
 
     self.data[key]['xid:start'] = start_index
     self.data[key]['xid:end'] = start_index + traj.n_frames
-    bench.mark('Indx_Update')
+    bench.mark('catalog')
 
     # # COPY OUT TimeScapes Logs (to help debug):
     # ts_logfiles = [f for f in os.listdir(tmp_out) if f.endswith('log')]
@@ -482,10 +486,31 @@ class simulationJob(macrothread):
     #   shutil.copy(f, os.path.join(settings.jobdir, job['name']))
 
   # ---- POST PROCESSING
+
+    # Check for total data in downstream queue  & Notify control manager to run
+    # 1. Det. what's still running
+    job_queue = slurm.currentqueue()
+    n_simjobs = -1    # -1 to exclude self
+    for j in job_queue:
+      if j['name'].startswith('sw'):
+        n_simjobs += 1
+
+    if n_simjobs == 0:
+      logging.info('I am the last simulation. Ensuring the controler executes.')
+      self.catalog.set('ctl:force', 1)
+
+    logging.info('SIM WORKER has detected %d other simulations running/pending.', len(job_queue))
+    remain_percent = n_simjobs / self.data['numresources']
+    if remain_percent < .1:
+      # Notify the control manager 'CM'
+      # TODO: can abstract this with notify_downstream
+      self.notify('ctl')
+
+
     if USE_SHM:
       shutil.rmtree(ramdisk)
-      # shm_contents = os.listdir('/dev/shm')
-      shm_contents = os.listdir('/tmp')
+      shm_contents = os.listdir('/dev/shm')
+      # shm_contents = os.listdir('/tmp')
       logging.debug('Ramdisk contents (should be empty of DDC) : %s', str(shm_contents))
     
     # For benchmarching:

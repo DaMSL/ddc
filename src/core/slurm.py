@@ -8,6 +8,9 @@ import argparse
 import pytest
 import pyslurm
 
+from datetime import datetime as dt
+import dateutil.parser as dtp
+
 from core.common import systemsettings
 
 __author__ = "Benjamin Ring"
@@ -65,6 +68,31 @@ class slurm:
 
 
   @classmethod
+  def currentqueue(cls, pending_only=False, running_only=False):
+    """ Get list of all pending and running jobs """
+    statuses = 'pd,r,cf'
+    if pending_only and running_only:
+      logging.warning("Check current queue request! Asked for 'PEND-ONLY' and 'RUN-ONLY'. Will return both")
+    elif pending_only and not running_only:
+      statuses = 'pd'
+    elif running_only and not pending_only:
+      statuses = 'r,cf'
+    out = proc.check_output("sacct -s %s -n -P --delimiter=',' --format=jobid,jobname,submit,eligible,start,state" \
+     % statuses, shell=True)
+    joblist = []
+    for line in out.decode('utf-8').strip().split('\n'):
+      j, n, sb, e, s, t = line.split(',')
+      if n == 'batch':
+        continue
+      try:
+        start = dtp.parse(s)
+      except ValueError as err:
+        start = None
+      joblist.append(dict(jobid=j, name=n, submit=dtp.parse(sb), elig=dtp.parse(e), start=start, state=t))
+    return joblist
+
+
+  @classmethod
   def jobinfo(cls, jobid):
     out = proc.check_output('scontrol show jobid %d' % jobid, shell=True)
     info = {}
@@ -111,6 +139,33 @@ class slurm:
     job = pyslurm.job().get()[jobid]
     ts = dt.now().timestamp()
     return (job['end_time'] - ts)
+
+
+  @classmethod
+  def notify_start(cls, jobid, delay=90):
+    """ Notify the jobid to start executing after <delay> seconds. This will 
+    not notify if jobs are scheduled to start sooner"""
+    out = proc.check_output("sacct -n -P --delimiter=',' -j %d --format=jobid,jobname,eligible,state" \
+     % jobid, shell=True)
+    for line in out.decode('utf-8').strip().split('\n'):
+      j, n, e, t = line.split(',')
+      if n == 'batch':
+        continue
+      if int(j) == jobid:
+        if t == 'PENDING':
+          curtime = dt.now()
+          eligible = dtp.parse(e)
+          diff = (eligible - curtime).total_seconds()
+          if diff < delay:
+            logging.info('Notification for jobid %d not necessary. Pending job will start in less than %d seconds',
+              jobid, delay)
+          else:
+            proc.call('scontrol update job %d StartTime=now+%d' % (jobid, delay), shell=True)
+            logging.info('Notified jobdid %d to start in %d seconds' , jobid, delay)
+        else:
+            logging.info('Notification for jobid %d not necessary. Not longer pending', jobid)
+        return
+    logging.warning('JobID %d not found in the current queue', jobid)
 
 
   @classmethod
