@@ -184,6 +184,8 @@ class controlJob(macrothread):
       ##### BARRIER
       self.wait_catalog()
 
+
+
       # Load new RMS Labels -- load all for now
       bench.start()
       logging.debug('Loading RMS Labels')
@@ -229,6 +231,16 @@ class controlJob(macrothread):
         N_features_corr = (N_features_src**2 - N_features_src) // 2 
         upt = np.triu_indices(N_features_src, 1)
     
+        #####   BASIN LIST HERE
+        # Get ALL basins metadata:
+        old_basin_ids = self.data['basin:list'][:start_index-1]
+        for bid in 
+        old_basin_list = [None for i in range(old_basin_ids)]
+        with self.catalog.pipeline() as pipe:
+          for i, bid in enumerate(old_basin_ids):
+            old_basin_list[i] = pipe.hgetall(bid)
+          pipe.execute()
+
         # FOR NOW: Load from disk
         logging.info('Loading Historical data')
         de_corr_matrix = np.load('data/de_corr_matrix.npy')
@@ -248,10 +260,15 @@ class controlJob(macrothread):
           key = 'basin:' + bid
           basin = self.data[key]
 
-          # TODO:  HOW TO STORE THIS???? 
-          cmat.append(pickle.loads(basin['corr_vector']))
-          ds_mean.append(pickle.loads(basin['d_mu']))
-          ds_std.append(pickle.loads(basin['d_sigma']))
+          with self.catalog.pipeline() as pipe:
+            cm_   = pipe.get('basin:cm:'+bid)
+            dmu_  = pipe.get('basin:dmu:'+bid)
+            dsig_ = pipe.get('basin:dsig:'+bid)
+            pipe.execute()
+
+          cmat.append(pickle.loads(cm_))
+          ds_mean.append(pickle.loads(dmu_))
+          ds_std.append(pickle.loads(dsig_))
 
           # TODO: FINISH NOISE MODEL
 
@@ -282,12 +299,12 @@ class controlJob(macrothread):
         # For now retrieve immediately from catalog
         for index in basin_id_list:
           bid = all_basins[index]
-          basin_list.append(self.catalog.hgetall('basin:%s'%bid))
+          selected_basin_list.append(self.catalog.hgetall('basin:%s'%bid))
 
     # Generate new starting positions
       jcqueue = OrderedDict()
       src_traj_list = []
-      for basin in basin_list:
+      for basin in selected_basin_list:
         #  TODO:  DET HOW TO RUN FOLLOW ON FROM GEN SIMS
         src_traj_list.append(basin['traj'])
         if basin['traj'].startswith('desh'):

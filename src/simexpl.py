@@ -154,9 +154,13 @@ class simulationJob(macrothread):
     EXPERIMENT_NUMBER = settings.EXPERIMENT_NUMBER
     logging.info('Running Experiment Configuration #%d', EXPERIMENT_NUMBER)
 
-    # TODO: FOR LINEAGE
-    # srcA, srcB = eval(job['src_bin'])
-    # stat.collect('src_bin', [str(srcA), str(srcB)])
+
+    reltime_start = 0
+
+    if EXPERIMENT_NUMBER == 13:
+      # Grab historical basin data's relative time to start (for lineage)
+      reltime_start = self.catalog.hget('basin:' + job['src_basin'], 'time')
+
 
     traj = None
 
@@ -343,6 +347,7 @@ class simulationJob(macrothread):
     # Use of the second side chain atom is discussed in the ref paper on Timescape
     # The atom pairs and selected atoms are in the timescape module
     sc_pairs = side_chain_pairs(traj_prot)
+    n_features = len(sc_pairs)
     dist_space = DR.distance_space(traj_prot, pairs=sc_pairs)
 
     # lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
@@ -400,13 +405,21 @@ class simulationJob(macrothread):
       dcd=dcdFile, traj=traj, uniqueid=False)
     basin_list = ts_parse.load_basins(frame_ratio=frame_rate)
     corr_matrix = ts_parse.correlation_matrix()
+    n_basins = len(basin_list)
+
 
     minima_coords = {}
     basin_rms = {}
     basins = {}
 
-    stat.collet('num_basin', len(basin_list))
+    new_corr_vect{}
+    new_dmu{}
+    new_dsig{}
+
+    stat.collect('num_basin', n_basins)
     downstream_list = []
+
+
     for i, basin in enumerate(basin_list):
       logging.info('  Processing basin #%2d', i)
       bid = basin.id
@@ -420,19 +433,21 @@ class simulationJob(macrothread):
 
       # METRIC CALCULATION
       a, b = basin.start, basin.end
-      corr_vector = np.mean(corr_matrix[a:b], axis=0)
-      dspace_mean = np.mean(dist_space[a:b], axis=0)
-      dspace_std  = np.std(dist_space[a:b], axis=0)
-
-      # basin_rms[bid] = np.median(rmsd[a:b])
+      new_corr_vect[bid] = np.mean(corr_matrix[a:b], axis=0)
+      new_dmu[bid]    = np.mean(dist_space[a:b], axis=0)
+      new_dsig[bid]   = np.std(dist_space[a:b], axis=0)
 
       # Collect Basin metadata
       basin_hash = basin.kv()
       basin_hash['pdbfile'] = jc_filename
-      basin_hash['corr_vector'] = pickle.dumps(corr_vector)
-      basin_hash['d_mu']        = pickle.dumps(dspace_mean)
-      basin_hash['d_sigma']     = pickle.dumps(dspace_std)
+
+      # Set relative time (in ns)
+      basin_hash['time'] = reltime_start + (a * frame_rate) / 1000
       basins[bid] = basin_hash
+
+      # new_[i] =  = pickle.dumps(corr_vector)
+      # new_[i] =         = pickle.dumps(dspace_mean)
+      # new_[i] =      = pickle.dumps(dspace_std)
 
       logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
         basin_hash['start'], basin_hash['end'])
@@ -461,10 +476,14 @@ class simulationJob(macrothread):
           pipe.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
 
           logging.debug('Updating %s basins', len(basins))
-          for bid in basins.keys():
+          for bid in sorted(basins.keys()):
             pipe.rpush('basin:list', bid)
             # pipe.hset('basin:rms', bid, basin_rms[bid])
-            pipe.hmset('basin:%s'%bid, basins[bid])
+            pipe.hmset('basin:'+bid, basins[bid])
+            pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
+            pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
+            pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
+
             pipe.set('minima:%s'%bid, pickle.dumps(minima_coords[bid]))
 
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)

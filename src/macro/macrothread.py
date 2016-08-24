@@ -219,17 +219,19 @@ class macrothread(object):
     Set rescheduling / delay policies for the manager thread 
     """
     self.delay = 60
-
+ 
 
   def notify(self, mthread):
     """ Notifies the Manager process of the given macrothread to begin
     executing (within the next 60 seconds).  If the manager is not
     running, this will launch it locally """
+    settings = systemsettings()
     if self.singleuse:
       logging.info("Notification invoked, but running in single use  (not notifying)")
       return
-    logging.info("Notifying downstream `%s` to executing in 60 seconds.")
-    fname = self.data['macrothread'][mthread]['fname']
+    logging.info("Notifying downstream `%s` to executing in 60 seconds.", mthread)
+    fname = self.catalog.hget('macrothread:ctl', 'fname')
+    # fname = self.data['macrothread'][mthread]['fname']
     mngr_prefix = fname[0] + 'm'
     job_queue = slurm.currentqueue()
     found_jobs = []
@@ -238,7 +240,7 @@ class macrothread(object):
         found_jobs.append(j)
     if len(found_jobs) == 0:
       logging.warning('Downstream manager not running. Recovering thread locally...')
-      stdout = proc.check_output('python3 %s -c %s' % (fname, setting.name), shell=True)
+      stdout = proc.check_output('python3 %s -c %s' % (fname, settings.name), shell=True)
       logging.info('Manager RECOVERED!\n %s\n------------', stdout)
     else:
       if len(found_jobs) > 1:
@@ -249,10 +251,6 @@ class macrothread(object):
       jobid = int(downstream_mngr['jobid'])
       logging.info("Notifying %s Manager (jobid = %s) to start in 60 seconds", mthread, jobid)
       slurm.notify_start(jobid, delay=60)
-
-
-
-
 
 
   #  Catalog access methods
@@ -628,6 +626,7 @@ class macrothread(object):
     #  LOAD Some self-bootstraping meta-data (if not alread loaded):
     mthread_key = 'macrothread:' + self.name
     if not self.catalog.exists(mthread_key):
+
       self.catalog.hmset(mthread_key, {'fname': self.fname})
 
     self.catalog.loadSchema()   # Should this be called from within the catalog module?

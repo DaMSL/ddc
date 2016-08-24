@@ -74,6 +74,7 @@ class Basin(object):
     self.len = self.end - self.start
     self.mindex = mindex
     self.minima = None if traj is None else traj.slice(mindex)
+    self.time = 0.0    # RELATICE TIME measured in ns from initial start
     if uid is None:
       self.id = getUID()
     else:

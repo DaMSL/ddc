@@ -563,10 +563,8 @@ def stackhisto(data, **kwargs):
   X = 0
   for k, v in sorted(data.items()):
     y0 = 0
-    print(X, k, v)
+    # print(X, k, v)
     for i, y1 in enumerate(v):
-      if (k == 55.0):
-        print(X, y1, y0, st_col[i])
       plt.bar(X, y1, bottom=y0, color=st_col[i])
       y0 += y1
     X += 1

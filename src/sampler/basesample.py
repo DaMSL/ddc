@@ -109,34 +109,79 @@ class CorrelationSampler(SamplerBasic):
     allCorr  = [i for i in range(self.K) if (self.cm[:,i]<.001).all()]
     allUncor = [i for i in range(self.K) if (self.cm[:,i]>.999).all()]
 
+    # Reduce Complexity by only considering relevant features
     selected_features = list(sorted(set(range(self.K)) - set(allCorr) - set(allUncor)))
     K_m = len(selected_features)
-
-    logging.info('Correlation Sampler reduced total comlexity from %d to %d dimensions', self.K, K_m)
+    logging.info('Correlation Sampler reduced total complexity from %d to %d dimensions', self.K, K_m)
     corr_matrix = self.cm[:,selected_features]
 
     # For each feature select corr basins and group by feature
     feature_set = [set([i for i in range(self.N) if corr_matrix[i][f] == 1.]) for f in range(K_m)]
     feature_score = [len(v) for v in feature_set]
 
+    #  Term # 1
     # Score each basin for each of its correlating features as a factr of the 
-    #  number of basins which also correlate with the same features
+    #  number of basins which also correlate with the same features and scale result bet 0..1
     basin_score_vect = corr_matrix*feature_score
-
     basin_score_scalar = np.zeros(shape=(self.N))
-    if self.mu is not None and self.sigma is not None:
-        # APPLY NOISE HERE
-      variance = self.sigma[:,selected_features]
+    bmin, bmax = np.min(basin_score_scalar), np.max(basin_score_scalar)
+    bscale = bmax-bmin
+    bscale_func = lambda x: (x-bmin) / bscale
+    basin_score_scaled = [bscale_func(i) for i in basin_score_scalar]
 
-      # Simple Noise penalty:  n_factor * S * sigma
-      noise = self.noise_factor * basin_score_vect * variance
-      for i in range(self.N):
-          basin_score_scalar[i] = (np.sum(noise[i]) + np.sum(basin_score_vect[i])) / np.sum(corr_matrix[i])
+    # if self.mu is not None and self.sigma is not None:
+    #     # APPLY NOISE HERE
+    #   variance = self.sigma[:,selected_features]
 
-    # Consolidate basin score to a single scalar
-    else:
-      for i in range(self.N):
-        basin_score_scalar[i] = np.sum(basin_score_vect[i]) / np.sum(corr_matrix[i])
+    #   # Simple Noise penalty:  n_factor * S * sigma
+    #   noise = self.noise_factor * basin_score_vect * variance
+    #   for i in range(self.N):
+    #       basin_score_scalar[i] = (np.sum(noise[i]) + np.sum(basin_score_vect[i])) / np.sum(corr_matrix[i])
+
+    # # Consolidate basin score to a single scalar
+    # else:
+    #   for i in range(self.N):
+    #     basin_score_scalar[i] = np.sum(basin_score_vect[i]) / np.sum(corr_matrix[i])
+
+    # Perform KMeans on the inverse of distance space & clip values beyond cutoff limit
+    #  And collect all the cluster/centroid data
+    cut = self.data['sampler:cutoff']
+    n_clust = self.data['sampler:cutoff']
+    proximity = (cut-ds).clip(0, cut)
+    train_set = np.array([proximity[i] for i in range(0, N, 10)])
+    km = KMeans(n_clust)
+    km.fit(train_set)
+    Y = kmprox.predict(proximity)
+    centroid = km.cluster_centers_
+    cluster = {k: [] for k in range(n_clust)}
+    for i, k in enumerate(Y):  
+      cluster[k].append(i)
+
+    #  TERM 2:  Cluster Component
+    #  2a:  Size = # of points in the cluster
+    ksize = [len(cluster[k]) for k in range(n_clust)]
+
+    #  2b:  Spatial size of the cluster (using 2d circular area)
+    local_kdist = np.array([LA.norm(proximity[i] - centroid[Y[i]]) for i in range(N)])
+    area_eq = lambda r: np.pi * r**2
+    karea = [area_eq(np.median(local_kdist[clust])) for k, clust in cluster.items()]
+
+    #  Scale Values between 0..1
+    scale_func = lambda v, x: (x-min(v)) / (max(v)-min(v))
+    ksize_scaled = [scale_func(ksize, i) for i in ksize]
+    karea_scaled = [scale_func(karea, i) for i in karea]
+
+    #  TERM #3:  Noise:  logistic function factored as how well the basin point
+    #    clusters with its local K
+    knoise = makeLogisticFunc(1, -.5, cut/2)
+
+    #  TERM #4:  Temporal Exploration
+
+    #  TERM #5:  Local Sampling Coverage (how well spread is the sampling in current loop)
+    centroid_mask = np.zeros(shape=(N, n_clust))
+    for i, k in enumerate(Y):
+      centroid_mask[i][k] = 1.
+
 
     # Rank all basins by correlation score and select top-N
     basin_rank = np.argsort(basin_score_scalar)

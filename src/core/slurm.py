@@ -81,6 +81,8 @@ class slurm:
      % statuses, shell=True)
     joblist = []
     for line in out.decode('utf-8').strip().split('\n'):
+      if len(line) == 0:
+        continue  
       j, n, sb, e, s, t = line.split(',')
       if n == 'batch':
         continue

@@ -13,7 +13,7 @@
         "ctlDelay": 60,
         "simSplitParam": 4,
         "ctl_min_basin": 1,
-        "ctl_index_head": 1,
+        "ctl_index_head": 0,
         "max_observations": 120000,
         "ctlSplitParam": 1,
         "terminate": "no",
@@ -23,7 +23,9 @@
         "timescape:delta": 20,
         "timescape:gmd:low": 2,
         "timescape:gmd:hi": 3,
-        "raritytheta": 0.15
+        "raritytheta": 0.15,
+        "sampler:n_clust": 25,
+        "sampler:cutoff": 12
     },
     "simulation": {
         "timestep": 0,
