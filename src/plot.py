@@ -1,18 +1,24 @@
 import os
 import matplotlib.pyplot as plt
+from matplotlib import rc
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import matplotlib.ticker as ticker
+from datetime import datetime as dt
 
 from collections import OrderedDict
 import numpy as np
+import string
+import itertools
+
+import fca as FCA
 
 HOME = os.environ['HOME']
 SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
 
-
+ 
 elabels = ['Serial', 'Parallel','Uniform','Biased', 'MVNN', 'Reweight']
 ecolors = {'Serial': 'darkorange', 
            'Parallel': 'maroon',
@@ -127,7 +133,7 @@ def nodeGraph1D(nodelist, **kwargs):
     plt.bar(n['y'], n['size'], width, color='blue', zorder=2, lw=1)
     # plt.scatter(n['y'], 0, c='blue', s=3*n['size'], zorder=2, lw=0)
   graph_args(kwargs)
-
+ 
 
 
 # class Arrow3D(FancyArrowPatch):
@@ -731,6 +737,299 @@ def stateviz(data, title):
   plt.close()
 
 
+#### LATTICE
+ascii_greek = ''.join([chr(i) for i in itertools.chain(range(915,930), range(931, 938), range(945, 969))])
+label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
+def lattice_orig(obs_list, dspace=None, invert=False, **kwargs):
+  st = dt.now()
+  prep_graph()
+  fig, ax = plt.subplots()
+  N, K = obs_list.shape
+  K_domain = label_domain[:K]
+  frommask = lambda obs: ''.join([K_domain[i] for i, x in enumerate(obs) if x == 1])
+  tomask = lambda key: [(1 if i in key else 0) for i in K_domain[i]]
+  toidx = lambda key: [i for i,f in enumerate(K_domain) if f in key]
+  obs = [frommask(o) for o in obs_list]
+  poset = []
+  max_x = 0
+  count_map = {}
+  idx_map = {}
+  mu = {}
+  for k in range(K):
+    poset_k = set()
+    for t, x in enumerate(obs):
+      for obj in itertools.combinations(x, k):
+        key = ''.join(sorted(obj))
+        poset_k.add(key)
+        if key not in count_map:
+          count_map[key], idx_map[key] = 0, set()
+        count_map[key] += 1 
+        idx_map[key].add(t)
+    poset.append(sorted(poset_k))
+    max_x = max(max_x, len(poset_k))
+  if dspace is not None:
+    print(type(dspace))
+    for k,v in idx_map.items():
+      mu[k] = (dspace[sorted(v)])[:,toidx(k)].mean(0)
+
+  et = dt.now()
+  print('Lattice Built. Time time = %5.2f' % (et-st).total_seconds())
+  print('Rendering...')
+  ax.annotate('{}'+'-%d' % count_map[''], 
+    xy=(max_x/2., 0), horizontalalignment='center', fontsize='xx-small')
+  for y in range(1, len(poset)):
+    dx = max_x if len(poset[y]) == 0 else max_x / len(poset[y])
+    print(len(poset[y]), [''.join(sorted(p)) for p in poset[y]])
+    for x, p in enumerate(sorted(poset[y])):
+      xpos = .5*dx + x*dx
+      if invert:
+        ax.annotate('%s\n%s' % (','.join([str(ord(i)-97) for i in p]),''.join([chr(i+97) for i in sorted(idx_map[p])])), 
+          xy=(xpos, y), horizontalalignment='center',fontsize='xx-small')
+      else:
+        distr = '' if p not in mu else ','.join(['%3.1f'%i for i in mu[p]])
+        # ax.annotate(p+'-%d\n%s\n%s' % (count_map[p], ','.join([str(i) for i in sorted(idx_map[p])]),distr), 
+        #   xy=(xpos, y), horizontalalignment='center',fontsize='xx-small')
+        ax.text(xpos, y, p+'-%d\n(%s)' % (count_map[p], distr), 
+          ha='center',fontsize='xx-small', wrap=True)
+      if y > 1:
+        for x1, inf in enumerate(poset[y-1]):
+          if set(inf) < set(p):
+            plt.plot((.5*dx1+x1*dx1,xpos),(y-1, y),color='lightgrey', linewidth=1)
+    dx1 = dx
+
+  ax.get_xaxis().set_visible(False)
+  ax.get_yaxis().set_visible(False)
+
+  if max_x > 10:
+    fig.set_size_inches(int(.9*max_x), int(.4*max_x))
+  kwargs.update(dict(xlim=(0,max_x), ylim=(0,K)))
+  graph_args(kwargs)
+
+def lattice(E, **kwargs):
+  prep_graph()
+  fig, ax = plt.subplots()
+  N, K = E.shape
+  K_domain = label_domain[:K]
+
+  # Reduce full dataset to unique rows only
+  Z = FCA.clarify_row(E)
+  uniquelist = sorted(Z.keys())
+  E_r = E[[Z[k][0] for k in uniquelist]]
+
+  # Keep size for display
+  Z_size = {k: len(v) for k,v in Z.items()}
+
+  # Temporal Links
+  featset = [FCA.frommask(i) for i in E]
+  temporal_link = set()
+  for i in range(1, len(featset)):
+    a, b = featset[i-1], featset[i]
+    if a == b:
+      continue
+    temporal_link.add((min(a,b), max(a,b)))
+
+  print (len(temporal_link))
+
+  # Concept mapping for each n-dimensional order feature set
+  st = dt.now()
+  concept = [{} for k in range(K)]
+  G_size = OrderedDict()
+  for k in range(K):
+    elist = set(list(np.where(E_r[:,k]==1)[0]))
+    concept[0][K_domain[k]] = elist
+    G_size[K_domain[k]] = np.sum([Z_size[uniquelist[e]] for e in elist])
+  print(Z_size)
+  for k in range(1, K):
+    prev = list(concept[k-1].keys())
+    print('Join at order: ', k, prev)
+    for i in range(0, len(prev)-1):
+      for j in range(i+1, len(prev)):
+        # TODO: Consider alternate meet operations
+        meet = concept[k-1][prev[i]] & concept[k-1][prev[j]]
+        # not optimized
+        key = ''.join(sorted(set(prev[i])|set(prev[j])))
+        order = len(key)-1
+        try:
+          if len(meet) == 0 or key in concept[order]:
+            continue
+        except IndexError as err:
+          print(key)
+        concept[order][key] = meet
+        G_size[key] = np.sum([Z_size[uniquelist[e]] for e in meet])
+    if sum([len(concept[i]) for i in range(k, K)]) == 0:
+      # No more concepts to check
+      break
+
+  et = dt.now()
+  print('Lattice Built. Time time = %5.2f' % (et-st).total_seconds())
+  print('Rendering...')
+  # if dspace is not None:
+  #   print(type(dspace))
+  #   for k,v in idx_map.items():
+  #     mu[k] = (dspace[sorted(v)])[:,toidx(k)].mean(0)
+
+  max_x = max([len(c) for c in concept])
+  nodelist = {}
+  ax.annotate('{}'+'-%d' % len(E), 
+    xy=(max_x/2., 0), horizontalalignment='center', fontsize='xx-small')
+  for k in range(len(concept)):
+    dx = max_x if len(concept[k]) == 0 else max_x / len(concept[k])
+    print(len(concept[k]), [''.join(sorted(p)) for p in concept[k]])
+    label_list = sorted(concept[k].keys())
+    for x, p in enumerate(label_list):
+      xpos = .5*dx + x*dx
+        # ax.annotate(p+'-%d\n%s\n%s' % (count_map[p], ','.join([str(i) for i in sorted(idx_map[p])]),distr), 
+        #   xy=(xpos, y), horizontalalignment='center',fontsize='xx-small')
+      ax.text(xpos, k+1, p+' (%d)\n%s' % (G_size[p], concept[k][p]), 
+          ha='center',fontsize='xx-small', wrap=True)
+      if p in uniquelist:
+        nodelist[p] = (xpos, k+1)
+        circ = plt.Circle((xpos, k+1), .5, color='red', fill=False)
+        ax.add_patch(circ)
+        plt.text(xpos, k+.75, '%d: %d' % (uniquelist.index(p), Z_size[p]), ha='center',color='red')
+        plt.scatter(xpos+.5, k+1.2, color='red', marker='*')
+      if k > 0:
+        for x1, inf in enumerate(concept[k-1]):
+          if set(inf) < set(p):
+            plt.plot((.5*dx1+x1*dx1,xpos),(k, k+1),color='lightgrey', linewidth=1)
+    dx1 = dx
+
+  # Draw temporal Node Edges for unique observations
+  for n1, n2 in temporal_link:
+    (x1, y1), (x2, y2) = nodelist[n1], nodelist[n2]
+    plt.plot((x1, x2), (y1, y2), color='yellow', linewidth=1)
+
+  ax.get_xaxis().set_visible(False)
+  ax.get_yaxis().set_visible(False)
+
+  if max_x > 10:
+    fig.set_size_inches(int(.9*max_x), int(.4*max_x))
+  kwargs.update(dict(xlim=(0,max_x), ylim=(0,K)))
+  graph_args(kwargs)
+
+def derived_lattice(L, sublat=None, **kwargs):
+  k_domain = 'abcdefghijklmno'
+  tok   = lambda x: ''.join(sorted([chr(97+i) for i in x]))
+  fromk = lambda x: frozenset([ord(i)-97 for i in x])
+
+  prep_graph()
+  fig, ax = plt.subplots()
+
+  K = max([len(k) for k in L.keys()])
+  key_list = [[]]
+  for k in range(1, K):
+    ca = [i for i in dlat.keys() if len(i) == k]
+    key_list.append(sorted(ca))
+
+  max_x = max([len(Lk) for Lk in key_list])
+
+  # Concept mapping for each n-dimensional order feature set
+
+  #  Draw null node
+  nodelist = {}
+  ax.annotate('{}', 
+    xy=(max_x/2., 0), horizontalalignment='center', zorder=3,fontsize='xx-small')
+
+  for k in range(1, K+1):
+    dx = max_x if len(key_list[k]) == 0 else max_x / len(key_list[k])
+    for x, fs in enumerate(key_list[k]):
+      xpos = .5*dx + x*dx
+      # distr_vect = ','.join([('%.2f'%L2[fs][i]).lstrip('0') for i in sorted(L2[fs].keys())])
+      delta_vals = '\n'.join([(i+': %.3f'%L[fs][i]).lstrip('0') for i in sorted(L[fs].keys())])
+      ax.text(xpos, k, fs+' (%d)\n%s' % (0, delta_vals), zorder=3,
+          va='top', ha='center',fontsize='xx-small', wrap=True)
+      for x1, child in enumerate(key_list[k-1]):
+        if set(child) < set(fs):
+          try:
+            linecol = 'aquamarine' if L[child][fs] < 0.05 else 'ghostwhite'
+          except KeyError as err:
+            print(parent, child, L[child])
+            raise KeyError
+          plt.plot((.5*dx1+x1*dx1,xpos),(k-1, k),color=linecol, zorder=1,linewidth=1)
+    dx1 = dx
+
+  ax.get_xaxis().set_visible(False)
+  ax.get_yaxis().set_visible(False)
+
+  if max_x > 10:
+    fig.set_size_inches(int(.9*max_x), int(.4*max_x))
+  kwargs.update(dict(xlim=(0,max_x), ylim=(0,K+.25)))
+  graph_args(kwargs)
+
+def show_dlattice(L, I, U, **kwargs):
+  k_domain = 'abcdefghijklmno'
+  tok   = lambda x: ''.join(sorted([chr(97+i) for i in x]))
+  fromk = lambda x: frozenset([ord(i)-97 for i in x])
+
+  prep_graph()
+  fig, ax = plt.subplots()
+  K = max([len(k) for k in L.keys()])
+  key_list = [[], sorted(set.union(*[set(i) for i in L.keys()]))]
+  print('K=', K, key_list)
+  for k in range(1, K):
+    lk = set()
+    for key in key_list[-1]:
+      for parent in L[key].keys():
+        lk.add(parent)
+    key_list.append(sorted(lk))
+    # key_list.append(sorted([key for key in L2.keys() if len(key) == k]))
+
+  max_x = max([len(Lk) for Lk in key_list])
+
+  # Concept mapping for each n-dimensional order feature set
+
+  #  Draw null node
+  nodelist = {}
+  ax.annotate('{}', 
+    xy=(max_x/2., 0), horizontalalignment='center', zorder=3,fontsize='xx-small')
+
+  # Draw single feature nodes
+  # fs_1d = key_list[1]
+  # dx1 = max_x / len(fs_1d)
+  # for x, fs in enumerate(fs_1d):
+  #   xpos = .5*dx1 + x*dx1
+  #   ax.text(xpos, 1, fs+' (%d)' % I[fs], 
+  #         ha='center',fontsize='xx-small', wrap=True)
+
+  # plt.rc('font', family='monospace')
+
+  for k in range(1, K+1):
+    dx = max_x if len(key_list[k]) == 0 else max_x / len(key_list[k])
+    for x, fs in enumerate(key_list[k]):
+      xpos = .5*dx + x*dx
+      # distr_vect = ','.join([('%.2f'%L2[fs][i]).lstrip('0') for i in sorted(L2[fs].keys())])
+      delta_vals = '\n'.join([(i+': %.3f'%L[fs][i]).lstrip('0') for i in sorted(L[fs].keys())])
+      ax.text(xpos, k, fs+' (%d)\n%s' % (I[fs], delta_vals), zorder=3,
+          va='top', ha='center',fontsize='xx-small', wrap=True)
+      if fs in U:
+        nodelist[fs] = (xpos, k)
+        # circ = plt.Circle((xpos, k), .5, color='red', fill=False)
+        # ax.add_patch(circ)
+        plt.text(xpos, k, '* %d' % (len(U[fs])), zorder=3,
+          va='bottom', ha='center', fontsize='x-small', color='red')
+      for x1, child in enumerate(key_list[k-1]):
+        if set(child) < set(fs):
+          try:
+            linecol = 'aquamarine' if L[child][fs] < 0.05 else 'ghostwhite'
+          except KeyError as err:
+            print(parent, child, L[child])
+            raise KeyError
+          plt.plot((.5*dx1+x1*dx1,xpos),(k-1, k),color=linecol, zorder=1,linewidth=1)
+    dx1 = dx
+
+  plt.text(2, .1, '* Unique Key', fontsize='x-small', color='red')
+  # Draw temporal Node Edges for unique observations
+  # for n1, n2 in temporal_link:
+  #   (x1, y1), (x2, y2) = nodelist[n1], nodelist[n2]
+  #   plt.plot((x1, x2), (y1, y2), color='yellow', linewidth=1)
+
+  ax.get_xaxis().set_visible(False)
+  ax.get_yaxis().set_visible(False)
+
+  if max_x > 10:
+    fig.set_size_inches(int(.9*max_x), int(.4*max_x))
+  kwargs.update(dict(xlim=(0,max_x), ylim=(0,K+.25)))
+  graph_args(kwargs)
 
 
 #### BIPARTITE GRAPH

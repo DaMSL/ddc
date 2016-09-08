@@ -232,7 +232,7 @@ class macrothread(object):
     logging.info("Notifying downstream `%s` to executing in 60 seconds.", mthread)
     fname = self.catalog.hget('macrothread:ctl', 'fname')
     # fname = self.data['macrothread'][mthread]['fname']
-    mngr_prefix = fname[0] + 'm'
+    mngr_prefix = self.fname[0] + 'm'
     job_queue = slurm.currentqueue()
     found_jobs = []
     for j in job_queue:

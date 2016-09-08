@@ -412,9 +412,9 @@ class simulationJob(macrothread):
     basin_rms = {}
     basins = {}
 
-    new_corr_vect{}
-    new_dmu{}
-    new_dsig{}
+    new_corr_vect={}
+    new_dmu={}
+    new_dsig={}
 
     stat.collect('num_basin', n_basins)
     downstream_list = []

@@ -33,7 +33,7 @@ import datatools.kmeans as KM
 # from datatools.pca import calc_kpca, calc_pca, project_pca
 from datatools.pca import PCAnalyzer, PCAKernel, PCAIncremental
 from datatools.approx import ReservoirSample
-from mdtools.simtool import generateExplJC, getSimParameters, generateFromBasin 
+from mdtools.simtool import *
 from mdtools.structure import Protein 
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
@@ -212,7 +212,7 @@ class controlJob(macrothread):
       logging.info("RUNNING EXPER CONFIGURATION #%d", EXPERIMENT_NUMBER)
 
       # Basin List will be the list of basin representing the new Job Candidates
-      basin_list = []
+      selected_basin_list = []
       all_basins = self.data['basin:list']
 
       # UNIFORM SAMPLER (BASIC)
@@ -222,7 +222,7 @@ class controlJob(macrothread):
 
         # For now retrieve immediately from catalog
         for bid in basin_id_list:
-          basin_list.append(self.catalog.hgetall('basin:%s'%bid))
+          selected_basin_list.append(self.catalog.hgetall('basin:%s'%bid))
 
       if EXPERIMENT_NUMBER == 13:
 
@@ -234,12 +234,12 @@ class controlJob(macrothread):
         #####   BASIN LIST HERE
         # Get ALL basins metadata:
         old_basin_ids = self.data['basin:list'][:start_index-1]
-        for bid in 
-        old_basin_list = [None for i in range(old_basin_ids)]
-        with self.catalog.pipeline() as pipe:
-          for i, bid in enumerate(old_basin_ids):
-            old_basin_list[i] = pipe.hgetall(bid)
-          pipe.execute()
+        # for bid in 
+        # old_basin_list = [None for i in range(old_basin_ids)]
+        # with self.catalog.pipeline() as pipe:
+        #   for i, bid in enumerate(old_basin_ids):
+        #     old_basin_list[i] = pipe.hgetall(bid)
+        #   pipe.execute()
 
         # FOR NOW: Load from disk
         logging.info('Loading Historical data')
@@ -311,7 +311,7 @@ class controlJob(macrothread):
           global_params = getSimParameters(self.data, 'deshaw')
           fileno = int(basin['traj'][-4:])
           frame = int(basin['mindex'])
-          jcID, config = generateDEShawJC(fileno, frame, jcid)
+          jcID, config = generateDEShawJC(fileno, frame)
         else:
           global_params = getSimParameters(self.data, 'gen')
           src_psf = self.catalog.hget('jc_' + basin['traj'], 'psf')

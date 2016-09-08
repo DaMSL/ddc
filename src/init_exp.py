@@ -102,7 +102,7 @@ def load_historical_DEShaw(catalog):
   # Read in and parse TimeScape output
   file_pref = home+'/work/timescape/desh_' #'/root/heavy/out/expl'
   basin_list = []
-  logging.info('Loading all Time Scape data and processing basins')
+  logging.info('Loading all D.E.Shaw Time Scape data and processing basins')
   for i in range(42):  
     nframes = 100000 if i < 41 else 25000
     minima_list = TimeScape.read_log(file_pref + '%02d_minima.log'%i)
@@ -471,13 +471,13 @@ if __name__ == '__main__':
     initializecatalog(catalog)
 
   if args.seed or args.all:
-    if settings.EXPERIMENT_NUMBER == 12:
-      load_historical_Expl(catalog)
-    elif settings.EXPERIMENT_NUMBER == 13:
-      load_historical_DEShaw(catalog)
-    else:
-      logging.error("NO experiment defined")
-    # load_seeds(catalog, calc_seed_rms=False)
+    load_historical_DEShaw(catalog)
+    # if settings.EXPERIMENT_NUMBER == 12:
+    #   load_historical_Expl(catalog)
+    # elif settings.EXPERIMENT_NUMBER == 13:
+    # else:
+    #   logging.error("NO experiment defined")
+    # # load_seeds(catalog, calc_seed_rms=False)
 
   if args.initjobs or args.all:
     numresources = int(catalog.get('numresources'))
