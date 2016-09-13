@@ -112,16 +112,33 @@ def rmsd_matrix(A):
 
 
 
+def rmsf(A, ref=None):
+  S = A.xyz if isinstance(A, md.Trajectory) else A
+  N, Z, _ = S.shape
+  M = np.zeros(shape=(N, Z))
+  if ref is None:
+    ref = S[0] #np.mean(A, axis=0)
+    start = 1
+  else:
+    start = 0
+  for i in range(start, N):
+    M[i] = LA.norm(S[i] - ref, axis=1)
+  return M
 
-def rmsf(A):
+
+def rmsf_agg(A, ref=None):
   suma = np.zeros(A.shape[1])
-  ref = A[0] #np.mean(A, axis=0)
-  for frame in A[1:]:
+  if ref is None:
+    ref = A[0] #np.mean(A, axis=0)
+    start = 1
+  else:
+    start = 0
+  for frame in A[start:]:
     suma += np.square(LA.norm(frame - ref, axis=1))
   return np.sqrt(suma/len(A))
 
-def rmsf_matrix(A, use_mean=False):
-  ref = np.mean(A, axis=0) if use_mean else A[0]
+def rmsf_mean(A):
+  ref = np.mean(A, axis=0)
   N = len(A)
   Z = len(A[0])
   M = np.zeros(shape=(N, Z))

@@ -414,13 +414,20 @@ def lines(series, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, 
     plt.plot(np.arange(len(X))*(step), X, color=C, label=L)
   plt.legend(loc='upper left')
   graph_args(kwargs)
-  # plt.title(title)
-  # if xlabel is not None:
-  #   plt.xlabel(xlabel)
-  # if xlim is not None:
-  #   ax.set_xlim(xlim)
-  # plt.savefig(SAVELOC + '/' + title + '.png')
-  # plt.close()
+
+
+def manylines(linelist, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
+  prep_graph()
+  if isinstance(linelist, list):
+    lines = np.array(linelist)
+  else:
+    lines = linelist
+  N, D = lines.shape
+  X = np.arange(D)*step
+  ax = plt.subplot(111)
+  for L in lines:
+    plt.plot(X, L)
+  graph_args(kwargs)
 
 def conv(series, title, xlim=None, ylim=None, labelList=None, step=1, xlabel=None):
   seriesList = [series[key] for key in elabels]
@@ -918,7 +925,7 @@ def derived_lattice(L, sublat=None, **kwargs):
   K = max([len(k) for k in L.keys()])
   key_list = [[]]
   for k in range(1, K):
-    ca = [i for i in dlat.keys() if len(i) == k]
+    ca = [i for i in L.keys() if len(i) == k]
     key_list.append(sorted(ca))
 
   max_x = max([len(Lk) for Lk in key_list])
@@ -956,13 +963,14 @@ def derived_lattice(L, sublat=None, **kwargs):
   kwargs.update(dict(xlim=(0,max_x), ylim=(0,K+.25)))
   graph_args(kwargs)
 
-def show_dlattice(L, I, U, **kwargs):
+def show_dlattice(L, Isize, U, theta=.05, clusters=[], **kwargs):
   k_domain = 'abcdefghijklmno'
   tok   = lambda x: ''.join(sorted([chr(97+i) for i in x]))
   fromk = lambda x: frozenset([ord(i)-97 for i in x])
 
   prep_graph()
   fig, ax = plt.subplots()
+  colorList = ['blue', 'red', 'lime', 'magenta']
   K = max([len(k) for k in L.keys()])
   key_list = [[], sorted(set.union(*[set(i) for i in L.keys()]))]
   print('K=', K, key_list)
@@ -999,7 +1007,7 @@ def show_dlattice(L, I, U, **kwargs):
       xpos = .5*dx + x*dx
       # distr_vect = ','.join([('%.2f'%L2[fs][i]).lstrip('0') for i in sorted(L2[fs].keys())])
       delta_vals = '\n'.join([(i+': %.3f'%L[fs][i]).lstrip('0') for i in sorted(L[fs].keys())])
-      ax.text(xpos, k, fs+' (%d)\n%s' % (I[fs], delta_vals), zorder=3,
+      ax.text(xpos, k, fs+' (%d)\n%s' % (Isize[fs], delta_vals), zorder=3,
           va='top', ha='center',fontsize='xx-small', wrap=True)
       if fs in U:
         nodelist[fs] = (xpos, k)
@@ -1009,11 +1017,11 @@ def show_dlattice(L, I, U, **kwargs):
           va='bottom', ha='center', fontsize='x-small', color='red')
       for x1, child in enumerate(key_list[k-1]):
         if set(child) < set(fs):
-          try:
-            linecol = 'aquamarine' if L[child][fs] < 0.05 else 'ghostwhite'
-          except KeyError as err:
-            print(parent, child, L[child])
-            raise KeyError
+          linecol = 'lightgrey' if L[child][fs] < theta else 'ghostwhite'
+          for col, clu in enumerate(clusters):
+            if fs in clu and child in clu:
+              linecol = colorList[col]
+              break
           plt.plot((.5*dx1+x1*dx1,xpos),(k-1, k),color=linecol, zorder=1,linewidth=1)
     dx1 = dx
 
@@ -1029,6 +1037,28 @@ def show_dlattice(L, I, U, **kwargs):
   if max_x > 10:
     fig.set_size_inches(int(.9*max_x), int(.4*max_x))
   kwargs.update(dict(xlim=(0,max_x), ylim=(0,K+.25)))
+  graph_args(kwargs)
+
+
+
+def lattice_path_dist(linelist, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
+  prep_graph()
+  selfs = []
+  lines = []
+  for L in linelist:
+    lines.append([d for _,_,d in L])
+    for a,b,d in L:
+      if d > .1:
+        selfs.append((b, d))
+  lines = np.array(lines)
+  N, D = lines.shape
+  X = np.arange(D)*step
+  ax = plt.subplot(111)
+  for L in lines:
+    plt.plot(X, L, linewidth=1)
+  for fs, y in selfs:
+    x = len(fs)-2
+    plt.text(x-.1, y, fs, family='sans-serif', zorder=3, va='bottom', ha='center', fontsize='x-small')
   graph_args(kwargs)
 
 
