@@ -8,11 +8,16 @@ from sortedcontainers import SortedSet, SortedList
 from collections import OrderedDict, deque, defaultdict
 
 ascii_greek = ''.join([chr(i) for i in it.chain(range(915,930), range(931, 938), range(945, 969))])
-label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
+k_domain = label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
 
 frommask = lambda obs: ''.join([label_domain[i] for i, x in enumerate(obs) if x])
 tomask = lambda key, size: [(1 if i in key else 0) for i in domain[:size]]
-toidx = lambda key: [i for i,f in enumerate(K_domain) if f in key]
+toidx = lambda key: [i for i,f in enumerate(k_domain) if f in key]
+tok   = lambda x: ''.join(sorted([k_domain[i] for i in x]))
+tofz  = lambda x: frozenset([k_domain.index(i) for i in x])
+# toidx = lambda x: [ord(i)-97 for i in x]
+fromk = lambda x: np.array([1 if i in x else 0 for i in k_domain])
+fromm = lambda x: ''.join(sorted([k_domain[i] for i,m in enumerate(x) if m == 1]))
 
 
 key_meet = lambda a, b: ''.join(sorted(set(a).intersection(set(b))))
@@ -157,8 +162,6 @@ def mcl_clustering(G, n=1, pow=2, inf=2):
     M = M/M.sum(0)
   return M
 
-
-
 def inter_clu(M):
   assigned = [-1 for i in range(466)]
   connlist  = [set() for i in range(N)]
@@ -172,7 +175,10 @@ def inter_clu(M):
         connlist2[n].add(i)
   newgrp = 0
 
-     
+
+
+
+    
 
 
 def cheapEMD(d1, d2, nbins=20, binrange=None):
@@ -253,7 +259,7 @@ def child_map(L, bylevel=False):
   print("TOTAL # Edges:  ", ncount)
   return cmap
 
-def child_parent_maps(L):
+def child_parent_maps(L, haskey=False):
   cmap, pmap = OrderedDict(), OrderedDict()
   ncount = 0
   # Initialize
@@ -382,23 +388,8 @@ def getpaths(a, b, dlat):
         print('%6s%6s%7.3f' % (c,p,dlat[c][p]))
   return nodelist
 
-# def botup_group(dlat, theta=.02):
-#   # get smallest keys
-#   klist = sorted(dlat.keys(), key=lambda x: (len(x), x))
-#   minlen = len(klist[0])
-#   stnodes = set([k for k in klist if len(k) == 1])
-#   grpsets = {}
-#   for node in stnodes:
-#     grpsets[node] = set()
-#     sset = {node}
-#     while len(sset) > 0:
-#       child = sset.pop()
-#       grpsets[node].add(child)
-#       for parent, val in dlat[child].items():
-#         if val > theta or parent in grpsets[node]:
-#           continue
-#         sset.add(parent)
-#   return grpsets
+
+
 
 def botup_group(dlat, theta=.02):
   # get smallest keys
@@ -429,39 +420,196 @@ def botup_group(dlat, theta=.02):
 
 
 
+def cluster_lattice(clu):
+  keylist = sorted(clu.keys(), key=lambda x: (len(x), x))
+
+
+
+def cluster(dlat, L, Ik, CMr, D, theta=.5, minclu=5, bL=None):
+  ''' Clustering algorithm which assigns each item (event/basin) to a 
+  grouping in the lattice'''
+  
+  # 1.  Build feature based group sets in the lattice
+  gs, ga = topdown_group(dlat, L, theta)
+
+  # 2.  Create list of items for each group
+  Ig = {k: set(it.chain(*[Ik[i] for i in v])) for k,v in gs.items()}
+
+  # 3.  Get list of group keys (from most to least features)
+  grpkey = sorted(Ig.keys(), key=lambda x : len(x), reverse=True)
+  grp, nogrp = {}, []
+
+  ### OPTION A:  Map to corr feature set (for unique key)
+  # 4.  For each item: map to a group:   <map>
+  for i in range(len(CMr)):
+    k = fromm(CMr[i])
+    #  Set its group 
+    if k in ga:
+      grp[i] = ga[k]
+    # Keep track of unassigned nodes (TODO: is this just noise?)
+    else:
+      nogrp.append(k)
+
+  # 5. Reorganize (group-by) element  <reduce>
+  clu = {k: [] for k in set(grp.values())}
+  for k,v in grp.items(): 
+    clu[v].append(k)
+
+  # FOR DEBUG/DISPLAY
+  if bL is not None:
+    n = 0
+    clusterlist = []
+    for idx, (k,v) in enumerate(clu.items()):
+      if len(v) > minclu: 
+        bc  = np.bincount([bL[i] for i in v], minlength=3)
+        state = np.argmax(bc)
+        stperc = 100*bc[state] / sum(bc)
+        clusterlist.append((k, len(v), state, stperc))
+        # print('%2d.'%n, '%-15s'%k, '%4d '%len(v), 'State: %d  (%4.1f%%)' % (state, stperc))
+        n += 1
+    for i in sorted(clusterlist, key =lambda x : x[1], reverse=True):
+      print('%-15s%5d  /  %d - (%4.1f%%)' % i)
+  return clu
+
+
+def recluster(clu, Dr, theta= .5, minclu=3, bL=None):
+  keylist = sorted(clu.keys(), key=lambda x: (len(x), x))
+  min_k, max_k = [f([len(i) for i in keylist]) for f in [min, max]]
+  Lc = [[i for i in keylist if len(i) == k] for k in range(min_k, max_k+1)]
+  lat = {k: {} for k in keylist}
+  I = {k: sorted(clu[k]) for k in keylist}
+
+  for k in range(len(Lc)-1, 0, -1):
+    for parent in Lc[k]:
+      for child in Lc[k-1]:
+        common_keys = set(child) & set(parent)
+        union_keys = set(child) | set(parent)
+        if len(common_keys) > 0:
+          try:
+            keyset = toidx(sorted(union_keys))
+            d_c = Dr[I[child]][:,keyset]
+            d_p = Dr[I[parent]][:,keyset]
+            lat[child][parent] = cheapEMD(d_c, d_p)        
+          except IndexError as err:
+            print ('ERROR:   ', child, parent, clu[child], clu[parent], keyset)
+            raise IndexError
+
+  gs, ga = topdown_group(lat, Lc, theta)
+  clusters = {k: set(it.chain(*[clu[i] for i in v])) for k,v in gs.items()}
+
+  if bL is not None:
+    n = 0
+    print("TOTAL # of CLUSTERS:   ", len(clusters))
+    clusterlist = []
+    for idx, (k,v) in enumerate(clusters.items()):
+      if len(v) > minclu: 
+        bc  = np.bincount([bL[i] for i in v], minlength=3)
+        state = np.argmax(bc)
+        stperc = 100*bc[state] / sum(bc)
+        clusterlist.append((k, len(v), state, stperc))
+        # print('%2d.'%n, '%-15s'%k, '%4d '%len(v), 'State: %d  (%4.1f%%)' % (state, stperc))
+        n += 1
+    for i in sorted(clusterlist, key =lambda x : x[1], reverse=True):
+      print('%-15s%5d  /  %d - (%4.1f%%)' % i)
+
+  return clusters
+
+
+def mergecluster(clu, Dr, theta=1., minclu=3, bL=None):
+  ''' USes full distrubution of clustered items to merge clusters based 
+  on eucidean distance to centroid '''
+
+  #  TODO:  Is full distribution and/or centroid methods applicable?
+
+  keylist = [i[0] for i in sorted(clu.items(), key=lambda x: len(x[1]), reverse=True)]
+  # Make a copy
+  clusters = {k: v for k,v in clu.items()}
+
+  # Calc centroids
+  centroid = {k: Dr[clu[k]][:,toidx(k)].mean(0) for k in keylist}
+
+  Nc = len(keylist)
+  G = np.ones(shape=(Nc, Nc))
+  for i in range(Nc):
+    a = keylist[i]
+    kidx = toidx(a)
+    for j in range(Nc):
+      if i == j:
+        G[i][i] = theta
+        continue
+      b = keylist[j]
+      G[i][j] = LA.norm(Dr[clu[a]][:,kidx].mean(0) - Dr[clu[b]][:,kidx].mean(0))
+
+  nnlist = [np.argmin(G[i]) for i in range(Nc)]
+  for i in range(Nc-1, 0, -1):
+    # Do not merge this
+    if nnlist[i] > i:
+      continue
+    # Break up the cluster & reassign
+    if nnlist[i] == i:
+      for elm in clusters[keylist[i]]:
+        bestfit, bestclu = 100000, -1
+        for j in range(i):
+          keyset = toidx(keylist[i])
+          d = LA.norm(Dr[j][:,keyset] - centroid[keylist[i]])
+          if d < bestfit:
+            bestclu = j
+            bestfit = d
+        clusters[keylist[bestclu]].append(elm)
+        # Should we wait to recalc this???
+        centroid[keylist[bestclu]] = Dr[clusters[keylist[bestclu]]][:,toidx(keylist[bestclu])].mean(0)
+      del clusters[keylist[i]]
+    # Merge to nn
+    else:
+      nnkey = keylist[nnlist[i]]
+      for elm in clusters[keylist[i]]:
+        clusters[nnkey].append(elm)
+      centroid[nnkey] = Dr[clusters[nnkey]][:,toidx(nnkey)].mean(0)
+      del clusters[keylist[i]]
+
+  for i, (k,v) in enumerate(clusters.items()):
+    if v is None or len(v) == 0:
+      print (k, "  <---NO ITEMS")
+      continue
+    bc = np.bincount([bL[i] for i in v], minlength=3)
+    state = np.argmax(bc)
+    stperc = 100*bc[state] / sum(bc)
+    print('%3d.  %-15s%5d  /  State: %d  (%5.1f%%)' % (i, k, len(v), state, stperc))
+
+
+
+
 def topdown_group(dlat, L, theta=.02, pmap=None):
+  ''' Single-Pass lattice clustering. Iterates through each node from 
+  top to bottom and assigns each node to a group. Grouping is based solely
+  on the child-parent relationship:
+      If none:  Create a new group
+      Else:     Assign to parent node with min EMD provided emd < theta
+         if min(emd) > theta:  create a new group'''
+  # 1. Build list of keys from top to bottom
   klist = sorted(dlat.keys(), key=lambda x: (len(x), x), reverse=True)
   grpsets    = {}
   assignment = {}
   notop = 0
+  # 2. For each key: assign to a group or start a new one
   for k in klist:
+    # Node has parents:  check if it should be assigned 
     if len(dlat[k]) > 0:
+      # Get min (emd)
       key, emd = min(dlat[k].items(), key = lambda x: x[1])
+      # assign to smallest emd (if < theta)
       if emd < theta:
         grpsets[assignment[key]].add(k)
         assignment[k] = assignment[key]
         continue
     else:
       notop += 1
+    # Create a new group
     grpsets[k]    = set({k})
     assignment[k] = k
   print(' NO TOP=', notop)
   return grpsets, assignment
 
-
-
-
-
-
-  N = len(G)
-  theta = 1/N
-  M=G
-  M = M/M.sum(0)
-  for i in range(n):
-    M = LA.matrix_power(M, pow)
-    for elm in np.nditer(M, op_flags=['readwrite']):  
-      elm[...] = elm ** inf
-    M = M/M.sum(0)
 
 
 

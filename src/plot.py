@@ -963,7 +963,7 @@ def derived_lattice(L, sublat=None, **kwargs):
   kwargs.update(dict(xlim=(0,max_x), ylim=(0,K+.25)))
   graph_args(kwargs)
 
-def show_dlattice(L, Isize, U, theta=.05, clusters=[], **kwargs):
+def show_dlattice(L, Isize, U={}, theta=.05, clusters=[], **kwargs):
   k_domain = 'abcdefghijklmno'
   tok   = lambda x: ''.join(sorted([chr(97+i) for i in x]))
   fromk = lambda x: frozenset([ord(i)-97 for i in x])
