@@ -396,7 +396,7 @@ def seriesLines(X, series, title, xlabel=None):
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-def lines(series, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
+def lines(series, xscale=None, showlegend=True, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
   if isinstance(series, list):
     seriesList = series
     # if labelList is None:
@@ -411,8 +411,15 @@ def lines(series, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, 
   plt.clf()
   ax = plt.subplot(111)
   for X, C, L in zip(seriesList, colorList, labelList):
-    plt.plot(np.arange(len(X))*(step), X, color=C, label=L)
-  plt.legend(loc='upper left')
+    plt.plot(np.arange(len(X)), X, color=C, label=L)
+  if xscale is not None:
+    labels = [item.get_text() for item in ax.get_xticklabels(which='both')]
+    # print(labels)
+    xmin, xmax = xscale
+    dx = (xmax-xmin) / len(labels)
+    ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
+  if showlegend:
+    plt.legend(loc='upper left')
   graph_args(kwargs)
 
 
