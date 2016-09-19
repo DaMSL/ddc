@@ -423,6 +423,36 @@ def lines(series, xscale=None, showlegend=True, **kwargs): #title, xlim=None, la
   graph_args(kwargs)
 
 
+def show_distr(series, xscale=None, showlegend=True, states=None, **kwargs):
+  labelList = sorted(series.keys())
+  seriesList = [series[key] for key in labelList]
+  stcolor = ['red', 'blue', 'green', 'purple', 'cyan']
+  if states is None:
+    colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  else:
+    colorList = []
+    for k in labelList:
+      col = 'black' if k == 'All' else stcolor[states[k]]
+      colorList.append(col)
+  plt.clf()
+  ax = plt.subplot(111)
+  for X, C, L in zip(seriesList, colorList, labelList):
+    col, lw, ls = ('black', 5, '--') if L == 'All' else (C, 1, '-')
+    plt.plot(np.arange(len(X)), X, color=col, label=L, linewidth=lw, linestyle=ls)
+  if xscale is not None:
+    labels = [item.get_text() for item in ax.get_xticklabels(which='both')]
+    # print(labels)
+    xmin, xmax = xscale
+    dx = (xmax-xmin) / len(labels)
+    ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
+  if showlegend and states is not None:
+    patches = [mpatches.Patch(color='black', label='All')]
+    for i, c in enumerate(stcolor):
+      patches.append(mpatches.Patch(color=c, label='State %d'%i))
+      plt.legend(handles=patches, loc='upper right', prop={'family': 'monospace'})
+  graph_args(kwargs)
+
+
 def manylines(linelist, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
   prep_graph()
   if isinstance(linelist, list):

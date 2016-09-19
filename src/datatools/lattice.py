@@ -34,7 +34,6 @@ def unique_events(A):
     U[frommask(row)].append(idx)
   return U
 
-
 def reduced_feature_set(A, theta=.02):
   '''Reduces te feature set (columns) by eliminating all "trivial" features.
   Accepts a 1-0 Contact Matrix and identifies all columns whose values are
@@ -55,9 +54,109 @@ def reduced_feature_set(A, theta=.02):
         pair_wise.add(a)
         pair_wise.add(b)
   return sorted(set(first_order) - pair_wise) 
-
  
+## MAX MINER
+def maxminer_initgrps (T, epsilon):
+  N, K = T.shape
+  C = []
+  F = [k for k in range(K) if len(np.where(T[:,k]==1)[0] > epsilon)]
+  for k in F[:-1]:
+    hg = [k] #frozenset({k})
+    tg = [j for j in range(k+1, K)]  #frozenset([j for j in range(k+1, K)])
+    C.append((hg, tg))
+  return C, [[F[-1]]]
+  # return C, [frozenset({F[-1]})]
 
+def maxminer_subnodes(g, T, C, epsilon):
+  hg, tg = g #g[0], list(g[1])
+  i = len(tg)-1
+  while i > 0:
+    # support = len(np.where(np.logical_and(T[:,list(hg.union({tg[i]}))], True).all(1))[0])
+    support = np.sum(np.logical_and(T[:,hg + [tg[i]]], True).all(1))
+    if support < epsilon:
+      tg.pop(i)
+    i -= 1
+  if len(tg) > 0:
+    for i in range(len(tg)-1):
+      # C.append((hg.union({tg[i]}), frozenset([j for j in tg[i+1:]])))
+      C.append((hg + [i], [j for j in tg[i+1:]]))
+    return C, hg + [max(tg)]  #hg.union({max(tg)})
+  return C, hg
+
+def maxminer(T, epsilon):
+  N, K = T.shape
+  start = dt.now()
+  C, F = maxminer_initgrps(T, epsilon)
+  n_iter = 0
+  times = None
+  subtimes = None
+  while len(C) > 0:
+    ts = []
+    t0 = dt.now()
+    C_new = []
+    for hg, tg in C:
+      ts2 = []
+      s0 = dt.now()
+      # g = hg.union(tg)
+      g = hg + tg 
+      if len(g) <= 1:
+        continue
+      # tupg = list(g)
+      # mask = np.ones(K)
+      # mask[tupg] = 0
+      idx = T[:,g]
+      s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+      support = np.sum(np.logical_and(idx, True).all(1))
+      # support = len(np.where(np.logical_and(idx, True).all(1))[0])
+      # support = np.sum(np.logical_or(T, mask).all(1))
+      s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+      if support >= epsilon:
+        F.append(g)
+        s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+        ts2.append(0)
+      else:
+        C_new, gn = maxminer_subnodes((hg,tg), T, C_new, epsilon)
+        F.append(gn)
+        ts2.append(0)
+        s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+      if subtimes is None:  subtimes = np.zeros(len(ts2))
+      subtimes += ts2
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+    C = C_new
+    f = 0
+    while f < len(F):
+      for i in range(f+1, len(F)):
+        if F[f] < F[i]:
+          del F[f]
+          break
+      f += 1
+
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+    c = 0
+    while c < len(C):
+      hg, tg = C[c]
+      # g = hg.union(tg)
+      g = hg + tg
+      for f in F:
+        if g < f:
+          del C[c]
+          break
+      c += 1
+
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+    if times is None:  times = np.zeros(len(ts))
+    times += ts
+    n_iter += 1
+    print('%2d  - subtimes: '%n_iter, ('%5.2f s  ' * len(subtimes)) % tuple(subtimes))
+  print(ts)
+  # times /= n_iter
+  end = dt.now()
+  print('BENCH TIMES:     ', ('%5.2f s  ' * len(times)) % tuple(times))
+  print('BENCH SUBTIMES:  ', ('%5.2f s  ' * len(subtimes)) % tuple(subtimes))
+  print('TOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
+  return F
+
+## APRIORI
 def apriori(M, epsilon):
   N, K = M.shape
   L, I = [[]], OrderedDict()
@@ -127,7 +226,9 @@ def apriori(M, epsilon):
 
     # Reduce: candidates' itemsets and accept/reject based on epsilon
     for c, (sA, b) in Ik.items():
-      ia = I[sA].intersection(I[k1key[b]])
+      # ia = I[sA].intersection(I[k1key[b]])
+      ia = np.where(np.logical_and(M[:,tuple(c)], True).all(1))[0]
+
       if len(ia) > epsilon:
         Lk.append(c)
         I[c] = ia
@@ -144,13 +245,11 @@ def apriori(M, epsilon):
     '    N= %d  K= %d  # Nodes= %d' % (N, K, len(I)))
   return L, I
 
-
 def compdist(k1, k2, I, D, usekeys=None):
   ''' Compares distributions of key 1 to key 2 using keys in KEY 1'''
   # keys = [ord(i)-97 for i in (k1 if len(k1)>len(k2) else k2)]
   keys = [ord(i)-97 for i in (k1 if usekeys is None else usekeys)]
   return cheapEMD(D[I[k1]][:,keys], D[I[k2]][:,keys])
-
 
 def mcl_clustering(G, n=1, pow=2, inf=2):
   N = len(G)
@@ -177,7 +276,6 @@ def inter_clu(M):
         connlist2[n].add(i)
   newgrp = 0
 
-
 def kstest(D):
   ''' Implements Kolmogorov-Smirnov test on the provided distribution to test how
   close D is to gaussian norm. Uses mean and std of the distribution to create the 
@@ -185,8 +283,6 @@ def kstest(D):
   D must be a 1-D ndarray'''
   mu, sigma = D.mean(), D.std()
   gaus = stats.norm(loc=mu, scale=sigma)
-
-
 
 def cheapEMD(d1, d2, nbins=20, binrange=None):
   ''' Performs a cheap EMD using 1D histograms. "dirt" is only
@@ -217,7 +313,6 @@ def cheapEMD(d1, d2, nbins=20, binrange=None):
 
   # Aggregate dimensions
   return np.sqrt(np.sum(flow**2))
-
 
 def parent_map(L, bylevel=False):
   pmap = []
@@ -291,8 +386,6 @@ def child_parent_maps(L, haskey=False):
   print("TOTAL # Edges:  ", ncount)
   return cmap, pmap
 
-
-
 def derived_lattice(E, L, I, nbins=20, binrange=None):
   dlattice = {}
   tottime = 0.
@@ -338,7 +431,6 @@ def derived_lattice(E, L, I, nbins=20, binrange=None):
   print('\n Total Time = %7.2f   Nodes = %d   Edges = %d' % (tottime, nnodes, nedges))
   return dlattice
 
-
 def dlat_trace(Ik, D, key, pmap):
   dlattice = {}
   idx = toidx(key)
@@ -353,7 +445,6 @@ def dlat_trace(Ik, D, key, pmap):
       d2 = D[Ik[parent]][:,idx]
       dlattice[child][parent] = cheapEMD(d1, d2)
   return dlattice
-
 
 def dlat_by_depth(dlat):
   max_k = max([len(k) for k in dlat.keys()])
@@ -371,8 +462,6 @@ def sublattice(L, key):
     node = {k: v for k,v in L[fs].items() if set(k) <= apex}
     sublat[fs] = node
   return sublat
-
-
 
 def enumpaths(a, b, dlat):
   if len(a) + 1 == len(b):
@@ -394,8 +483,6 @@ def enumpaths_distr(a, b, dlat):
         subpaths.append([dlat[a][p]] + sp)
   return subpaths
 
-
-
 def getpaths(a, b, dlat):
   nodelist = {a, b}
   for klen in range(len(a)+1, len(b)):
@@ -413,40 +500,8 @@ def getpaths(a, b, dlat):
 
 
 
-
-def botup_group(dlat, theta=.02):
-  # get smallest keys
-  klist = sorted(dlat.keys(), key=lambda x: (len(x), x))
-  minlen = len(klist[0])
-  stnodes = set([k for k in klist if len(k) == 1])
-  grpsets = defaultdict(set)
-  assigned = {k: False for k in klist}
-  while len(stnodes) > 0:
-    node = stnodes.pop()
-    if assigned[node]:
-      continue
-    curtree = {node}
-    while len(curtree) > 0:
-      child = curtree.pop()
-      if assigned[child]:
-        continue
-      grpsets[node].add(child)
-      assigned[child] = True
-      for parent, val in dlat[child].items():
-        if assigned[parent]:
-          continue
-        if val <= theta:
-          curtree.add(parent)
-        else:
-          stnodes.add(parent)
-  return grpsets
-
-
-
 def cluster_lattice(clu):
   keylist = sorted(clu.keys(), key=lambda x: (len(x), x))
-
-
 
 def cluster(dlat, Ik, CMr, D, theta=.5, minclu=5, bL=None):
   ''' Clustering algorithm which assigns each item (event/basin) to a 
@@ -456,48 +511,49 @@ def cluster(dlat, Ik, CMr, D, theta=.5, minclu=5, bL=None):
   gs, ga = topdown_group_single(dlat, theta)
 
   # 2.  Create list of items for each group
-  Ig = {k: set(it.chain(*[Ik[i] for i in v])) for k,v in gs.items()}
+  Ig = {k: sorted(it.chain(*[Ik[i] for i in v])) for k,v in gs.items()}
 
-  # 3.  Get list of group keys (from most to least features)
-  grpkey = sorted(Ig.keys(), key=lambda x : len(x), reverse=True)
   grp, nogrp = {}, []
 
   ### OPTION A:  Map to corr feature set (for unique key)
-  # 4.  For each item: map to a group:   <map>
+  # 3.  For each item: map to a group:   <map>
+  clusters = defaultdict(list)
   for i in range(len(CMr)):
     k = fromm(CMr[i])
     #  Set its group 
     if k in ga:
       grp[i] = ga[k]
+      clusters[ga[k]].append(i)
     # Keep track of unassigned nodes (TODO: is this just noise?)
     else:
-      nogrp.append(k)
+      nogrp.append(i)
 
   print("  TOTAL # of GROUP   :   ", len(gs))
   print("  Items w/no group   :   ", len(nogrp))
+
+
+  # ### OPTION B:  For all nodes wo/grp: Map to "bestfit" grouping based on RMS to group centroid
+  # centroid = {k: D[v].mean(0) for k,v in clusters.items()}
+  # # 4.  For each item: map to a group:   <map>
+  # for i in nogrp:
+  #   item  = D[i]
+  #   bestfit, min_d = '', 100000
+  #   for k, cent in centroid.items():
+  #     delta = LA.norm(item - cent)
+  #     if delta < min_d:
+  #       bestfit, min_d = k, delta
+  #   grp[i] = bestfit
+  #   clusters[bestfit].append(i)
+
   # 5. Reorganize (group-by) element  <reduce>
-  clu = {k: [] for k in set(grp.values())}
-  for k,v in grp.items(): 
-    clu[v].append(k)
+  # clu = {k: [] for k in set(grp.values())}
+  # for k,v in grp.items(): 
+  #   clu[v].append(k)
 
   # FOR DEBUG/DISPLAY
-  print("  TOTAL # CLUSTERS   :   ", len(clu))
   if bL is not None:
-    n = 0
-    clusterlist = []
-    for idx, (k,v) in enumerate(clu.items()):
-      if len(v) > minclu: 
-        bc  = np.bincount([bL[i] for i in v], minlength=3)
-        state = np.argmax(bc)
-        stperc = 100*bc[state] / sum(bc)
-        var = D[v][:,toidx(k)].std(0).mean()
-        clusterlist.append((n, k, len(v), state, stperc, var))
-        # print('%2d.'%n, '%-15s'%k, '%4d '%len(v), 'State: %d  (%4.1f%%)' % (state, stperc))
-        n += 1
-    for i in sorted(clusterlist, key =lambda x : x[2], reverse=True):
-      print('%3d.  %-15s%5d  /  State: %d  (%5.1f%%)   /   %5.2f' % i)
-  return clu
-
+    printclu(clusters, bL, minclu=minclu, incldist=True)    
+  return clusters
 
 def recluster(clu, Dr, theta= .5, minclu=3, bL=None):
   keylist = sorted(clu.keys(), key=lambda x: (len(x), x))
@@ -541,8 +597,6 @@ def recluster(clu, Dr, theta= .5, minclu=3, bL=None):
 
   return clusters
 
-
-
 def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
   ''' USes full distrubution of clustered items to merge clusters based 
   on eucidean distance to centroid '''
@@ -567,6 +621,7 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
         continue
       b = keylist[j]
       G[i][j] = LA.norm(Dr[clu[a]][:,kidx].mean(0) - Dr[clu[b]][:,kidx].mean(0))
+      # G[i][j] = LA.norm(Dr[clu[a]].mean(0) - Dr[clu[b]].mean(0))
 
   nnlist = [np.argmin(G[i]) for i in range(Nc)]
   
@@ -577,7 +632,7 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
     minidx = np.argmin(G)
     row = minidx // N
     col = minidx % N
-    print (inum, np.mean(G), np.min(G), row, col)
+    # print (inum, np.mean(G), np.min(G), row, col)
     try:
       m_attr  = row if len(clusters[keylist[row]]) < len(clusters[keylist[col]]) else col
       m_donor = col if m_attr == row else row
@@ -608,24 +663,32 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
 
   return clusters
 
+def samplecluster(clu, Dr, num):
+  centroid = {k: Dr[v].mean(0) for k,v in clu.items()}
+  prox = {k: {i: LA.norm(Dr[i] - centroid[k]) for i in v} for k,v in clu.items()}
+  # itemcnt={k:sorted((k, len(v)) for k,v in clu.items()}
+  {k: [i + (bL[i[0]],) for i in sorted(prox[k].items(), key=lambda x: x[1])] for k in prox.keys()}
+  ['%4d (%5.2f) '%i + '%d ' %bL[i[0]] for i in sorted(prox['bcdfikmprtuv'].items(), key=lambda x: x[1])]
 
-def printclu(clusters, bL, minclu=3):
+def printclu(clusters, bL, minclu=3, incldist=False):
   print("  TOTAL # CLUSTERS   :   ", len(clusters))
   if bL is not None:
     n = 0
     clusterlist = []
     for idx, (k,v) in enumerate(clusters.items()):
       if len(v) > minclu: 
-        bc  = np.bincount([bL[i] for i in v], minlength=3)
+        bc  = np.bincount([bL[i] for i in v], minlength=5)
         state = np.argmax(bc)
         stperc = 100*bc[state] / sum(bc)
-        clusterlist.append((n, k, len(v), state, stperc))
+        elms = (n, k, len(v), state, stperc, bc) if incldist else (n, k, len(v), state, stperc)
+        clusterlist.append(elms)
         # print('%2d.'%n, '%-15s'%k, '%4d '%len(v), 'State: %d  (%4.1f%%)' % (state, stperc))
         n += 1
     for i in sorted(clusterlist, key =lambda x : x[2], reverse=True):
-      print('%3d.  %-15s%5d  /  State: %d  (%5.1f%%)' % i)
-
-
+      if incldist:
+        print('%3d.  %-15s%5d  /  State: %d  (%5.1f%%)   %s' % i)
+      else:
+        print('%3d.  %-15s%5d  /  State: %d  (%5.1f%%)' % i)
 
 def mergecluster(clu, Dr, theta=1., minclu=3, bL=None):
   ''' USes full distrubution of clustered items to merge clusters based 
@@ -702,8 +765,6 @@ def mergecluster(clu, Dr, theta=1., minclu=3, bL=None):
       print('%3d.  %-15s%5d  /  State: %d  (%5.1f%%)   /   %5.2f' % i)
   return clusters
 
-
-
 def reverse_dlat(dlat):
   rd = {k: {} for k in dlat.keys()}
   for child, parentlist in dlat.items():
@@ -711,6 +772,43 @@ def reverse_dlat(dlat):
       rd[parent][child] = dlat[child][parent]
   return rd
 
+
+def botup_cluster(dlat, CMr, theta=.02, minclu=3, bL=None):
+  # get smallest keys
+  klist = sorted(dlat.keys(), key=lambda x: (len(x), x))
+  setlist = defaultdict(set)
+  for node in klist:
+    if len(dlat[node]) == 0:
+      continue
+    parent, value = min(dlat[node].items(), key = lambda x: x[1])
+    if value <= theta:
+      setlist[parent] |= setlist[node].union({parent})
+      del setlist[node]
+
+  nogrp = []
+
+  ### OPTION A:  Map to corr feature set (for unique key)
+  # 3.  For each item: map to a group:   <map>
+  clusters = defaultdict(list)
+  for i in range(len(CMr)):
+    k = fromm(CMr[i])
+    found = False
+    #  TODO: optimize (linear searches) 
+    for grp, nodelist in setlist.items():
+      if k in nodelist:
+        clusters[grp].append(i)
+        found = True
+        break
+    # Keep track of unassigned nodes (TODO: is this just noise?)
+    if not found:
+      nogrp.append(i)
+
+  print("  TOTAL # of GROUP   :   ", len(setlist))
+  print("  Items w/no group   :   ", len(nogrp))
+  # FOR DEBUG/DISPLAY
+  if bL is not None:
+    printclu(clusters, bL, minclu=minclu, incldist=True)    
+  return clusters
 
 def topdown_group(dlat, theta=.02, pmap=None):
   ''' Single-Pass lattice clustering. Iterates through each node from 
@@ -760,8 +858,7 @@ def topdown_group(dlat, theta=.02, pmap=None):
   print(' NO TOP=', notop)
   return grpsets, assignment
 
-
-def topdown_group_single(dlat, theta=.02, pmap=None):
+def topdown_group_single(dlat, theta=.02, pmap=None, topdown=True):
   ''' Single-Pass lattice clustering. Iterates through each node from 
   top to bottom and assigns each node to a group. Grouping is based solely
   on the child-parent relationship:
@@ -769,7 +866,7 @@ def topdown_group_single(dlat, theta=.02, pmap=None):
       Else:     Assign to parent node with min EMD provided emd < theta
          if min(emd) > theta:  create a new group'''
   # 1. Build list of keys from top to bottom
-  klist = sorted(dlat.keys(), key=lambda x: (len(x), x), reverse=True)
+  klist = sorted(dlat.keys(), key=lambda x: (len(x), x), reverse=topdown)
   
   grpsets    = {}
   assignment = {}
@@ -792,8 +889,6 @@ def topdown_group_single(dlat, theta=.02, pmap=None):
     assignment[k] = k
   print(' NO TOP=', notop)
   return grpsets, assignment
-
-
 
 
 def topdown_group_uni(dlat, L, theta=.02, cmap=None):
@@ -824,7 +919,6 @@ def topdown_group_uni(dlat, L, theta=.02, cmap=None):
           stnodes.add(child)
   return grpsets
 
-
 def topdown_group_bidir(dlat, L, theta=.02):
   # get smallest keys
   cmap = child_map(L)
@@ -852,7 +946,6 @@ def topdown_group_bidir(dlat, L, theta=.02):
           stnodes.add(child)
   return grpsets
 
-
 # dlat3 = {key: {k: np.sum(np.abs(list(v.values()))) for k,v in distr.items()} for key, distr in dlat2.items()}
 
 def edgelist(dlat):
@@ -866,7 +959,6 @@ def edgelist(dlat):
   return elist, klist
 
 
-
 merge_theta = .05
 def merge_children(cmap, dlat, node):
   k=len(node)
@@ -877,7 +969,6 @@ def merge_children(cmap, dlat, node):
     if dlat[child][node] < merge_theta and child not in nodeset:
       nodeset |= merge_children(cmap, dlat, child)
   return nodeset
-
 
 def group_lattice_nodes(L, dlat, theta = .05, cmap=None, pmap=None):
   if cmap==None:
@@ -919,9 +1010,6 @@ def group_lattice_nodes(L, dlat, theta = .05, cmap=None, pmap=None):
     next_grp_num += 1
   return grpmap, group_list, group_neighbors
 
-
-
-
 def group_lattice_nodes_edges(dlat):
   elist, klist = edgelist(dlat)
   sorted_edges = sorted(elist.items(), key=lambda x: x[1])
@@ -957,7 +1045,6 @@ def group_lattice_nodes_edges(dlat):
       print ('\r[%20s] %4.2f%%' % ('#'*int(prog/5), prog), end='')
       # print '\r[{0}] {1}%'.format('#'*(progress/10), progress)
   return grp_list
-
 
 def edgemap(L, I, E):
   edgemap = defaultdict(list)
