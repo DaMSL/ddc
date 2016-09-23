@@ -4,6 +4,8 @@ import numpy as np
 import numpy.linalg as LA
 import scipy.stats as stats
 import copy
+import threading
+import logging
 
 from datetime import datetime as dt
 from sortedcontainers import SortedSet, SortedList
@@ -24,6 +26,8 @@ fromm = lambda x: ''.join(sorted([k_domain[i] for i,m in enumerate(x) if m == 1]
 
 key_meet = lambda a, b: ''.join(sorted(set(a).intersection(set(b))))
 key_join = lambda a, b: ''.join(sorted(set(a).union(set(b))))
+
+deref = lambda T, key: np.where(np.logical_and(T[:,key], True).all(1))[0]
 
 def unique_events(A):
   '''Groups all rows by similarity. Accepts a 1-0 Contact Matrix and 
@@ -64,7 +68,8 @@ def maxminer_initgrps (T, epsilon):
     hg = [k] #frozenset({k})
     tg = [j for j in range(k+1, K)]  #frozenset([j for j in range(k+1, K)])
     C.append((hg, tg))
-  return C, [[F[-1]]]
+  return C, [{F[-1]}]
+  # return C, [[F[-1]]]
   # return C, [frozenset({F[-1]})]
 
 def maxminer_subnodes(g, T, C, epsilon):
@@ -79,17 +84,467 @@ def maxminer_subnodes(g, T, C, epsilon):
   if len(tg) > 0:
     for i in range(len(tg)-1):
       # C.append((hg.union({tg[i]}), frozenset([j for j in tg[i+1:]])))
-      C.append((hg + [i], [j for j in tg[i+1:]]))
+      C.append((hg + [tg[i]], [j for j in tg[i+1:]]))
     return C, hg + [max(tg)]  #hg.union({max(tg)})
   return C, hg
 
 def maxminer(T, epsilon):
+  ''' Max-Miner Algorithm Implemenation. Epsilon is the lowest bond support value
+  and T is the 1-0 Input matrix of events (row) by attribute obsevations (cols)'''
   N, K = T.shape
   start = dt.now()
+
+  # 1. INIT C and F
   C, F = maxminer_initgrps(T, epsilon)
   n_iter = 0
   times = None
   subtimes = None
+
+  # 2. Loop until no candidates
+  while len(C) > 0:
+    ts = []
+    t0 = dt.now()
+
+    # 3. Scan T to count support groups
+    cag = [hg+tg for hg,tg in C]
+    C_spt = [np.sum(np.logical_and(T[:,g], True).all(1)) for g in cag]
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # 4. Add frequent itemsets
+    for g, spt in zip(cag, C_spt):
+      if spt >= epsilon:
+        F.append(set(g))
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # 5. Init new candidate group list
+    C_new = []
+
+    # 6. For each infrequent itemset, enumerate subnodes and append max
+    for (hg, tg), spt in zip(C, C_spt):
+      if spt < epsilon:
+        C_new, F_new = maxminer_subnodes((hg, tg), T, C_new, epsilon)
+        F.append(set(F_new))
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # 7. Update candidate list
+    C = C_new
+
+    # 8. Prune F: remove itemsets with a superset in F
+    print('   F: %6d'%len(F), end='')
+    fidx = 0
+    while fidx < len(F)-1:
+      prune = False
+      for i in range(fidx+1, len(F)):
+        if F[fidx] < F[i]:
+          F.pop(fidx)
+          prune = True
+          break
+      if not prune:
+        fidx += 1
+    print('  ---> %6d'%len(F), end='   ,   ')
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # 9. Prune C: remove candidates with a superset in F
+    # TO THREAD Thread this part
+
+    # prunelist = deque()
+    # def worker(idxlist):
+    #   print("S%d" % idxlist[0], len(idxlist))
+    #   for cidx in idxlist:
+    #     hg, tg = C[cidx]
+    #     g = hg + tg
+    #     glen = len(g)
+    #     for f in F:
+    #       if glen <= len(f) and set(g) <= f:
+    #         prunelist.append(cidx)
+    #         break
+    #   print("D-%d" % idxlist[0], end=', ')
+
+    # print("\nThreading...")
+    # threads = []
+    # ncores = 20
+    # for para in range(ncores):
+    #   shuffle = [i for i in range(len(C)) if i % ncores == para]
+    #   t = threading.Thread(target=worker, args=(shuffle,))
+    #   threads.append(t)
+    #   t.setDaemon(True)
+    #   t.start()
+
+    # for t in threads:
+    #   t.join()
+
+    # print('All Threads complete!  # to Prune: ', len(prunelist))
+    # print('   C: ', len(C), end='')
+    # for cidx in sorted(prunelist)[::-1]:
+    #   C.pop(cidx)
+
+    # NOT THREADED
+    cidx = len(C)-1
+    while cidx > 0:
+      hg, tg = C[cidx]
+      g = hg + tg
+      glen = len(g)
+      for f in F:
+        if glen <= len(f) and set(g) <= f:
+          C.pop(cidx)
+          break
+      cidx -= 1    
+    print('  ---> ', len(C))
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # Benchmarking
+    if times is None:  times = np.zeros(len(ts))
+    times += ts
+    n_iter += 1
+    tot = (dt.now()-start).total_seconds()
+    logging.info('%2d. TOT: %5.1f   / '%(n_iter, tot) + ('%5.2f s  ' * len(times)) % tuple(ts) + 'F: %6d   C: %6d' % (len(F), len(C)))
+
+
+  end = dt.now()
+  print('BENCH TIMES:     ', ('%5.2f s  ' * len(times)) % tuple(times))
+  print('TOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
+  return F
+
+
+def dlattice_mm(F, D, CM, epsilon):
+  dlat = defaultdict(dict)
+  Ik   = {}
+  times = np.zeros(2)
+  subtimes = None
+  redund = 0
+  start = dt.now()
+  n_iter = 0
+  for n, node in enumerate(F):
+    if tok(node) in Ik:
+      print('      Node exists in lattice: ', tok(node))
+      continue
+    nstart = dt.now()
+    for i in range(len(node)+1):
+      for k in it.combinations(node, i):
+        key = tok(k)
+        if key in Ik:
+          redund += 1
+          continue
+        n_iter += 1
+        ts = []
+        t0 = dt.now()
+        idx = sorted(k)
+        eventlist = np.where(np.logical_and(CM[:,idx], True).all(1))[0]
+        t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+        Ik[key] = len(eventlist)
+        # lab = np.bincount([bL[i] for i in eventlist], minlength=5)
+        for p in it.combinations(node, i+1):
+          if set(k) < set(p):
+            d1 = D[eventlist][:,idx]
+            eset2 = np.where(np.logical_and(CM[:,p], True).all(1))[0]
+            if len(eset2) <= 1:
+              continue
+            d2 = D[eset2][:,idx]
+            dlat[key][tok(p)] = cheapEMD(d1, d2, 20, (4, 8))
+        t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+      times += ts
+    nend = dt.now()
+    print('%3d.  Node:  %12s   dlat:%7d    Time: %5.1f s' % (n, tok(node), len(dlat), (nend-nstart).total_seconds()))
+
+  end = dt.now()
+
+  print('BENCH TIMES:     ', ('%5.1f s  ' * len(times)) % tuple(times))
+  print('TOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
+  return dlat, Ik
+
+
+
+def dlattice_meet(F, D, CM, epsilon):
+
+  max_len = max([len(i) for i in F])
+  dlat = defaultdict(dict)
+  Ik   = {}
+  times = np.zeros(2)
+  subtimes = None
+  redund = 0
+  t0 = start = dt.now()
+  n_iter = 0
+
+  # 1. Find all meet points for all F
+  tick = len(F)//100
+  print('Tracking Lattice Build Progress:')
+  for i in range(len(F)-1):
+    # Add left itemet
+    lkey = tok(F[i])
+    if lkey not in Ik:
+      Ik[lkey] = np.where(np.logical_and(CM[:,sorted(F[i])], True).all(1))[0]
+
+    for j in range(i+1, len(F)):
+      meet = F[i] & F[j]
+      mkey = tok(meet)
+      if mkey not in Ik:
+        Ik[mkey] = np.where(np.logical_and(CM[:,sorted(meet)], True).all(1))[0]
+
+      # Enmerate All intermediate nodes
+      for top in [F[i], F[j]]:
+        internodes = []
+        for k in top - meet:
+          node = meet | {k}
+          internodes.append(node)
+          dlat[mkey][tok(node)] = 0
+        while len(internodes) > 0:
+          node = internodes.pop()
+          nkey = tok(node)
+          if nkey not in Ik:
+            Ik[nkey] = np.where(np.logical_and(CM[:,sorted(node)], True).all(1))[0]
+          # L[len(node)].add(nkey)
+          for k in top - node:
+            n_iter += 1
+            parent = node | {k}
+            pkey = tok(parent)
+            if pkey not in dlat[nkey]:
+              internodes.append(parent)
+              dlat[nkey][pkey] = 0
+
+    if i % tick == 0:
+      prog = 100*i/len(F)
+      print ('\r[%-100s] %4.1f%%' % ('#'*int(prog), prog), end='')
+
+
+  # t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+  print('\nIntermediate Lattice Complete.  %5.1f sec' % (dt.now()-start).total_seconds())
+  # Add last itemset
+  Ik[tok(F[-1])] = np.where(np.logical_and(CM[:,sorted(F[-1])], True).all(1))[0]
+
+  # Calculate Distribution delta for every node
+  print('Calculating Derived Lattice:')
+  tick = len(dlat) // 100
+  for i, node in enumerate(dlat.keys()):
+    idx = toidx(node)
+    d1 = D[Ik[node]][:,idx]
+    for parent in dlat[node]:
+      d2 = D[Ik[parent]][:,idx]
+      dlat[node][parent] = cheapEMD(d1, d2, 20, (4,8))
+    if i==0 or i % tick == 0:
+      prog = 100*i/len(dlat)
+      print ('\r[%-100s] %4.1f%%' % ('#'*int(prog), prog), end='')
+
+  # t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+  end = dt.now()
+
+  # print('BENCH TIMES:     ', ('%5.1f s  ' * len(times)) % tuple(times))
+  print('\nTOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
+  return dlat, Ik
+
+
+
+
+
+def dlattice_mm_2(F, D, CM, epsilon=20):
+
+  times, subtimes = None, None
+  start = dt.now()
+  Lk = [[]]
+  dlattice = defaultdict(dict)
+
+  max_depth = max([len(i) for i in F])
+  cag = set()
+  for iset in F:
+    for ca in it.combinations(iset, 1):
+      cag.add(frozenset(ca))
+  Lk.append(cag)
+
+  depth = 2
+  while depth <= max_depth:
+    print('processing: depth=', depth, '  Lk[d-1]=',len(Lk[depth-1]), '   dlat=', len(dlattice))
+    ts, t0 = [], dt.now()
+
+    # Get all itemset and distributions for child nodes
+    Ik, Dk, childnodes = {}, {}, {}
+    for k in Lk[depth-1]:
+      key = tok(k)
+      idx = sorted(k)
+      itemset = np.where(np.logical_and(CM[:,idx], True).all(1))[0]
+      if len(itemset) > epsilon//2:
+        childnodes[key] = k
+        Ik[key] = itemset
+        Dk[key] = D[Ik[key]][:,idx]
+    print('Ch-nodes:', len(Ik), end='  /  ')
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # Enumerate all candidate nodes at current depth from max-frequent itemsets 
+    C = set()
+    for iset in F:
+      if len(iset) >= depth:
+        for ca in it.combinations(iset, depth):
+          C.add(frozenset(ca))
+    print('Pa-cand:', len(C))
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+
+    # Calculate all distribution deltas for child-parent edges
+    subtimes = np.zeros(3)
+    for ca in C:
+
+      pkey     = tok(ca)
+      idx     = sorted(ca)
+      itemset = np.where(np.logical_and(CM[:,idx], True).all(1))[0]
+      for ckey, child in childnodes.items():
+        ts2, t2 = [], dt.now()
+        if child < ca:
+          t3 = dt.now(); ts2.append((t3-t2).total_seconds()); t2=t3
+          d2 = D[itemset][:,idx]
+          t3 = dt.now(); ts2.append((t3-t2).total_seconds()); t2=t3
+          dlattice[ckey][pkey] = cheapEMD(Dk[ckey], d2, nbins=24, binrange=(4, 8))
+          t3 = dt.now(); ts2.append((t3-t2).total_seconds()); t2=t3
+        else:
+          t3 = dt.now(); ts2.append((t3-t2).total_seconds()); t2=t3
+          ts2.append(0)
+          ts2.append(0)
+        subtimes += ts2
+    print('SUB TIMES:     ', ('%5.2f s  ' * len(subtimes)) % tuple(subtimes))
+    t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
+  
+    # TODO: Prune C
+    Lk.append(C)
+    depth += 1
+    if times is None:  times = np.zeros(len(ts))
+    times += ts
+    print('%2d  - times: '%depth, ('%5.2f s  ' * len(subtimes)) % tuple(ts2))
+
+
+  end = dt.now()
+  print('BENCH TIMES:     ', ('%5.2f s  ' * len(times)) % tuple(times))
+  print('TOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
+
+  return dlattice
+    # Retain only clustering parent nodes
+    # nodelist = set()
+    # for child in Lk[depth-1]:
+    #   min_node, min_val = min(dlattice[child].items(), key=lambda x: x[1])
+    #   nodelist.add(min_node)
+    # cag_nodes = set()
+
+def dlattice_mm_1(F, D, CM):
+  t0 = dt.now()
+  nnodes, nedges = 0, 0
+
+  dlattice = defaultdict(dict)
+  Fk = sorted([tok(k) for k in F], key=lambda x: (len(x), x), reverse=True)
+  Fs = sorted(F, key=lambda x: len(x), reverse=True)
+
+  Lk = [set() for i in range(len(Fs[0])+1)]
+  for k in Fs: 
+    Lk[len(k)].add(frozenset(k))
+    nnodes += 1 
+
+  grpassign = {}  #[Lk[-1]]
+  for d in range(len(Lk)-1, 0, -1):
+    print("Processing depth = ", d)
+    # Add all top nodes' immediate children for keylen==d
+    for node in Lk[d]:
+      for ch in it.combinations(node, d-1):
+        Lk[d-1].add(frozenset(ch))
+
+    nnodes += len(Lk[d-1])
+ 
+    # Get all child itemsets
+    ch_Ik = {tok(idx): np.where(np.logical_and(CM[:,list(idx)], True).all(1))[0] for idx in Lk[d-1]}
+
+    # Calc EMD distr delta for all child-parent edges
+    emd = defaultdict(dict)
+    for ch in Lk[d-1]:
+      ch_key = tok(ch)
+      ch_idx = list(ch)
+      d1 = D[ch_Ik[ch_key]][:,ch_idx]
+      for parent in Lk[d]:
+        if ch < parent:
+          pkey = tok(parent)
+          d2 = D[Ik[pkey]][:,ch_idx]
+          dlattice[ch_key][pkey] = emd[ch_key][pkey] = cheapEMD(d1, d2, nbins=24, binrange=(4, 8))
+          nedges += 1
+
+    # Select at most 1 parent for each child
+    for ch, parents in emd.items():
+      min_emd, min_val = min(parents.items(), key=lambda x: x[1])
+      if min_emd in grpassign:  # and min_val < theta
+        grpassign[ch] = grpassign[min_emd]
+      else:
+        grpassign[ch] = min_emd
+
+  tottime = 0.
+
+    # print('  TIMES:  #Edges= %7d'% nedges_k, '  Avg EMD= %6.4f  '%np.mean(times),
+    #   '  TotTime= %6.3f'% np.sum(times))
+
+    # print('   Bench Time:  %7.4f    %7.4f    %7.4f     %7.4f' % 
+    #   (sum(md1), sum(md2), sum(md3), sum(nt)))
+    # tottime += sum(times)
+  nnodes = len(dlattice)
+  tottime = (dt.now()-t0).total_seconds()
+  print('\n Total Time = %7.2f   Nodes = %d   Edges = %d' % (tottime, nnodes, nedges))
+  return dlattice, grpassign
+
+def lattice_enum(key):
+  keylist = [[]]
+  for i in range(1, len(key)):
+    keylist.append(list(it.combinations(key, i)))
+  return keylist
+
+def cluster_mm(F, CM, D, minclu=3, incldist=True, bL=None):
+  
+  Fk = [tok(k) for k in F]
+  Ik, centroid = {}, {}
+  for k, idx in zip(Fk, F):
+    itemset = np.where(np.logical_and(CM[:,list(idx)], True).all(1))[0]
+    if itemset is not None:
+      Ik[k]        = itemset
+      centroid[k]  = D[itemset][:,list(idx)].mean(0)
+    print('NCent=', len(centroid))
+
+    clusters = defaultdict(list)
+    nogrp = []
+    ga = []
+    keylist = list(Ik.keys())
+    setlist = [set(k) for k in keylist]
+    for i in range(len(CM)):
+      item = fromm(CM[i])
+      if item in keylist:
+        clusters[item].append(i)
+        continue
+      neigh = {}
+      for k, cent in centroid.items():
+        if set(item) <= set(k):
+          try:
+            neigh[k] = LA.norm(D[i][toidx(k)] - centroid[k])
+          except IndexError as err:
+            print(i, k, idx)
+            return
+      if len(neigh) == 0:
+        nogrp.append(i)
+      else:
+        sel_clu = min(neigh.items(), key=lambda x: x[1])[0]
+        clusters[sel_clu].append(i)
+
+  print("  TOTAL # of Clusters :   ", len(clusters))
+  print("  Items w/no groups   :   ", len(nogrp))
+
+  # FOR DEBUG/DISPLAY
+  if bL is not None:
+    printclu(clusters, bL, minclu=minclu, incldist=True)    
+  return clusters
+
+
+
+def deref(T, key):
+  deref = lambda T, key: np.where(np.logical_and(T[:,key], True).all(1))[0]
+
+def maxminer_orig(T, epsilon):
+  N, K = T.shape
+  start = dt.now()
+
+  # 1. Init C and F
+  C, F = maxminer_initgrps(T, epsilon)
+  n_iter = 0
+  times = None
+  subtimes = None
+
+  # 2. Loop until no candidates
   while len(C) > 0:
     ts = []
     t0 = dt.now()
@@ -105,20 +560,39 @@ def maxminer(T, epsilon):
       # mask = np.ones(K)
       # mask[tupg] = 0
       idx = T[:,g]
-      s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+      s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1   #s1
       support = np.sum(np.logical_and(idx, True).all(1))
       # support = len(np.where(np.logical_and(idx, True).all(1))[0])
       # support = np.sum(np.logical_or(T, mask).all(1))
-      s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+      s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1     #s2
       if support >= epsilon:
         F.append(g)
-        s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+        s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1   #s3
         ts2.append(0)
+        # ts2.append(0)
+        # ts2.append(0)
       else:
         C_new, gn = maxminer_subnodes((hg,tg), T, C_new, epsilon)
-        F.append(gn)
         ts2.append(0)
-        s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1
+        s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1    #s4
+
+        # i = len(tg)-1
+        # while i > 0:
+        #   support = np.sum(np.logical_and(T[:,hg + [tg[i]]], True).all(1))
+        #   # print(i, len(tg), end='  / ')
+        #   if support < epsilon:
+        #     tg.pop(i)
+        #   i -= 1
+        # s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1    #s5
+        # if len(tg) > 0:
+        #   for i in range(len(tg)-1):
+        #     C.append((hg + [i], [j for j in tg[i+1:]]))
+        #   C_new, gn = C, (hg + [max(tg)])  #hg.union({max(tg)})
+        # else:
+        #   C_new, gn = C, hg
+        # s1 = dt.now(); ts2.append((s1-s0).total_seconds()); s0=s1    #s6
+
+        F.append(gn)
       if subtimes is None:  subtimes = np.zeros(len(ts2))
       subtimes += ts2
     t1 = dt.now(); ts.append((t1-t0).total_seconds()); t0=t1
@@ -155,6 +629,7 @@ def maxminer(T, epsilon):
   print('BENCH SUBTIMES:  ', ('%5.2f s  ' * len(subtimes)) % tuple(subtimes))
   print('TOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
   return F
+
 
 ## APRIORI
 def apriori(M, epsilon):
@@ -510,8 +985,8 @@ def cluster(dlat, Ik, CMr, D, theta=.5, minclu=5, bL=None):
   # 1.  Build feature based group sets in the lattice
   gs, ga = topdown_group_single(dlat, theta)
 
-  # 2.  Create list of items for each group
-  Ig = {k: sorted(it.chain(*[Ik[i] for i in v])) for k,v in gs.items()}
+  # # 2.  Create list of items for each group
+  # Ig = {k: sorted(it.chain(*[Ik[i] for i in v])) for k,v in gs.items()}
 
   grp, nogrp = {}, []
 
@@ -607,6 +1082,9 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
   # Make a copy
   clusters = copy.deepcopy(clu)
 
+  maxsize = max([len(v) for v in clusters.values()])
+  minsize = min([len(v) for v in clusters.values()])
+
   # Calc centroids
   centroid = {k: Dr[clu[k]][:,toidx(k)].mean(0) for k in keylist}
 
@@ -627,12 +1105,14 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
   
   inum = 0
   expelled = []
+  maxval = G.max()
   while np.min(G) < theta:
+  # while minsize < minclu:
     N = len(clusters)
     minidx = np.argmin(G)
     row = minidx // N
     col = minidx % N
-    # print (inum, np.mean(G), np.min(G), row, col)
+    print ('%4d.'%inum, '%5.2f / %5.2f'% (np.mean(G), np.min(G)), '%4d->%4d' % (row, col), ' Sizes: %4d to %4d' % (minsize, maxsize))
     try:
       m_attr  = row if len(clusters[keylist[row]]) < len(clusters[keylist[col]]) else col
       m_donor = col if m_attr == row else row
@@ -641,9 +1121,9 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
     k_attr, k_donor = keylist[m_attr], keylist[m_donor]
     for elm in clusters[k_donor]:
       clusters[k_attr].append(elm)
-    # del clusters[k_donor]
-    G[m_donor] = theta
-    G[:,m_donor] = theta
+    clusters[k_donor] = []  # place holder
+    G[m_donor] = maxval
+    G[:,m_donor] = maxval
     expelled.append(m_donor)
     ka_idx = toidx(k_attr)
     centroid[k_attr] = Dr[clusters[k_attr]][:,ka_idx].mean(0)
@@ -653,6 +1133,8 @@ def itermergecluster(clu, Dr, theta=1., minclu=3, bL=None):
       G[m_attr][i] = LA.norm(Dr[clusters[k_attr]][:,ka_idx].mean(0) - Dr[clusters[keylist[i]]][:,ka_idx].mean(0))
       ki_idx = toidx(keylist[i])
       G[i][m_attr] = LA.norm(Dr[clusters[k_attr]][:,ki_idx].mean(0) - Dr[clusters[keylist[i]]][:,ki_idx].mean(0))
+    maxsize = max([len(v) for v in clusters.values()])
+    minsize = min([len(v) for v in clusters.values() if len(v) > 0])
     inum += 1
 
   for k in [keylist[i] for i in expelled]:
@@ -878,7 +1360,7 @@ def topdown_group_single(dlat, theta=.02, pmap=None, topdown=True):
       # Get min (emd)
       key, emd = min(dlat[k].items(), key = lambda x: x[1])
       # assign to smallest emd (if < theta)
-      if emd < theta:
+      if key in assignment and emd < theta:
         grpsets[assignment[key]].add(k)
         assignment[k] = assignment[key]
         continue
