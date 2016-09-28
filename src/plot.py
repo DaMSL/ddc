@@ -1043,9 +1043,10 @@ def show_dlattice(L, Isize, U={}, theta=.05, clusters=[], **kwargs):
     for x, fs in enumerate(key_list[k]):
       xpos = .5*dx + x*dx
       # distr_vect = ','.join([('%.2f'%L2[fs][i]).lstrip('0') for i in sorted(L2[fs].keys())])
-      delta_vals = '\n'.join([(i+': %.3f'%L[fs][i]).lstrip('0') for i in sorted(L[fs].keys())])
+      delta_vals = '\n'.join([(i+':%.3f'%L[fs][i]).lstrip('0') for i in sorted(L[fs].keys())])
       ax.text(xpos, k, fs+' (%d)\n%s' % (Isize[fs], delta_vals), zorder=3,
-          va='top', ha='center',fontsize='xx-small', wrap=True)
+          va='top', ha='center',fontsize='7', family='monospace', wrap=True)
+      plt.scatter(xpos, k, c='blue', s=5)
       if fs in U:
         nodelist[fs] = (xpos, k)
         # circ = plt.Circle((xpos, k), .5, color='red', fill=False)
@@ -1053,8 +1054,15 @@ def show_dlattice(L, Isize, U={}, theta=.05, clusters=[], **kwargs):
         plt.text(xpos, k, '* %d' % (len(U[fs])), zorder=3,
           va='bottom', ha='center', fontsize='x-small', color='red')
       for x1, child in enumerate(key_list[k-1]):
-        if set(child) < set(fs):
-          linecol = 'lightgrey' if L[child][fs] < theta else 'ghostwhite'
+        if set(child) < set(fs) and fs in L[child]:
+          if L[child][fs] > 1:
+            continue
+          if L[child][fs] > .9:
+            linecol = 'royalblue'
+          elif L[child][fs] > .5:
+            linecol = 'lightblue'
+          else:
+            linecol = 'lightcyan'
           for col, clu in enumerate(clusters):
             if fs in clu and child in clu:
               linecol = colorList[col]
