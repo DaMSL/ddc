@@ -5,6 +5,8 @@ import numpy as np
 import dateutil.parser as du
 import datetime as dt
 
+from collections import deque
+
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
 __version__ = "0.1.1"
@@ -52,6 +54,20 @@ def datediff(date1, date2):
   return np.abs((d2-d1).total_seconds())
 
 
+def tri_to_square(vect):
+  '''Converted an upper (lower) triangle vector to a square matrix. Each elm
+  in the vect is one elm in either the lower or upper symmetric matrix'''
+
+  K = 1
+  M = np.zeros(K)
+  elms = deque(reversed(vect))
+  while len(elms) > 0:
+    M = np.hstack((np.zeros(shape=(K+1,1)), np.vstack((np.zeros(K), M))))
+    K += 1
+    for i in range(K-1, 0, -1):
+      M[i][0] = M[0][i] = elms.popleft()
+  return M
+
 def bootstrap_replacement (source, samplesize=.1, N=100, interval=.90):
   """
   Bootstrap algorithm for sampling and confidence interval estimation
@@ -86,7 +102,6 @@ def bootstrap_replacement (source, samplesize=.1, N=100, interval=.90):
 
   prob_est = list(zip(mu, ciLO, ciHI, err))
   return prob_est
-
 
 
 def bootstrap_std (series, interval=.9):
@@ -135,7 +150,6 @@ def bootstrap_mv(source, N=10):
   return (mean, CI, stddev, err, np.abs(CI/mu))
 
 
-
 def bootstrap_block(source, blocksize=5000):
   i = 0
   boot = []
@@ -156,9 +170,6 @@ def bootstrap_block(source, blocksize=5000):
   err = stddev / math.sqrt(N)
   CI = Z * err
   return (mu, CI, stddev, err, np.abs(CI/mu))
-
-
-
 
 
 def makeLogisticFunc (maxval, steep, midpt):
