@@ -457,18 +457,7 @@ class simulationJob(macrothread):
       logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
         basin_hash['start'], basin_hash['end'])
 
-
-
-  #  LATTICE
-    # 1. Construct Local Lattice with no min support (high granualar)
-    # TODO:  Should this be dynamically solved or pre-selected????
-    Kr = FEATURE_SET
-    supprt = 1
-    cutoff = 8
-
     # TODO:  Use Min Index as snapshot, median (or mean) DistSpace vals for each basin?????
-
-
 
     bench.mark('analysis')
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
@@ -499,20 +488,21 @@ class simulationJob(macrothread):
             pipe.hmset('basin:'+bid, basins[bid])
             pipe.set('minima:%s'%bid, pickle.dumps(minima_coords[bid]))
 
-            if EXPERIMENT_NUMBER == 13:
-              pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
-              pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
-              pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
+            pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
+            pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
+            # pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
 
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)
 
-          if EXPERIMENT_NUMBER == 14:
-            # Push Lattice Delta  -- SHOULD Ik be included or derived????
-            pipe.set('lattice:delta:%s:max_fis'%job['name'], pickle.dumps(lattice.max_fis))
-            pipe.set('lattice:delta:%s:low_fis'%job['name'], pickle.dumps(lattice.low_fis))
-            pipe.set('lattice:delta:%s:dlat'%job['name'], pickle.dumps(lattice.dlat))
-            pipe.set('lattice:delta:%s:Ik'%job['name'], pickle.dumps(lattice.Ik))
-            pipe.set('lattice:delta:%s:E'%job['name'], pickle.dumps(basin_DS))
+          # if EXPERIMENT_NUMBER == 14:
+          #   # Push Lattice Delta  -- SHOULD Ik be included or derived????
+          #   # DO WE EVEN CREATE IT HERE OR JUST PUSH DIST_SPACE items
+
+          #   pipe.set('lattice:delta:%s:max_fis'%job['name'], pickle.dumps(lattice.max_fis))
+          #   pipe.set('lattice:delta:%s:low_fis'%job['name'], pickle.dumps(lattice.low_fis))
+          #   pipe.set('lattice:delta:%s:dlat'%job['name'], pickle.dumps(lattice.dlat))
+          #   pipe.set('lattice:delta:%s:Ik'%job['name'], pickle.dumps(lattice.Ik))
+          #   pipe.set('lattice:delta:%s:E'%job['name'], pickle.dumps(basin_DS))
 
           logging.debug('Executing')
           pipe.execute()

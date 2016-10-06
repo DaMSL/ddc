@@ -79,6 +79,10 @@ class controlJob(macrothread):
       self.addMut('dspace_sigma')
       self.addMut('raritytheta')
 
+      self.addMut('lattice:max_fis')
+      self.addMut('lattice:low_fis')
+      self.addMut('lattice:dlat')
+
       self.addMut('ctlCountHead')
       self.addImmut('exploit_factor')
       self.addImmut('observe:count')
@@ -224,7 +228,7 @@ class controlJob(macrothread):
         for bid in basin_id_list:
           selected_basin_list.append(self.catalog.hgetall('basin:%s'%bid))
 
-      if EXPERIMENT_NUMBER == 13:
+      if EXPERIMENT_NUMBER in [13, 14]:
 
         # PREPROCESS
         N_features_src = topo.n_residues
@@ -242,19 +246,18 @@ class controlJob(macrothread):
         #   pipe.execute()
 
         # FOR NOW: Load from disk
-        logging.info('Loading Historical data')
-        de_corr_matrix = np.load('data/de_corr_matrix.npy')
-        de_dmu = np.load('data/de_ds_mu.npy')
-        de_dsig = np.load('data/de_ds_mu.npy')
+        logging.info('Loading Historical DEShaw data')
+        # de_corr_matrix = np.load('data/de_corr_matrix.npy')
+        # de_dmu = np.load('data/de_ds_mu.npy')
+        # de_dsig = np.load('data/de_ds_mu.npy')
 
-        basin_corr_matrix_prev =  self.data['corr_vector']
-        dspace_mu_prev = self.data['dspace_mu']
-        dspace_sigma_prev = self.data['dspace_sigma']
+        de_ds = np.load(settings.datadir + '/de_ds_mu.npy')
+        de_cm = np.load(settings.datadir + '/de_corr_matrix.npy')
 
         # MERGE: new basins with basin_corr_matrix, d_mu, d_sigma
         # Get list of new basin IDs
         stat.collect('new_basin', len(new_basin_list))
-        cmat, ds_mean, ds_std = [], [], []
+        delta_cm, delta_ds, = [], []
         logging.info('Collecting new data')
         for bid in new_basin_list:
           key = 'basin:' + bid
@@ -263,67 +266,88 @@ class controlJob(macrothread):
           with self.catalog.pipeline() as pipe:
             cm_   = pipe.get('basin:cm:'+bid)
             dmu_  = pipe.get('basin:dmu:'+bid)
-            dsig_ = pipe.get('basin:dsig:'+bid)
+            # dsig_ = pipe.get('basin:dsig:'+bid)
             pipe.execute()
 
-          cmat.append(pickle.loads(cm_))
-          ds_mean.append(pickle.loads(dmu_))
-          ds_std.append(pickle.loads(dsig_))
+          delta_cm.append(pickle.loads(cm_))
+          delta_ds.append(pickle.loads(dmu_))
+          # ds_std.append(pickle.loads(dsig_))
 
           # TODO: FINISH NOISE MODEL
 
-        # Merge new values with old values:
-        logging.info('Mering new data')
-        if basin_corr_matrix_prev is None or basin_corr_matrix_prev == []:
-          C_T = basin_corr_matrix = np.array(cmat)
-        else:
-          C_T = basin_corr_matrix = np.vstack((basin_corr_matrix_prev, cmat))
-  
-        if dspace_mu_prev is None or dspace_mu_prev == []:
-          D_mu = np.array(ds_mean)
-        else:
-          D_mu = np.vstack((dspace_mu_prev, ds_mean))
-        
-        if dspace_sigma_prev is None or dspace_sigma_prev == []:
-          D_sigma = np.array(ds_std)
-        else:
-          D_sigma = np.vstack((dspace_sigma_prev, ds_std)) 
-  
-        # D_noise = np.zeros(shape=(N_obs, M_reduced))
-        cm_all = np.vstack((de_corr_matrix, C_T))
-        dmu_all = np.vstack((de_dmu, D_mu))
-        dsig_all = np.vstack((de_dsig, D_sigma))
 
         if EXPERIMENT_NUMBER == 13:
-          sampler = CorrelationSampler(cm_all, mu=dmu_all, sigma=dsig_all)
+          # Merge new values with old values:
+          logging.info('Mering new data')
+          basin_corr_matrix_prev =  self.data['corr_vector']
+          dspace_mu_prev = self.data['dspace_mu']
+          # dspace_sigma_prev = self.data['dspace_sigma']
+
+          if basin_corr_matrix_prev is None or basin_corr_matrix_prev == []:
+            C_T = basin_corr_matrix = np.array(cmat)
+          else:
+            C_T = basin_corr_matrix = np.vstack((basin_corr_matrix_prev, cmat))
+    
+          if dspace_mu_prev is None or dspace_mu_prev == []:
+            D_mu = np.array(ds_mean)
+          else:
+            D_mu = np.vstack((dspace_mu_prev, ds_mean))
+          
+          # if dspace_sigma_prev is None or dspace_sigma_prev == []:
+          #   D_sigma = np.array(ds_std)
+          # else:
+          #   D_sigma = np.vstack((dspace_sigma_prev, ds_std)) 
+    
+          # D_noise = np.zeros(shape=(N_obs, M_reduced))
+          cm_all = np.vstack((de_cm, C_T))
+          dmu_all = np.vstack((de_ds, D_mu))
+          # dsig_all = np.vstack((de_dsig, D_sigma))
+
+
+          # sampler = CorrelationSampler(cm_all, mu=dmu_all, sigma=dsig_all)
+          sampler = CorrelationSampler(cm_all, mu=dmu_all)
         
         else:
-          
+        # Merge Existing delta with DEShaw Pre-Processed data:
+          logging.info('Mering DEShaw with existing generated data')
+          if len(all_basins) == 91116:    # Only DEShaw Basins are loaded
+            cm_prev, ds_prev = de_cm, de_ds
+          else:
+            cm_prev = np.vstack((de_cm, self.data['corr_vector']))
+            ds_prev = np.vstack((de_ds, self.data['dspace_mu']))
+
           # Set parameters for lattice
           Kr = FEATURE_SET
           support = 900
           cutoff  = 8
 
           # Load existing (base) lattice data
-          max_fis = XXXXX
-          low_fis = XXXXX
-          dlat    = XXXXX
-          Ik      = XXXXX
-          distsp  = XXXXX
+          logging.info("Unpickling max/low FIS and derived lattice EMD values")
+          max_fis = pickle.load(self.data['lattice:max_fis'])
+          low_fis = pickle.load(self.data['lattice:low_fis'])
+          dlat    = pickle.load(self.data['lattice:dlat'])
+
+          logging.info("Loading full Itemset from disk (TODO: Det optimization on mem/time)")
+          Ik      = pickle.load(open(settings.datadir + '/iset.p', 'rb'))
 
           # Build Lattice Object
-          base_lattice=lat.Lattice(de_dmu, Kr, cutoff, support)
+          logging.info('Building Existing lattice object')
+          base_lattice=lat.Lattice(ds_prev, Kr, cutoff, support)
           base_lattice.set_fis(max_fis, low_fis)
           base_lattice.set_dlat(dlat, Ik)
 
           # Build Delta Lattice Object
-          delta_lattice = lat.Lattice(dmu_all, Kr, cutoff, support)
+          logging.info('Building Delta lattice object')
+          delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, support)
           delta_lattice.maxminer()
           delta_lattice.derive_lattice()
 
+          logging.info('Merging Delta lattice with Base Lattice')
           base_lattice.merge(delta_lattice)
 
           # TODO: MAKE THIS SAMPLING OBJECT
+          logging.info('Invoking the Lattice Sampler')
+
           sampler = LatticeSampler(base_lattice)
 
           # TODO: Update Catalog with merged Lattice

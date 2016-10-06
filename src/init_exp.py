@@ -5,6 +5,7 @@ import math
 import json
 import bisect
 import datetime as dt
+import shutil
 
 import mdtraj as md
 import numpy as np
@@ -28,6 +29,8 @@ import plot as P
 
 from mdtools.timescape import *
 from sampler.basesample import *
+
+import datatools.lattice as lat
 
 # For changes to schema
 def updateschema(catalog):
@@ -146,6 +149,25 @@ def load_historical_DEShaw(catalog):
   # catalog.storeNPArray(dmu, 'desh:ds_mu')
   # catalog.storeNPArray(dsigma, 'desh:ds_sigma')
 
+  if settings.EXPERIMENT_NUMBER == 14:
+
+    dlat    = open(os.path.join(settings.workdir, 'dlat.p'), 'rb').read()
+    max_fis = open(os.path.join(settings.workdir, 'mfis.p'), 'rb').read()
+    low_fis = open(os.path.join(settings.workdir, 'lowfis.p'), 'rb').read()
+
+    with catalog.pipeline() as pipe:
+      pipe.set('lattice:max_fis', max_fis)
+      pipe.set('lattice:low_fis', low_fis)
+      pipe.set('lattice:dlat', dlat)
+      pipe.execute()
+
+    if not os.path.exists(settings.datadir + '/iset.p'):
+      os.symlink(settings.workdir + '/iset.p', settings.datadir + '/iset.p')
+    if not os.path.exists(settings.datadir + '/iset.p'):
+      os.symlink(settings.workdir + '/de_ds_mu.npy', settings.datadir + '/de_ds_mu.npy')
+    if not os.path.exists(settings.datadir + '/de_ds_mu.npy'):
+      os.symlink(settings.workdir + '/data/de_corr_matrix.npy', settings.datadir + '/de_ds_mu.npy')
+
   logging.info('DEShaw data loaded. ALL Done!')
   # FOR CREATING CM/MU/SIGMA vals for first time
   # C_T = np.zeros
@@ -237,7 +259,7 @@ def load_historical_Expl(catalog):
 
   catalog.storeNPArray(np.array(C_T), 'corr_vector')
   catalog.storeNPArray(np.array(mu_T), 'dspace_mu')
-  catalog.storeNPArray(np.array(sigma_T), 'dspace_sigma')
+  # catalog.storeNPArray(np.array(sigma_T), 'dspace_sigma')
 
 def load_seeds(catalog, calc_seed_rms=False):
     settings = systemsettings()
@@ -363,6 +385,41 @@ def make_jobs(catalog, num=1):
     seedlist = [catalog.lindex('basin:list', i) for i in sampler.execute(num)]
     for i in seedlist:
       logging.info("Select index: %s", i)
+
+  elif settings.EXPERIMENT_NUMBER == 14:
+    global_params = getSimParameters(sim_init, 'deshaw')
+    logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
+
+    de_ds = 10*np.load(settings.datadir + '/de_ds_mu.npy')
+    print('DS  : ', de_ds.shape)
+    de_cm = np.load(settings.datadir + '/de_corr_matrix.npy')
+
+    Kr = FEATURE_SET
+    support = 900
+    cutoff  = 8
+
+    logging.info('Loading DEShw Pre-Constructed Lattice Data')
+    dlat    = pickle.loads(catalog.get('lattice:dlat'))
+    print('DLAT: ', len(dlat))
+    max_fis = pickle.loads(catalog.get('lattice:max_fis'))
+    print('MFIS: ', len(max_fis))
+    low_fis = pickle.loads(catalog.get('lattice:low_fis'))
+    print('LFIS: ', len(low_fis))
+    Ik      = pickle.load(open(settings.datadir + '/iset.p', 'rb'))
+    print('Ik  : ', len(Ik))
+
+    logging.info('Building Existing lattice object')
+    lattice=lat.Lattice(de_ds[:90000], Kr, cutoff, support)
+    lattice.set_fis(max_fis, low_fis)
+    lattice.set_dlat(dlat, Ik)
+
+    sampler = LatticeSampler(lattice)
+
+    start_indices = sampler.execute(num)
+    seedlist = [catalog.lindex('basin:list', i) for i in start_indices]
+    for i in seedlist:
+      logging.info("Selected index: %s", i)
+
 
   else:
     logging.error('No Experiment Defined.')

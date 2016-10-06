@@ -8,14 +8,15 @@ import numpy as np
 
 from core.slurm import systemsettings
 
+from datatools.lattice import Lattice, clusterlattice
+
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
 __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
-logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
-
+ 
 
 class SamplerBasic(object):
   """Basic Sampler provides an abstract layer for writing/processing 
@@ -206,3 +207,33 @@ class CorrelationSampler(SamplerBasic):
     need_replace = (len(choices) < num)
     candidates = np.random.choice(choices, size=num, replace=need_replace, p=pdf)
     return candidates  
+
+
+class LatticeSampler(SamplerBasic):
+  """ Lattice Sampler uses the derived lattice data to cluster nodes
+  and subsequently drive a scoring function for sampling """
+
+  def __init__(self, lattice):
+    SamplerBasic.__init__(self, "Lattice")
+    self.lattice = lattice
+    self.theta = .9
+
+  def execute(self, num):
+    dlat = self.lattice.dlat
+    Ik   = self.lattice.Ik
+    CM   = self.lattice._CM()
+    D    = self.lattice.E[:, self.lattice.Kr]
+
+    print('DEBUG: ', len(dlat), len(Ik), CM.shape, D.shape)
+    clusters, score, elmlist  = clusterlattice(dlat, CM, D, Ik, theta=self.theta)
+
+    samplecount = np.zeros(len(clusters), dtype=np.int16)
+    pdf = score / np.sum(score)
+    candidates = []
+    for i in range(num):
+      cluster_index = int(np.random.choice(len(pdf), p=pdf))
+      elm, dist = elmlist[cluster_index][samplecount[cluster_index]]
+      samplecount[cluster_index] += 1
+      candidates.append(elm)
+
+    return candidates
