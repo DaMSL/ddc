@@ -22,6 +22,11 @@ __status__ = "Development"
 
 logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
+
+# Hard Coded Feature Set (pre-calculated for now)
+FEATURE_SET = [2, 52, 56, 60, 116, 258, 311, 460, 505, 507, 547, 595, 640, 642, 665, 683, 728, 767, 851, 1244, 1485, 1629, 1636]
+
+
 def executecmd(cmd):
   """ Execute single shell command. Block on output and return STDOUT """
   task = proc.Popen(cmd, shell=True,

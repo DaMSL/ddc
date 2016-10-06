@@ -61,7 +61,7 @@ class CorrelationSampler(SamplerBasic):
       0 == features {i,j} are uncorrelated in time/space
       between 0 and 1 == features are spatially correlated in some time
 
-   otional mean and stddev matrices are for noise calculation
+   optional mean and stddev matrices are for noise calculation
   """
 
   def __init__(self, corr_matrix, mu=None, sigma=None, noise_factor=1.):

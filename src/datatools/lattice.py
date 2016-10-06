@@ -39,32 +39,349 @@ class ProgressBar(object):
     self.tick = max(1, total//interval)
     self.interval = interval
     self.cnt = 0
+    self.start = dt.now()
     print ('\r[{0:<{width}}] {1:4.1f}%%'.format('', 0, width=self.interval), end='')
 
   def incr(self):
     self.cnt += 1
     if self.cnt % self.tick == 0:
+      tottime = (dt.now() - self.start).total_seconds()
       prog = 100*self.cnt/self.total
-      print ('\r[{0:<{width}}] {1:4.1f}%%'.format('#'*int(prog), prog, width=self.interval), end='')
-
+      remain = (((100*tottime) / prog) - tottime) / 60.
+      print ('\r[{0:<{width}}] {1:4.1f}%%  ({2:5.2f} min remain)'.format('#'*int(prog), prog, remain, width=self.interval), end='')
 
 class Lattice(object):
 
-  def __init__(self, event, cutoff=7, support=50):
+  nbins    = 20
+  brange = (4, 8)
+
+  def __init__(self, event, feature_set, cutoff=7, support=50):
     self.E = event
-    self.Kr = XXXXXX
+    self.Kr = feature_set
     self.support = support
     self.cutoff = cutoff
+
+  def set_dlat(self, dlat, Ik):  
+    self.dlat = dlat
+    self.Ik = Ik
+
+  def set_fis(self, mfis, lfis):
+    self.max_fis = mfis
+    self.low_fis = lfis
 
   def _CM(self):
     return (self.E[:,self.Kr] < self.cutoff)
 
   def maxminer(self):
-    self.MFIS = maxminer(self._CM(), self.support)
+    cm = self._CM()
+    self.max_fis, self.low_fis = maxminer(cm, self.support)
 
   def derive_lattice(self):
-    self.dlat, self.Ik = derived_lattice(self.MFIS, self.E[:,self.Kr], self._CM)
+    cm = self._CM()
+    self.dlat, self.Ik = derived_lattice(self.max_fis, self.E[:,self.Kr], cm)
 
+
+  def merge(self, other):
+    N, K = len(self.E), len(self.Kr)
+    delta_CM = other._CM()
+    CM = self._CM()
+
+    # childlist = defaultdict(list)
+    # for n, plist in dlat.items():
+    #   for p in plist.keys():
+    #     childlist[p].append(n)
+    
+    # 1. Expand all MFIS in delta lattice and flag each existing itemset for update
+    print('Expand delta Max-Frequent Itemsets')
+    progress = ProgressBar(len(other.max_fis))
+    nodelist = set()
+    updatelist = defaultdict(set)
+    cag = set()
+   
+    for mfis in other.max_fis:
+      # Start with each MF itemset as the root
+      cag.add(mfis)
+
+      # Expand and add new subnodes to candidate group
+      while len(cag) > 0:
+        node = cag.pop()
+        if node in nodelist:
+          continue
+
+        # Add to list of FIS nodes
+        nodelist.add(node)
+
+        # Stop at keylen of 1
+        if len(node) == 1:
+          continue
+
+        # Flag all children for this node to update EMD calculations
+        for i in node:
+          cag.add(node - {i})
+
+      progress.incr()
+
+    # 2. Update itemset (or add if new) from bot to top
+    print('\nMerge all delta event lists for observed frequent itemsets.')
+    progress = ProgressBar(len(nodelist))
+    for node in sorted(nodelist, key=lambda x: len(x)):
+      nkey = tok(node)
+
+      # Update index numbers for delta
+      delta_iset = [N + i for i in other.Ik[nkey]]
+      if max(delta_iset) >= 90050:
+        print('ERROR on gen delta ISET: ', max(delta_iset), nkey)
+
+      # Node already exists: Flag all parent edges for EMD update
+      if nkey in self.Ik:
+        cur_iset = self.Ik[nkey]
+        for par in self.dlat[nkey].keys():
+          updatelist[node].add(par)
+          if max(cur_iset) >= 90050:
+            print('\nERROR on cur___ISET: ', 
+              nkey, type(cur_iset), type(delta_iset), max(cur_iset), max(delta_iset),
+              CM.shape, self.E.shape)
+            return
+
+      # New node: get items and identify its children for EMD update
+      else:
+        cur_iset = np.where(np.logical_and(CM[:,list(node)], True).all(1))[0]
+        for k in node:
+          child = node - {k}
+          if tok(child) in self.Ik:
+            updatelist[child].add(nkey)
+
+      # Merge itemsets
+      self.Ik[nkey] = np.concatenate((cur_iset, delta_iset))
+      if max(self.Ik[nkey]) >= 90050:
+        print('\nERROR on ISET Merge: ', 
+          max(delta_iset), nkey, type(cur_iset), type(delta_iset), max(cur_iset), max(delta_iset),
+          CM.shape, self.E.shape)
+        return
+      progress.incr()      
+
+    # 3. Merge event lists & update contact matrix
+    print('\nMerge Event Matrix.', end='')
+    self.E = np.vstack((self.E, other.E))
+    print('Complete: ', self.E.shape)
+    CM = self._CM()
+
+    # 4. Merge Low Support & check threshold
+    print('Merge Low count itemsets and identify newly supported frequent itemsets.')
+    progress = ProgressBar(len(other.low_fis))
+    for node, z in sorted(other.low_fis.items(), key=lambda x: len(x)):
+      if node not in self.low_fis:
+        self.low_fis[node] = z
+      else:
+        self.low_fis[node] += z
+
+      if self.low_fis[node] >= self.support:
+        self.Ik[nkey] = np.where(np.logical_and(CM[:,list(node)], True).all(1))[0]  
+        if max(self.Ik[nkey]) >= 90050:
+          print('ERROR on ISET NEW: ', max(delta_iset), nkey)
+        for k in node:
+          child = node - {k}
+          if tok(child) in Ik:
+            updatelist[child].add(nkey)
+
+        nodelist.add(node)
+        del self.low_fis[node]
+      progress.incr()      
+
+    # 5. Pre-Process all 1D histograms
+    Ik_update = {}
+    for k, v in updatelist.items():
+      key = tok(k)
+      if key not in Ik_update:
+        Ik_update[key] = self.Ik[key]
+      for p in v:
+        if p not in Ik_update:
+          Ik_update[p] = self.Ik[p]
+
+    H = histograms(Ik_update, self.E[:,self.Kr], Lattice.nbins, Lattice.brange)
+
+    # 5. Update EMD for all flagged edges:
+    print('\nUpdate EMD for all flagged nodes')
+    prog = ProgressBar(len(updatelist))
+    for node, parentlist in updatelist.items():
+      nkey = tok(node)
+
+      #  Calculated distribution delta along every edge
+      for parent in parentlist:
+        flow = np.zeros(len(node))
+
+        # Calculate bin-by-bin difference
+        delta = H[nkey] - H[parent][[parent.find(i) for i in nkey]]
+
+        # Flow is tracked along each dimension separately
+        flow = np.zeros(len(node))
+        for k in range(len(delta)):
+
+          # Calculate flow from 0 to n-1 and add/subtract flow to neighboring bin
+          flow_k = 0
+          for i in range(Lattice.nbins-1):
+            flow_k     += delta[k][i]
+            delta[k][i+1] += delta[k][i]
+          flow[k] = flow_k
+
+        # EMD is sqrt of sums of squares for each 1D distribution delta
+        self.dlat[nkey][parent] = np.sqrt(np.sum(flow**2))
+      prog.incr()
+
+  # def merge_lattice(self, other): #_   dlat, Ik, D_old, CM, Mtrack, D_new, M_new, M_delta, epsilon, nbins=20, binrange=(4,8)):
+  #   N, K = len(self.E), len(self.Kr)
+  #   delta_CM = other._CM()
+  #   update_list = defaultdict(list)
+  #   new_node_list = set()
+
+  #   # 1. Run maxminer/derive_lat on new data (or assume it's been run)
+
+  #   # 2. Expand all MFIS in delta lattice and flag each existing itemset for update
+  #   print('Build Lattice Structure from <Other> Max-Frequent Itemsets')
+  #   progress = ProgressBar(len(other.max_fis))
+  #   nodelist = set()
+  #   cag = set()
+   
+  #   for mfis in other.max_fis:
+  #     # Start with each MF itemset as the root
+  #     cag.add(mfis)
+
+  #     # Expand and add new subnodes to candidate group
+  #     while len(cag) > 0:
+  #       node = cag.pop()
+  #       if node in nodelist:
+  #         continue
+
+  #       # Add to list of FIS nodes
+  #       nodelist.add(node)
+
+  #       # Stop at keylen of 1
+  #       if len(node) == 1:
+  #         continue
+
+  #       # Nodekey exists: add new events
+  #       elif node in self.Ik:
+  #         self.Ik[key].extend([N + i for i in np.where(np.logical_and(delta_CM[:,list(node)], True).all(1))[0]])
+
+  #       # Node does not exists: add to new node list
+  #       else:
+  #         new_node_list.add(node)
+
+  #       nkey = tok(node)
+
+  #       # Flag all children for this node to update EMD calculations
+  #       for i in node:
+  #         child = node - {i}
+  #         update_list[tok(child)].append(nkey)
+  #         cag.add(child)
+
+  #     progress.incr()
+
+  #   # 3. Search list of Low freq itemsets and add new keys if discovered
+  #   for node, z in other.low_fis.items():
+  #     key = tok(node)
+  #     if key in self.Ik:
+  #       # node already exists
+  #       self.Ik[key] = np.concatenate((self.Ik[key], [N + i for i in np.where(np.logical_and(delta_CM[:,list(node)], True).all(1))[0]]))
+  #     elif node in self.low_fis:
+  #       # node partially observed previously
+  #       self.low_fis[node] += z
+  #       if self.low_fis[node] > self.support:
+  #         new_node_list.add(node)
+  #       del self.low_fis[node]
+  #     else:
+  #       # Newly observed max-frequent node
+  #       self.low_fis[node] = z
+  #       # TODO:  DO I NEED TO CHECK SUBSETs
+
+  #   # 4. Explicitly add new nodes found in delta lattice (note: for supprt==1, this should be 0)
+  #   self.E = np.vstack((self.E, other.E))
+  #   all_keys = frozenset(range(K))
+  #   new_node_list = sorted(new_node_list, key=lambda x: len(x), reverse=True)
+  #   print('\nAdd new keys:', len(new_node_list))
+  #   progress = ProgressBar(len(new_node_list))
+  #   for node in new_node_list:
+  #     key = tok(node)
+  #     self.Ik[key] = np.where(np.logical_and(self.E[:,list(node)], True).all(1))[0]
+  #     self.dlat[key] = {}
+  #     for k in all_keys - node:
+  #       parent = tok(node | {k})
+  #       if parent in self.Ik:
+  #         update_list[key].append(parent)
+  #     progress.incr()
+
+  #    # 5. Calculate new EMD values
+  #   print('\nCalculating all EMD values for new keys:', len(update_list))
+  #   progress = ProgressBar(len(update_list))
+  #   for nkey, parent_list in update_list.items():
+  #     node = toidx(nkey)
+  #     d1 = self.E[self.Ik[nkey]][:,node]
+  #     for parent in parent_list:
+  #       if parent not in self.Ik:
+  #         continue
+  #       d2 = self.E[self.Ik[parent]][:,node]
+  #       self.dlat[nkey][parent] = cheapEMD(d1, d2, 20, (4,8))
+  #     progress.incr()
+
+  def solve_cluster(self):
+    cm = self._CM()
+    self.cluster = itermergecluster(self.dlat, cm, self.E[:,self.Kr], self.Ik)
+
+  def sample(self):
+    # TODO: Use whole distro or only part(?)
+    N = len(self.E)
+    clusters = self.cluster
+    centroid = {k: self.E[v].mean(0) for k,v in clusters.items()}
+    variance = {}
+    for k,v in clusters.items():
+        cov = np.cov(self.E[v][:,self.Kr].T)
+        ew, ev = LA.eigh(cov)
+        variance[k] = np.sum(ew)
+
+    score = [None for i in range(N)]
+    samplist = []
+
+    clusterlist = []
+    clusterscore = np.zeros(len(clusters))
+    elmscore = [[] for i in range(len(clusters))]
+    print("  TOTAL # CLUSTERS   :   ", len(clusters))
+    total_var = np.sum([k for k in variance.values()])
+    for clnum, (k, iset) in enumerate(clusters.items()):
+
+      # THE CLUSTER SCORE
+      sc_var  = 1 / np.sqrt(variance[k])
+      sc_size = 1 - (len(iset) / N)
+      clscore = sc_var + sc_size
+
+
+      clusterscore[clnum] = max(0, clscore)
+      elmlist = []
+
+      for i in iset:
+        dist_cent = LA.norm(self.E[i] - centroid[k])
+        accuracy  = variance[k]
+        rarity    = len(iset)
+
+        # ELEMENT SCORE
+        score[i] = (k, N / (dist_cent * accuracy * rarity))
+        elmlist.append((i, dist_cent))
+
+      elmscore[clnum] = sorted(elmlist, key= lambda x: x[1])
+
+      clusterlist.append((clnum, k, len(iset), variance[k], clscore, sc_size, sc_var))
+
+    for i in clusterlist: #sorted(clusterlist, key =lambda x : x[2], reverse=True):
+      print('%3d.  %-18s%5d  %6.2f : %7.2f  (%5.2f %5.2f)' % i)
+
+    sampidx = np.zeros(len(clusters), dtype=np.int16)
+    pdf = clusterscore / np.sum(clusterscore)
+    print('\nPDF:  ', pdf)
+    print('SAMPLE OF 20 CANDIDATES.....')
+    for i in range(20):
+      clidx = int(np.random.choice(len(pdf), p=pdf))
+      elm, dist = elmscore[clidx][sampidx[clidx]]
+      print(' %2d.  Clu  ( %d )       evidx %4d' % (i, clidx, elm))
+      sampidx[clidx] += 1    
 
 
  
@@ -219,7 +536,7 @@ def maxminer(T, epsilon):
 
   # 1. INIT C and F
   C, F = maxminer_initgrps(T, epsilon)
-  Mtrack = {}
+  Mtrack = defaultdict(int)
   n_iter = 0
   times = None
   subtimes = None
@@ -331,8 +648,8 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
   t0 = start = dt.now()
   n_iter = 0
 
-  progress = ProgressBar(len(F))
   print('Build Lattice Structure from Max-Frequent Itemsets')
+  progress = ProgressBar(len(F))
   # Expand all max freq itemsets
   nodelist = set()
   cag = set()
@@ -406,11 +723,7 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
       flow = np.zeros(len(node))
 
       # Calculate bin-by-bin difference
-      try:
-        delta = H[node] - H[parent][[parent.find(i) for i in node]]
-      except KeyError as err:
-        print('\n', node, parent, node in H, parent in H, node in Ik, parent in Ik)
-        raise
+      delta = H[node] - H[parent][[parent.find(i) for i in node]]
 
       # Flow is tracked along each dimension separately
       flow = np.zeros(len(node))
@@ -452,20 +765,15 @@ def histograms(Ik, D, nbins=20, binrange=(4,8)):
   tick = max(1, tot_iter//100)
   prog_cnt = 0
 
+  print('\nPreProcessing Histograms (1D)')
+  progress = ProgressBar(len(Ik))
   for key, iset in Ik.items():
-    prog_cnt += 1
-    try:
-      hist = np.zeros(shape=(len(key), nbins))
-      distr = D[iset]
-      for i, k in enumerate(key):
-        hist[i] = np.histogram(distr[:,col[k]], nbins, binrange)[0]
-      H[key] = hist / hist.sum(1)[:,None][0]
-    except IndexError as err:
-      print(key)
-      raise
-    if prog_cnt % tick == 0:
-      prog = 100*prog_cnt/tot_iter
-      print ('\r[%-100s] %4.1f%%' % ('#'*int(prog), prog), end='')
+    hist = np.zeros(shape=(len(key), nbins))
+    distr = D[iset]
+    for i, k in enumerate(key):
+      hist[i] = np.histogram(distr[:,col[k]], nbins, binrange)[0]
+    H[key] = hist / hist.sum(1)[:,None][0]
+    progress.incr()
 
   return H
 
@@ -565,11 +873,7 @@ def extend_dlat(dlat, Ik, D, V, epsilon, nbins=20, binrange=(4,8)):
     for parent in parent_list:
       if parent not in Ik:
         continue
-      try:
-        d2 = D[Ik[parent]][:,node]
-      except IndexError as err:
-        print('\n', parent, node, type(Ik[parent]), Ik[parent].dtype)
-        raise
+      d2 = D[Ik[parent]][:,node]
       dlat[nkey][parent] = cheapEMD(d1, d2, nbins, binrange)
     progress.incr()
 
@@ -671,8 +975,8 @@ def itermergecluster(dlat, CM, D, Ik, theta=.9, minclusize=3, bL=None):
   N, K = D.shape
   global_var = D.std(0)
 
-  # gs, ga = topdown_group_single(dlat, theta)
-  gs, ga = botup_collapse(dlat, theta)
+  gs, ga = topdown_group_single(dlat, theta)
+  # gs, ga = botup_collapse(dlat, theta)
 
   print("  TOTAL # of GROUP   :   ", len(gs))
 
@@ -683,6 +987,8 @@ def itermergecluster(dlat, CM, D, Ik, theta=.9, minclusize=3, bL=None):
   # 3.  For each item: map to a group:   <map>
   for i in range(N):
     k = fromm(CM[i])
+    if len(k) == 0:
+      continue
     if k in ga:
       #  Set its group 
       grp[i] = ga[k]
@@ -859,78 +1165,84 @@ def itermergecluster(dlat, CM, D, Ik, theta=.9, minclusize=3, bL=None):
       bc  = np.bincount([bL[i] for i in v], minlength=5)
       state = np.argmax(bc)
       stperc = 100*bc[state] / sum(bc)
-      elms = (n, k, len(v), state, stperc, variance[k].mean(), bc)
+      elms = (n, k, len(v), variance[k].mean(), state, stperc, bc)
       clusterlist.append(elms)
       # print('%2d.'%n, '%-15s'%k, '%4d '%len(v), 'State: %d  (%4.1f%%)' % (state, stperc))
       n += 1
+    print(' #.     Key          Size  Var  /  State  (Percent)   /    BinCount' % i)
     for i in sorted(clusterlist, key =lambda x : x[2], reverse=True):
-      print('%3d.  %-18s%5d  /  State: %d  (%5.1f%%)   /  %.3f   %s' % i)
+      print('%3d.  %-18s%6d  %.3f /  State: %d  (%5.1f%%)   /    %s' % i)
 
-  print('\nReassign groupless events')
+  print('\nReassiging {0} groupless events'.format(len(nogrp)))
   for i in nogrp:
     delta = {k: LA.norm(D[i] - v) for k,v in centroid.items()}
     c = min(delta.items(), key=lambda x: x[1])[0]
     clusters[c].append(i)
 
+  return clusters
+
+  # FOR SCORING
   # Eigen Weights for variance (internal cluster metric)
-  centroid = {k: D[v].mean(0) for k,v in clusters.items()}
-  variance = {}
-  for k,v in clusters.items():
-      cov = np.cov(D[v].T)
-      ew, ev = LA.eigh(cov)
-      variance[k] = np.sum(ew)
+  # centroid = {k: D[v].mean(0) for k,v in clusters.items()}
+  # variance = {}
+  # for k,v in clusters.items():
+  #     cov = np.cov(D[v].T)
+  #     ew, ev = LA.eigh(cov)
+  #     variance[k] = np.sum(ew)
 
-  score = [None for i in range(N)]
-  samplist = []
+  # score = [None for i in range(N)]
+  # samplist = []
 
-  clusterlist = []
-  clusterscore = np.zeros(len(clusters))
-  elmscore = [[] for i in range(len(clusters))]
-  print("  TOTAL # CLUSTERS   :   ", len(clusters))
-  total_var = np.sum([k for k in variance.values()])
-  for clnum, (k, iset) in enumerate(clusters.items()):
+  # clusterlist = []
+  # clusterscore = np.zeros(len(clusters))
+  # elmscore = [[] for i in range(len(clusters))]
+  # print("  TOTAL # CLUSTERS   :   ", len(clusters))
+  # total_var = np.sum([k for k in variance.values()])
+  # for clnum, (k, iset) in enumerate(clusters.items()):
 
-    # THE CLUSTER SCORE
-    sc_var  = 1 / np.sqrt(variance[k])
-    sc_size = 1 - (len(iset) / N)
-    clscore = sc_var + sc_size
+  #   # THE CLUSTER SCORE
+  #   sc_var  = 1 / np.sqrt(variance[k])
+  #   sc_size = 1 - (len(iset) / N)
+  #   clscore = sc_var + sc_size
 
 
-    clusterscore[clnum] = clscore
-    elmlist = []
+  #   clusterscore[clnum] = max(0, clscore)
+  #   elmlist = []
 
-    for i in iset:
-      dist_cent = LA.norm(D[i] - centroid[k])
-      accuracy  = variance[k]
-      rarity    = len(iset)
+  #   for i in iset:
+  #     dist_cent = LA.norm(D[i] - centroid[k])
+  #     accuracy  = variance[k]
+  #     rarity    = len(iset)
 
-      # ELEMENT SCORE
-      score[i] = (k, N / (dist_cent * accuracy * rarity))
-      elmlist.append((i, dist_cent))
+  #     # ELEMENT SCORE
+  #     score[i] = (k, N / (dist_cent * accuracy * rarity))
+  #     elmlist.append((i, dist_cent))
 
-    elmscore[clnum] = sorted(elmlist, key= lambda x: x[1])
+  #   elmscore[clnum] = sorted(elmlist, key= lambda x: x[1])
 
-    bc  = np.bincount([bL[i] for i in iset], minlength=5)
-    state = np.argmax(bc)
-    stperc = 100*bc[state] / sum(bc)
-    clusterlist.append((clnum, k, len(iset), variance[k], clscore, sc_size, sc_var, state, stperc, bc))
+  #   if bL is not None:
+  #     bc  = np.bincount([bL[i] for i in iset], minlength=5)
+  #     state = np.argmax(bc)
+  #     stperc = 100*bc[state] / sum(bc)
+  #     clusterlist.append((clnum, k, len(iset), variance[k], clscore, sc_size, sc_var, state, stperc, bc))
 
-  for i in clusterlist: #sorted(clusterlist, key =lambda x : x[2], reverse=True):
-    print('%3d.  %-18s%5d  %6.2f : %7.2f  (%5.2f %5.2f) /  State: %d (%5.1f%%) %s' % i)
+  # if bL is not None:
+  #   for i in clusterlist: #sorted(clusterlist, key =lambda x : x[2], reverse=True):
+  #     print('%3d.  %-18s%5d  %6.2f : %7.2f  (%5.2f %5.2f) /  State: %d (%5.1f%%) %s' % i)
 
-  
-  #  SAMPLING
-  sampidx = np.zeros(len(clusters), dtype=np.int16)
-  pdf = clusterscore / np.sum(clusterscore)
-  print('\nPDF:  ', pdf)
-  print('SAMPLE OF 20 CANDIDATES.....')
-  for i in range(20):
-    clidx = int(np.random.choice(len(pdf), p=pdf))
-    elm, dist = elmscore[clidx][sampidx[clidx]]
-    print(' %2d.  Clu  ( %d )       evidx %4d    State= %d ' % (i, clidx, elm, bL[elm]))
-    sampidx[clidx] += 1
 
-  return clusters, clusterscore, score
+  #  FOR SAMPLING
+  # sampidx = np.zeros(len(clusters), dtype=np.int16)
+  # pdf = clusterscore / np.sum(clusterscore)
+  # print('\nPDF:  ', pdf)
+  # print('SAMPLE OF 20 CANDIDATES.....')
+  # for i in range(20):
+  #   clidx = int(np.random.choice(len(pdf), p=pdf))
+  #   elm, dist = elmscore[clidx][sampidx[clidx]]
+  #   print(' %2d.  Clu  ( %d )       evidx %4d    State= %d ' % (i, clidx, elm, bL[elm]))
+  #   sampidx[clidx] += 1
+
+  # return clusters, clusterscore, score
 
 
 
@@ -2143,8 +2455,6 @@ def topdown_group_single(dlat, theta=.02):
         grpsets[assignment[key]].add(k)
         assignment[k] = assignment[key]
         continue
-      elif key not in assignment:
-        print("UNASSIGNED: ", k, key, emd)
     else:
       notop += 1
     # Create a new group
@@ -2265,7 +2575,7 @@ def botup_group(dlat, theta=.5):
   # Change from delta to similarity metric
   dlw = {k: {i: 1-j for i, j in v.items() if j<1} for k,v in dlat.items()}
   
-  # get shorted keys
+  # get shorter keys
   klist = sorted(dlw.keys(), key=lambda x: (len(x), x))
   setlist = defaultdict(set)
   for node in klist:

@@ -419,6 +419,8 @@ class simulationJob(macrothread):
     stat.collect('num_basin', n_basins)
     downstream_list = []
 
+    # FOR DistSpace use in Lattice
+    basin_DS = np.zeros(len(basin_list))
 
     for i, basin in enumerate(basin_list):
       logging.info('  Processing basin #%2d', i)
@@ -437,6 +439,9 @@ class simulationJob(macrothread):
       new_dmu[bid]    = np.mean(dist_space[a:b], axis=0)
       new_dsig[bid]   = np.std(dist_space[a:b], axis=0)
 
+      # TODO: Determine DIST SPACE Metric
+      basin_DS[i] = new_dmu[bid]
+
       # Collect Basin metadata
       basin_hash = basin.kv()
       basin_hash['pdbfile'] = jc_filename
@@ -452,13 +457,25 @@ class simulationJob(macrothread):
       logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
         basin_hash['start'], basin_hash['end'])
 
+
+
+  #  LATTICE
+    # 1. Construct Local Lattice with no min support (high granualar)
+    # TODO:  Should this be dynamically solved or pre-selected????
+    Kr = FEATURE_SET
+    supprt = 1
+    cutoff = 8
+
+    # TODO:  Use Min Index as snapshot, median (or mean) DistSpace vals for each basin?????
+
+
+
     bench.mark('analysis')
   #  BARRIER: WRITE TO CATALOG HERE -- Ensure Catalog is available
     # try:
     self.wait_catalog()
     # except OverlayNotAvailable as e:
     #   logging.warning("Catalog Overlay Service is not available. Scheduling ASYNC Analysis")
-
 
   # Update Catalog with 1 Long Atomic Transaction  
     with self.catalog.pipeline() as pipe:
@@ -480,13 +497,23 @@ class simulationJob(macrothread):
             pipe.rpush('basin:list', bid)
             # pipe.hset('basin:rms', bid, basin_rms[bid])
             pipe.hmset('basin:'+bid, basins[bid])
-            pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
-            pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
-            pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
-
             pipe.set('minima:%s'%bid, pickle.dumps(minima_coords[bid]))
 
+            if EXPERIMENT_NUMBER == 13:
+              pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
+              pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
+              pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
+
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)
+
+          if EXPERIMENT_NUMBER == 14:
+            # Push Lattice Delta  -- SHOULD Ik be included or derived????
+            pipe.set('lattice:delta:%s:max_fis'%job['name'], pickle.dumps(lattice.max_fis))
+            pipe.set('lattice:delta:%s:low_fis'%job['name'], pickle.dumps(lattice.low_fis))
+            pipe.set('lattice:delta:%s:dlat'%job['name'], pickle.dumps(lattice.dlat))
+            pipe.set('lattice:delta:%s:Ik'%job['name'], pickle.dumps(lattice.Ik))
+            pipe.set('lattice:delta:%s:E'%job['name'], pickle.dumps(basin_DS))
+
           logging.debug('Executing')
           pipe.execute()
           break

@@ -293,7 +293,41 @@ class controlJob(macrothread):
         cm_all = np.vstack((de_corr_matrix, C_T))
         dmu_all = np.vstack((de_dmu, D_mu))
         dsig_all = np.vstack((de_dsig, D_sigma))
-        sampler = CorrelationSampler(cm_all, mu=dmu_all, sigma=dsig_all)
+
+        if EXPERIMENT_NUMBER == 13:
+          sampler = CorrelationSampler(cm_all, mu=dmu_all, sigma=dsig_all)
+        
+        else:
+          
+          # Set parameters for lattice
+          Kr = FEATURE_SET
+          support = 900
+          cutoff  = 8
+
+          # Load existing (base) lattice data
+          max_fis = XXXXX
+          low_fis = XXXXX
+          dlat    = XXXXX
+          Ik      = XXXXX
+          distsp  = XXXXX
+
+          # Build Lattice Object
+          base_lattice=lat.Lattice(de_dmu, Kr, cutoff, support)
+          base_lattice.set_fis(max_fis, low_fis)
+          base_lattice.set_dlat(dlat, Ik)
+
+          # Build Delta Lattice Object
+          delta_lattice = lat.Lattice(dmu_all, Kr, cutoff, support)
+          delta_lattice.maxminer()
+          delta_lattice.derive_lattice()
+
+          base_lattice.merge(delta_lattice)
+
+          # TODO: MAKE THIS SAMPLING OBJECT
+          sampler = LatticeSampler(base_lattice)
+
+          # TODO: Update Catalog with merged Lattice
+
         basin_id_list = sampler.execute(numresources)
 
         # For now retrieve immediately from catalog
