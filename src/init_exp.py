@@ -151,22 +151,31 @@ def load_historical_DEShaw(catalog):
 
   if settings.EXPERIMENT_NUMBER == 14:
 
+    if not os.path.exists(settings.datadir + '/iset.p'):
+      os.symlink(settings.workdir + '/iset.p', settings.datadir + '/iset.p')
+    if not os.path.exists(settings.datadir + '/iset.p'):
+      os.symlink(settings.workdir + '/de_ds_mu.npy', settings.datadir + '/de_ds_mu.npy')
+    if not os.path.exists(settings.datadir + '/de_ds_mu.npy'):
+      os.symlink(settings.workdir + '/data/de_ds_mu.npy', settings.datadir + '/de_ds_mu.npy')
+
     dlat    = open(os.path.join(settings.workdir, 'dlat.p'), 'rb').read()
     max_fis = open(os.path.join(settings.workdir, 'mfis.p'), 'rb').read()
     low_fis = open(os.path.join(settings.workdir, 'lowfis.p'), 'rb').read()
 
+    logging.info('Loading max, low FIS and derived lattice')
     with catalog.pipeline() as pipe:
       pipe.set('lattice:max_fis', max_fis)
       pipe.set('lattice:low_fis', low_fis)
       pipe.set('lattice:dlat', dlat)
       pipe.execute()
 
-    if not os.path.exists(settings.datadir + '/iset.p'):
-      os.symlink(settings.workdir + '/iset.p', settings.datadir + '/iset.p')
-    if not os.path.exists(settings.datadir + '/iset.p'):
-      os.symlink(settings.workdir + '/de_ds_mu.npy', settings.datadir + '/de_ds_mu.npy')
-    if not os.path.exists(settings.datadir + '/de_ds_mu.npy'):
-      os.symlink(settings.workdir + '/data/de_corr_matrix.npy', settings.datadir + '/de_ds_mu.npy')
+    logging.info('Loading raw distance from file')
+    de_ds = 10*np.load(settings.datadir + '/de_ds_mu.npy')
+    logging.info('Loading raw distance space into catalog')
+    with catalog.pipeline() as pipe:
+      for elm in de_ds:
+        pipe.rpush('dspace', pickle.dumps(elm))
+      pipe.execute()
 
   logging.info('DEShaw data loaded. ALL Done!')
   # FOR CREATING CM/MU/SIGMA vals for first time
@@ -390,9 +399,18 @@ def make_jobs(catalog, num=1):
     global_params = getSimParameters(sim_init, 'deshaw')
     logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
 
-    de_ds = 10*np.load(settings.datadir + '/de_ds_mu.npy')
-    print('DS  : ', de_ds.shape)
-    de_cm = np.load(settings.datadir + '/de_corr_matrix.npy')
+    # de_ds = 10*np.load(settings.datadir + '/de_ds_mu.npy')
+    de_ds = []
+
+    logging.info('Loading raw distance space from catalog')
+    de_ds_raw = catalog.lrange('dspace', 0, -1)
+    logging.info("Unpickling distance space")
+    de_ds = np.zeros(shape=(len(de_ds_raw), 1653))
+    for i, elm in enumerate(de_ds_raw):
+      de_ds[i] = pickle.loads(elm)
+    print('DS  : ', de_ds.shape, de_ds[0])
+
+    # de_cm = np.load(settings.datadir + '/de_corr_matrix.npy')
 
     Kr = FEATURE_SET
     support = 900
@@ -409,7 +427,7 @@ def make_jobs(catalog, num=1):
     print('Ik  : ', len(Ik))
 
     logging.info('Building Existing lattice object')
-    lattice=lat.Lattice(de_ds[:90000], Kr, cutoff, support)
+    lattice=lat.Lattice(de_ds, Kr, cutoff, support)
     lattice.set_fis(max_fis, low_fis)
     lattice.set_dlat(dlat, Ik)
 

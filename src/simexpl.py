@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime as dt
 import math
 from collections import namedtuple, deque
-
+ 
 
 # For efficient zero-copy file x-fer
 from sendfile import sendfile
@@ -155,11 +155,8 @@ class simulationJob(macrothread):
     logging.info('Running Experiment Configuration #%d', EXPERIMENT_NUMBER)
 
 
-    reltime_start = 0
-
-    if EXPERIMENT_NUMBER == 13:
-      # Grab historical basin data's relative time to start (for lineage)
-      reltime_start = self.catalog.hget('basin:' + job['src_basin'], 'time')
+    # # Grab historical basin data's relative time to start (for lineage)
+    # reltime_start = self.catalog.hget('basin:' + job['src_basin'], 'time')
 
 
     traj = None
@@ -368,9 +365,11 @@ class simulationJob(macrothread):
     # Execute Timescapes agility program to detect spatial-temporal basins
     # Get the frame rate to save from catalog:
     logging.debug('Preprocessing output for TimeScapes: terrain')
-    traj_frame_per_ps = int(job['interval']) / 1000.   # jc interval is in fs
+    traj_frame_per_ps = SIMULATE_RATIO * int(job['interval']) / 1000.   # jc interval is in fs
     ts_frame_per_ps = int(self.data['timescape:rate'])  # this value is in ps
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
+
+    logging.debug('%5.2f fr/ps (Traj)     %5.2f fr/ps (TS)    FrameRate= %4.1f', traj_frame_per_ps, ts_frame_per_ps, frame_rate)
 
     # FOR DEBUGGING
     # logging.warning("DEBUGGING IS ON..... FRAME RATE MANUALLY SET TO 1")
@@ -400,13 +399,13 @@ class simulationJob(macrothread):
     stdout = executecmd(cmd)
     logging.info('TimeScapes COMPLETE:\n%s', stdout)
 
+    # Collect and parse Timescape output
     logging.debug('Parsing Timescapes output')
     ts_parse = TimeScapeParser(tmp_pdb, output_prefix, job['name'], 
       dcd=dcdFile, traj=traj, uniqueid=False)
     basin_list = ts_parse.load_basins(frame_ratio=frame_rate)
     corr_matrix = ts_parse.correlation_matrix()
     n_basins = len(basin_list)
-
 
     minima_coords = {}
     basin_rms = {}
@@ -419,9 +418,7 @@ class simulationJob(macrothread):
     stat.collect('num_basin', n_basins)
     downstream_list = []
 
-    # FOR DistSpace use in Lattice
-    basin_DS = np.zeros(len(basin_list))
-
+    # Process each basin
     for i, basin in enumerate(basin_list):
       logging.info('  Processing basin #%2d', i)
       bid = basin.id
@@ -439,15 +436,12 @@ class simulationJob(macrothread):
       new_dmu[bid]    = np.mean(dist_space[a:b], axis=0)
       new_dsig[bid]   = np.std(dist_space[a:b], axis=0)
 
-      # TODO: Determine DIST SPACE Metric
-      basin_DS[i] = new_dmu[bid]
-
       # Collect Basin metadata
       basin_hash = basin.kv()
       basin_hash['pdbfile'] = jc_filename
 
       # Set relative time (in ns)
-      basin_hash['time'] = reltime_start + (a * frame_rate) / 1000
+      # basin_hash['time'] = reltime_start + (a * frame_rate) / 1000
       basins[bid] = basin_hash
 
       # new_[i] =  = pickle.dumps(corr_vector)

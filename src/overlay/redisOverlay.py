@@ -707,7 +707,11 @@ class RedisClient(redis.StrictRedis):
         logging.debug("Dynamically saving %s. Updating schema", key)
 
       elif self.schema[key] == 'ndarray':
-        self.storeNPArray(data[key])
+        try:
+          self.storeNPArray(data[key])
+        except TypeError as err:
+          print('KEY:', key)
+          raise
       elif self.schema[key] == 'matrix':
         if isinstance(data[key], np.ndarray):
           matrix = kv2DArray(self, key)

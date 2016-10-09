@@ -30,6 +30,8 @@ import datatools.datacalc as datacalc
 import datatools.mvkp as mvkp
 import mdtools.deshaw as deshaw
 import datatools.kmeans as KM
+import datatools.lattice as lat
+
 # from datatools.pca import calc_kpca, calc_pca, project_pca
 from datatools.pca import PCAnalyzer, PCAKernel, PCAIncremental
 from datatools.approx import ReservoirSample
@@ -40,7 +42,7 @@ from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
 from bench.stats import StatCollector
 
-from sampler.basesample import UniformSampler, CorrelationSampler
+from sampler.basesample import UniformSampler, CorrelationSampler, LatticeSampler
 
 from datatools.feature import feal
 import plot as G
@@ -79,9 +81,10 @@ class controlJob(macrothread):
       self.addMut('dspace_sigma')
       self.addMut('raritytheta')
 
-      self.addMut('lattice:max_fis')
-      self.addMut('lattice:low_fis')
-      self.addMut('lattice:dlat')
+      # self.addMut('lattice:max_fis')
+      # self.addMut('lattice:low_fis')
+      # self.addMut('lattice:dlat')
+      # self.addMut('lattice:iset_delta')
 
       self.addMut('ctlCountHead')
       self.addImmut('exploit_factor')
@@ -238,43 +241,37 @@ class controlJob(macrothread):
         #####   BASIN LIST HERE
         # Get ALL basins metadata:
         old_basin_ids = self.data['basin:list'][:start_index-1]
-        # for bid in 
-        # old_basin_list = [None for i in range(old_basin_ids)]
-        # with self.catalog.pipeline() as pipe:
-        #   for i, bid in enumerate(old_basin_ids):
-        #     old_basin_list[i] = pipe.hgetall(bid)
-        #   pipe.execute()
 
-        # FOR NOW: Load from disk
+        # FOR NOW: Load from Catalog
         logging.info('Loading Historical DEShaw data')
-        # de_corr_matrix = np.load('data/de_corr_matrix.npy')
-        # de_dmu = np.load('data/de_ds_mu.npy')
-        # de_dsig = np.load('data/de_ds_mu.npy')
 
-        de_ds = np.load(settings.datadir + '/de_ds_mu.npy')
-        de_cm = np.load(settings.datadir + '/de_corr_matrix.npy')
+        # Explicitly manage distance space load here
+        logging.info('Loading raw distance space from catalog')
+        de_ds_raw = self.catalog.lrange('dspace', 0, -1)
+        logging.info("Unpickling distance space")
+        ds_prev = np.zeros(shape=(len(de_ds_raw), 1653))
+        for i, elm in enumerate(de_ds_raw):
+          ds_prev[i] = pickle.loads(elm)
 
         # MERGE: new basins with basin_corr_matrix, d_mu, d_sigma
         # Get list of new basin IDs
         stat.collect('new_basin', len(new_basin_list))
         delta_cm, delta_ds, = [], []
-        logging.info('Collecting new data')
+        logging.info('Collecting new data from basins: %s', new_basin_list)
         for bid in new_basin_list:
           key = 'basin:' + bid
+          logging.debug("  Loading Basin: %s", key)
           basin = self.data[key]
 
-          with self.catalog.pipeline() as pipe:
-            cm_   = pipe.get('basin:cm:'+bid)
-            dmu_  = pipe.get('basin:dmu:'+bid)
-            # dsig_ = pipe.get('basin:dsig:'+bid)
-            pipe.execute()
+          # cm_ = self.catalog.get('basin:cm:'+bid)
+          # delta_cm.append(pickle.loads(cm_))
 
-          delta_cm.append(pickle.loads(cm_))
-          delta_ds.append(pickle.loads(dmu_))
+          dmu_ = self.catalog.get('basin:dmu:'+bid)
+          if dmu_ is None:
+            logging.debug("No Data for Basin:  %s", bid)
+          else:
+            delta_ds.append(pickle.loads(dmu_))
           # ds_std.append(pickle.loads(dsig_))
-
-          # TODO: FINISH NOISE MODEL
-
 
         if EXPERIMENT_NUMBER == 13:
           # Merge new values with old values:
@@ -310,11 +307,6 @@ class controlJob(macrothread):
         else:
         # Merge Existing delta with DEShaw Pre-Processed data:
           logging.info('Mering DEShaw with existing generated data')
-          if len(all_basins) == 91116:    # Only DEShaw Basins are loaded
-            cm_prev, ds_prev = de_cm, de_ds
-          else:
-            cm_prev = np.vstack((de_cm, self.data['corr_vector']))
-            ds_prev = np.vstack((de_ds, self.data['dspace_mu']))
 
           # Set parameters for lattice
           Kr = FEATURE_SET
@@ -323,12 +315,24 @@ class controlJob(macrothread):
 
           # Load existing (base) lattice data
           logging.info("Unpickling max/low FIS and derived lattice EMD values")
-          max_fis = pickle.load(self.data['lattice:max_fis'])
-          low_fis = pickle.load(self.data['lattice:low_fis'])
-          dlat    = pickle.load(self.data['lattice:dlat'])
+          max_fis    = pickle.loads(self.catalog.get('lattice:max_fis'))
+          print('MFIS: ', len(max_fis))
+          low_fis    = pickle.loads(self.catalog.get('lattice:low_fis'))
+          dlat       = pickle.loads(self.catalog.get('lattice:dlat'))
 
+          # Full DEShaw Index is saved on disk
           logging.info("Loading full Itemset from disk (TODO: Det optimization on mem/time)")
-          Ik      = pickle.load(open(settings.datadir + '/iset.p', 'rb'))
+          Ik        = pickle.load(open(settings.datadir + '/iset.p', 'rb'))
+
+          # Item_set Keys (Ik) are only saved as a delta for space conservation
+          if os.path.exists(settings.datadir + '/iset_delta.p'):
+            Ik_delta  = pickle.load(open(settings.datadir + '/iset_delta.p', 'rb'))
+          else:
+            Ik_delta = {}
+
+          # Merge previous item set delta with DEShaw index
+          for k,v in Ik_delta.items():
+            Ik[k] = np.concatenate((Ik[k], v)) if k in Ik else v
 
           # Build Lattice Object
           logging.info('Building Existing lattice object')
@@ -337,24 +341,51 @@ class controlJob(macrothread):
           base_lattice.set_dlat(dlat, Ik)
 
           # Build Delta Lattice Object
-          logging.info('Building Delta lattice object')
+          logging.info('Building Delta lattice. Num new items: %d', len(delta_ds))
+
+          # Multiple by 10 (convert nm to angstrom)
+          delta_ds = 10 * np.array(delta_ds)
           delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, support)
           delta_lattice.maxminer()
           delta_lattice.derive_lattice()
 
+          # Update non-DEShaw delta itemset key index
+          logging.info("Updating Itemsets and Distance Space Matrix")
+          for k,v in delta_lattice.Ik.items():
+            Ik_delta[k] = np.concatenate((Ik_delta[k], v)) if k in Ik_delta else v
+
+          # Save Ik delta to disk
+          logging.info("Saving Delta Itemset (to disk)")
+          pickle.dump(Ik_delta, open(settings.datadir + '/iset_delta.p', 'wb'))
+          
+
+          # Push distance space delta values to catalog
+          with self.catalog.pipeline() as pipe:
+            for elm in delta_ds:
+              pipe.rpush('dspace', pickle.dumps(elm))
+            pipe.execute()
+
+
+          #  Perform incremental maintenance
           logging.info('Merging Delta lattice with Base Lattice')
           base_lattice.merge(delta_lattice)
 
-          # TODO: MAKE THIS SAMPLING OBJECT
+          # Create the Sampler object (also make clusters)
+          #  TODO:  CLuster maintenance
           logging.info('Invoking the Lattice Sampler')
-
           sampler = LatticeSampler(base_lattice)
 
-          # TODO: Update Catalog with merged Lattice
+          # Update Catalog with merged Lattice
+          # self.data['dspace_mu'] = base_lattice.E
+          # self.data['lattice:max_fis'] = base_lattice.max_fis
+          # self.data['lattice:low_fis'] = base_lattice.low_fis
+          # self.data['lattice:dlat'] = base_lattice.dlat
+          # self.data['lattice:iset_delta'] = Ik_delta
 
         basin_id_list = sampler.execute(numresources)
 
         # For now retrieve immediately from catalog
+        self.wait_catalog()
         for index in basin_id_list:
           bid = all_basins[index]
           selected_basin_list.append(self.catalog.hgetall('basin:%s'%bid))
@@ -395,6 +426,18 @@ class controlJob(macrothread):
     #  POST-PROCESSING  -------------------------------------
       logging.debug("============================  <POST-PROCESSING & OUTPUT>  =============================")
       self.wait_catalog()
+
+      # Append new distance values
+      if EXPERIMENT_NUMBER == 14:
+        # Save Ik delta to disk
+        logging.info("Saving Delta Itemset (to disk)")
+        pickle.dump(Ik_delta, open(settings.datadir + '/iset_delta.p', 'wb'))
+
+        with self.catalog.pipeline() as pipe:
+          pipe.set('lattice:max_fis', pickle.dumps(max_fis))
+          pipe.set('lattice:low_fis', pickle.dumps(low_fis))
+          pipe.set('lattice:dlat', pickle.dumps(dlat))
+          pipe.execute()
 
       # Clear current queue, mark previously queues jobs for GC, push new queue
       qlen = self.catalog.llen('jcqueue')
