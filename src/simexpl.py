@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime as dt
 import math
 from collections import namedtuple, deque
- 
+
 
 # For efficient zero-copy file x-fer
 from sendfile import sendfile

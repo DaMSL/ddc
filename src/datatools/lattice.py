@@ -7,7 +7,7 @@ import copy
 import threading
 import logging
 import sys
- 
+
 from datetime import datetime as dt
 from sortedcontainers import SortedSet, SortedList
 from collections import OrderedDict, deque, defaultdict
@@ -96,6 +96,14 @@ class Lattice(object):
   def derive_lattice(self):
     cm = self._CM()
     self.dlat, self.Ik = derived_lattice(self.max_fis, self.E[:,self.Kr], cm)
+
+
+  def cluster(self, theta=.9, label=None):
+    dlat = self.dlat
+    Ik   = self.Ik
+    CM   = self._CM()
+    D    = self.E[:, self.Kr]
+    return clusterlattice(dlat, CM, D, Ik, theta=theta, bL=label)    
 
 
   def merge(self, other):
@@ -685,7 +693,7 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
 
       # EMD is sqrt of sums of squares for each 1D distribution delta
       dlat[node][parent] = np.sqrt(np.sum(flow**2))
-      progress.incr()
+    progress.incr()
 
   end = dt.now()
 
@@ -709,7 +717,8 @@ def histograms(Ik, D, nbins=20, binrange=(4,8)):
     distr = D[iset]
     for i, k in enumerate(key):
       hist[i] = np.histogram(distr[:,col[k]], nbins, binrange)[0]
-    H[key] = hist / hist.sum(1)[:,None][0]
+    size = hist.sum(1)[:,None][0]
+    H[key] = hist if size == 0 else hist / size
     progress.incr()
 
   return H
@@ -903,31 +912,86 @@ def update_lattice(dlat, Ik, D_old, CM, Mtrack, D_new, M_new, M_delta, epsilon, 
 
 ## CLUSTER AND SAMPLE
 def botup_collapse(dlat, theta=.9):
+  
+  # 1. Invert derived lattice to similarity weights (1 = identical, 0 = not similar)
+  #     Note this will prune edges with high (>1) EMD values
   # Can be optimized if needed
   dlw = {k: {i: 1-j for i, j in v.items() if j<1} for k,v in dlat.items()}
-  # get smallest keys
+
+  # 2. Sort by smallest -> largest keys
   klist = sorted(dlw.keys(), key=lambda x: (len(x), x))
 
+  # 3. Starting at bottom (smallest key nodes), collapse upwards
   C = defaultdict(dict)
   for node in klist:
+
+    # No parents
     if len(dlw[node]) == 0:
       continue
+
+    # For each parent: collapse child up by weighted score
     for parent, emd in dlw[node].items():
       if emd < theta:
         continue
       C[parent][node] = emd
+
+      # propagate by multiplying each node by current edge weight and collapse
       for child, w in C[node].items():
         w_t = w * emd
-        if w_t > theta:
-          C[parent][child] = w_t
+
+        # TODO:  Should retention be decided (prune) or propagated (keep all wgts)
+        C[parent][child] = w_t
+
+    # Node has collapses: delete it as a cluster root node
     if node in C:
       del C[node]
 
-  setlist, assignment = {}, {}
+  # 4. TODO: Create super-keys and continue merge process (?????)
+
+  # 5. Index clusters assignment by nodes
+  setlist, assignment = {}, defaultdict(dict)
   for key, members in C.items():
     setlist[key] = set(members.keys())
     for node in members.keys():
       assignment[node] = key
+
+  return setlist, assignment
+
+
+def collapse_dlat(dlat):
+  
+  # 1. Sort by smallest -> largest keys
+  klist = sorted(dlat.keys(), key=lambda x: (len(x), x))
+
+  # 2. Starting at bottom (smallest key nodes), collapse upwards update EMD
+  C = defaultdict(dict)
+  for node in klist:
+
+    # No parents
+    if len(dlat[node]) == 0:
+      continue
+
+    # For each parent: collapse node up by square of weighted score
+    for parent, emd in dlat[node].items():
+      wght = emd ** 2
+      C[parent][node] = wght
+
+      # propagate node's children by multiplying each node by current edge weight and collapse
+      for child, w in C[node].items():
+        C[parent][child] = w + wght
+
+    # Node has collapsed: delete it as a cluster root node
+    if node in C:
+      del C[node]
+
+  # 3. TODO: Create super-keys and continue merge process (?????)
+
+  # 4. Index clusters assignment by nodes
+  setlist, assignment = {}, defaultdict(dict)
+  for key, members in C.items():
+    setlist[key] = set(members.keys())
+    for node, emd in members.keys():
+      assignment[node][key] = emd
 
   return setlist, assignment
 
@@ -938,8 +1002,9 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
   global_var = D.std(0)
 
 
-  logging.info('CLUSTERING the derived Lattice')
+  logging.info('CLUSTERING the derived Lattice - UPDATED!')
 
+  # 1. Collapse the Lattice to top nodes
   # gs, ga = topdown_group_single(dlat, theta)
   gs, ga = botup_collapse(dlat, theta)
 
@@ -947,9 +1012,11 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
   grp, nogrp = {}, []
 
+  # 2. For each row in input matrix: assign to a cluster
   clusters = defaultdict(list)
-  ### OPTION A:  Map to corr feature set (for unique key)
+### OPTION A:  Map to corr feature set (for unique key)
   # 3.  For each item: map to a group:   <map>
+  progress = ProgressBar(N)
   for i in range(N):
     k = fromm(CM[i])
     if len(k) == 0:
@@ -959,21 +1026,25 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
       grp[i] = ga[k]
       clusters[ga[k]].append(i)
     else:
-    # Add all off-by-1 
+    # Add all off-by-n 
       added = False
-      immed_lower = [''.join(sorted(i)) for i in it.combinations(k, len(k)-1)]
-      for n in immed_lower:
-        if n in ga:
-          clusters[ga[n]].append(i) 
-          added = True
+      for level in range(1, 3):
+        immed_lower = [''.join(sorted(i)) for i in it.combinations(k, len(k)-level)]
+        for n in immed_lower:
+          if n in ga:
+            clusters[ga[n]].append(i) 
+            added = True
+        if added:
+          break
 
     #   # Keep track of unassigned nodes (TODO: is this just noise?)
       if not added:
         nogrp.append(i)
+    progress.incr()
 
   logging.info("  # Initial Clust   :   %d", len(clusters))
 
-  ## OPTION B:  Assigned to longest key:
+## OPTION B:  Assigned to longest key:
   # print('Iteratively assigning event-items to clusters (via longest observered key)')
   # keylist = sorted(Ik.keys(), key=lambda x: (len(x), x), reverse=True)
   # for i in range(N):
@@ -989,6 +1060,32 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
   #   if stoplen == 0:
   #     nogrp.append(i)
+
+
+
+### OPTION C:  Use full weights
+  # 3.  For each item: map to a group:   <map>
+  # for i in range(N):
+  #   k = fromm(CM[i])
+  #   if k in ga:
+  #     # OPT C1 Use Max value
+  #     #  Set its group 
+  #     best_fit_clu = max(ga[k].items(), key=lambda x: x[1])[0]
+  #     clusters[ga[k]].append(i)
+  #   else:
+  #   # Add all off-by-1 
+  #     added = False
+  #     immed_lower = [''.join(sorted(i)) for i in it.combinations(k, len(k)-1)]
+  #     for n in immed_lower:
+  #       if n in ga:
+  #         clusters[ga[n]].append(i) 
+  #         added = True
+
+  #   #   # Keep track of unassigned nodes (TODO: is this just noise?)
+  #     if not added:
+  #       nogrp.append(i)
+
+
 
   maxsize = max([len(v) for v in clusters.values()])
   minsize = min([len(v) for v in clusters.values() if len(v) > 0])
@@ -1028,16 +1125,25 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
   expelled = []
   maxval = G.max()
   logging.info('Running the merge loop')
+  DO_SIGMA = False
+  # progress = ProgressBar(Nc - 11)
   while True:
   # while minsize < minclu:
     Nc = len(clusters)
-    sigma = np.array([variance[k] for k in keylist])
-    mean_sig, var_sig, sum_sig, max_sig = sigma.mean(), sigma.std(), sigma.sum(), sigma.max()
+    if DO_SIGMA:
+      sigma = np.array([variance[k] for k in keylist])
+      mean_sig, var_sig, sum_sig, max_sig = sigma.mean(), sigma.std(), sigma.sum(), sigma.max()
+
+    # OPT B: Merge smallest clusters
+    smallest = np.argmin([len(clusters[k]) for k in keylist])
 
     np.fill_diagonal(G, G.max())
     minval = G.min()
     minidx = np.argmin(G)
     row, col  = minidx // Nc, minidx % Nc
+    
+    # OPT B:
+    small_nn = np.argmin(G[smallest])
     np.fill_diagonal(G, 0)
 
     Gv = G[np.triu_indices(len(G), 1)]
@@ -1046,16 +1152,25 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
     # Internal Cluster Metric (how well defined is the least defined cluster)
     m_highvar = np.argmax([variance[k] for k in keylist])
     k_highvar = keylist[m_highvar]
-    int_score = np.abs(variance[k_highvar] - mean_sig) / var_sig
+    if DO_SIGMA:
+      int_score = np.abs(variance[k_highvar] - mean_sig) / var_sig
 
-    # External Cluster Metric (how separate are the closest two clusters)
-    m_attr  = row if len(clusters[keylist[row]]) < len(clusters[keylist[col]]) else col
-    m_donor = col if m_attr == row else row
+    if len(clusters[keylist[smallest]]) < .0001 * N and minval > 0:
+      # OPT B:
+      m_donor, m_attr = smallest, small_nn
+    else:
+      m_attr  = row if len(clusters[keylist[row]]) < len(clusters[keylist[col]]) else col
+      m_donor = col if m_attr == row else row
+
     k_attr, k_donor = keylist[m_attr], keylist[m_donor]
     ext_score = np.abs(minval - gmean) / gvar
 
-    logging.info ('%4d.'%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  / TotV %4.2f  MeanV %4.2f (%4.2f) MaxV %4.2f /  %4.2f v %4.2f ' \
-      % (gmean, gvar, minval, sum_sig/K, mean_sig, var_sig, max_sig, int_score,  ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
+    if DO_SIGMA:
+      logging.info ('%4d. '%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  / TotV %4.2f  MeanV %4.2f (%4.2f) MaxV %4.2f /  %4.2f v %4.2f ' \
+        % (gmean, gvar, minval, sum_sig/K, mean_sig, var_sig, max_sig, int_score,  ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
+    else:
+      logging.info ('%4d. '%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  /  %4.2f ' \
+        % (gmean, gvar, minval, ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
 
       # Find node attactor (larger) & donor (smaller)
 
@@ -1070,15 +1185,15 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
     centroid[k_attr] = D[clusters[k_attr]].mean(0)
     ew, ev = LA.eig(np.cov(D[clusters[k_attr]].T))
-    variance[k_attr] = np.sum(ew)
-
-
+    if DO_SIGMA:
+      variance[k_attr] = np.sum(ew)
 
     # Update Data Stucts
     keylist.pop(m_donor)
     del clusters[k_donor]
     del centroid[k_donor]
-    del variance[k_donor]
+    if DO_SIGMA:
+      del variance[k_donor]
     G = np.delete(G, m_donor, 0)
     G = np.delete(G, m_donor, 1)
 
@@ -1091,18 +1206,27 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
     # Update all Centroids and variances
     centroid = {k: D[v].mean(0) for k,v in clusters.items()}
-    variance = {}
-    for k,v in clusters.items():
-      cov = np.cov(D[v].T)
-      ew, ev = LA.eigh(cov)
-      variance[k] = np.sum(ew)
+    if DO_SIGMA:
+      variance = {}
+      for k,v in clusters.items():
+        cov = np.cov(D[v].T)
+        ew, ev = LA.eigh(cov)
+        variance[k] = np.sum(ew)
 
     maxsize = max([len(v) for v in clusters.values()])
     minsize = min([len(v) for v in clusters.values() if len(v) > 0])
 
+    # progress.incr()
     inum += 1
-    if len(clusters) < 12:
+    if len(clusters) < 15:
       break
+
+  variance = {}
+  for k,v in clusters.items():
+    cov = np.cov(D[v].T)
+    ew, ev = LA.eigh(cov)
+    variance[k] = np.sum(ew)
+
 
   logging.info("  TOTAL # CLUSTERS   :   %d", len(clusters))
   if bL is not None:
@@ -1120,11 +1244,11 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
     for i in sorted(clusterlist, key =lambda x : x[2], reverse=True):
       print('%3d.  %-18s%7d  %6.3f /  State: %d  (%5.1f%%)   /    %s' % i)
 
-  logging.info('\nReassiging {0} groupless events'.format(len(nogrp)))
-  for i in nogrp:
-    delta = {k: LA.norm(D[i] - v) for k,v in centroid.items()}
-    c = min(delta.items(), key=lambda x: x[1])[0]
-    clusters[c].append(i)
+  # logging.info('\nReassiging {0} groupless events'.format(len(nogrp)))
+  # for i in nogrp:
+  #   delta = {k: LA.norm(D[i] - v) for k,v in centroid.items()}
+  #   c = min(delta.items(), key=lambda x: x[1])[0]
+  #   clusters[c].append(i)
 
  
   # FOR SCORING
@@ -1149,14 +1273,14 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
   total_var = np.sum([k for k in variance.values()])
 
   low_var = min(variance.values())
-  MIN_EV = .0005 * N
+  MIN_EV = .00025 * N
   for clnum, (k, iset) in enumerate(clusters.items()):
 
     # THE CLUSTER SCORE
     sc_var  = low_var / variance[k]
     sc_size = 1 - (2 * len(clusters)*len(iset) / (N))
     if len(iset) < MIN_EV:
-      sc_size = -2
+      sc_size = -2 * (MIN_EV - len(iset)) / MIN_EV
     clscore = sc_var + sc_size
 
 
