@@ -640,7 +640,7 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
 
   logging.info('\nLattice Nodes:  %d', len(nodelist))
 
-  # Build itemsets
+  # Materialize itemsets (For now, assume they all need materialization for EMD calc)
   logging.info('Selecting events (basin) for each itemset node')
   Ik = {}
   progress = ProgressBar(len(nodelist))
@@ -657,7 +657,9 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
   # Add last itemset
   # Ik[tok(F[-1])] = np.where(np.logical_and(CM[:,sorted(F[-1])], True).all(1))[0]
 
-  # Calculate Distribution delta for every node
+  # Modified Earth Mover's Distance Algorithm
+
+  # 1. Pre-Calculate Distribution delta for every node
   logging.info('Precalculate all Histograms (1D) for all keys...')
   t0 = dt.now()
   H = histograms(Ik, D, nbins, brange)
@@ -995,7 +997,7 @@ def collapse_dlat(dlat):
 
   return setlist, assignment
 
-def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
+def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
   ''' USes full distrubution of clustered items to merge clusters based 
   on eucidean distance to centroid '''
   N, K = D.shape
@@ -1014,7 +1016,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
   # 2. For each row in input matrix: assign to a cluster
   clusters = defaultdict(list)
-### OPTION A:  Map to corr feature set (for unique key)
+  ### OPTION A:  Map to corr feature set (for unique key)
   # 3.  For each item: map to a group:   <map>
   progress = ProgressBar(N)
   for i in range(N):
@@ -1044,7 +1046,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
   logging.info("  # Initial Clust   :   %d", len(clusters))
 
-## OPTION B:  Assigned to longest key:
+  ## OPTION B:  Assigned to longest key:
   # print('Iteratively assigning event-items to clusters (via longest observered key)')
   # keylist = sorted(Ik.keys(), key=lambda x: (len(x), x), reverse=True)
   # for i in range(N):
@@ -1063,7 +1065,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
 
 
-### OPTION C:  Use full weights
+  ### OPTION C:  Use full weights
   # 3.  For each item: map to a group:   <map>
   # for i in range(N):
   #   k = fromm(CM[i])
@@ -1218,7 +1220,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
     # progress.incr()
     inum += 1
-    if len(clusters) < 15:
+    if len(clusters) <= num_k:
       break
 
   variance = {}
@@ -1260,9 +1262,13 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
   centroid = {k: D[v].mean(0) for k,v in clusters.items()}
   variance = {}
   for k,v in clusters.items():
+    try:
       cov = np.cov(D[v].T)
       ew, ev = LA.eigh(cov)
       variance[k] = np.sum(ew)
+    except LA.LinAlgError as err:
+      logging.warning("Cluster ID %s too small for variance calculation. Input Matrix= %s", k, D[v].shape)
+      variance[k] = np.mean(np.std(D[v], 0))
 
   samplist = []
 
@@ -1309,7 +1315,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
 
    # FOR SAMPLING
   if bL is not None:
-    sampidx = np.zeros(len(clusters), dtype=np.int16)
+    sampidx = [-1 for i in range(len(clusters))] #np.zeros(len(clusters), dtype=np.int16)
     pdf = clusterscore / np.sum(clusterscore)
     logging.info('\nPDF:  %s', str(pdf))
     logging.info('SAMPLE OF 20 CANDIDATES.....')
@@ -1317,7 +1323,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, minclusize=0, bL=None):
       clidx = int(np.random.choice(len(pdf), p=pdf))
       elm, dist = elmscore[clidx][sampidx[clidx]]
       logging.info(' %2d.  Clu#   %2d        idx %5d    State= %d ' % (i, clidx, elm, bL[elm]))
-      sampidx[clidx] += 1
+      sampidx[clidx] -= 1
 
   return clusters, clusterscore, elmscore
 

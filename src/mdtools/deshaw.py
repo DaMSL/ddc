@@ -342,6 +342,14 @@ def loadDEShawTraj(start, end=-1, filt='heavy'):
     trajectory = trajectory.join(traj) if trajectory else traj
   return trajectory
 
+
+def loadtraj(seqnum):
+  ''' Loads Protein '''
+  pdbfile, dcdfile = getHistoricalTrajectory(seqnum)
+  logging.info("LOADING:  %s", os.path.basename(dcdfile))
+  traj = md.load(dcdfile, top=pdbfile)
+  return traj
+
 DEShawReferenceFrame = None
 def deshawReference(atomfilter='heavy'):
   global DEShawReferenceFrame

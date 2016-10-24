@@ -464,6 +464,35 @@ def make_jobs(catalog, num=1):
     catalog.rpush('jcqueue', jcID)
     catalog.hmset(wrapKey('jc', jcID), config)
 
+def manual_de_job(catalog, fileno, frame, runtime=1000000):
+  """
+  Seeds jobs into the JCQueue -- pulled from DEShaw
+  Selects equal `num` of randomly start frames from each bin
+  to seed as job candidates
+  """
+  # logging.info('Seeding %d jobs per transtion bin', num)
+  settings = systemsettings()
+
+  dcdfreq = int(catalog.get('dcdfreq'))
+  runtime = int(catalog.get('runtime'))
+  sim_step_size = float(catalog.get('sim_step_size'))
+  force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
+  sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
+
+  global_params = getSimParameters(sim_init, 'deshaw')
+
+  jcID = 'de%d_%d' % (fileno, frame)
+
+  _, config = generateDEShawJC(0, 0, jcid=jcID)
+  config.update(global_params)
+
+  # Push to catalog
+  logging.info("New Simulation Job Created: %s", jcID)
+  for k, v in config.items():
+    logging.debug("   %s:  %s", k, str(v))
+  catalog.rpush('jcqueue', jcID)
+  catalog.hmset(wrapKey('jc', jcID), config)
+
 def resetAnalysis(catalog):
   """Removes all analysis data from the database
   """
@@ -559,7 +588,8 @@ if __name__ == '__main__':
     make_jobs(catalog, numresources)
 
   elif args.onejob:
-    seed_jobs(catalog, 1)
+    manual_de_job(catalog, 0, 0, 120000000)
+    # seed_jobs(catalog, 1)
 
   if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)

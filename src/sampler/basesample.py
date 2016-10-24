@@ -217,6 +217,7 @@ class LatticeSampler(SamplerBasic):
     SamplerBasic.__init__(self, "Lattice")
     self.lattice = lattice
     self.theta = .9
+    self.num_cluster = 8
 
   def execute(self, num):
     dlat = self.lattice.dlat
@@ -225,7 +226,10 @@ class LatticeSampler(SamplerBasic):
     D    = self.lattice.E[:, self.lattice.Kr]
 
     print('DEBUG: ', len(dlat), len(Ik), CM.shape, D.shape)
-    clusters, score, elmlist  = clusterlattice(dlat, CM, D, Ik, theta=self.theta)
+    clusters, score, elmlist  = clusterlattice(dlat, CM, D, Ik, theta=self.theta, num_k=self.num_cluster)
+
+    for elm in elmlist:
+      print(elm)
 
     samplecount = np.zeros(len(clusters), dtype=np.int16)
     pdf = score / np.sum(score)

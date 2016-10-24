@@ -6,7 +6,7 @@ from collections import namedtuple
 import logging
 import argparse
 import pytest
-import pyslurm
+# import pyslurm
 
 from datetime import datetime as dt
 import dateutil.parser as dtp
@@ -122,25 +122,25 @@ class slurm:
 
 
 
-  @classmethod
-  def getJob(cls, jobid):
-    job = pyslurm.job().get()[jobid]
-    p = {}
-    p['time']     = job['time_limit_str']
-    p['nodes']    = job['num_nodes']
-    p['cpus-per-task'] = job['cpus_per_task']
-    p['partition']= job['partition'].decode()
-    p['job-name'] = job['name'].decode()
-    p['workdir']  = job['work_dir'].decode()
-    return p
+  # @classmethod
+  # def getJob(cls, jobid):
+  #   job = pyslurm.job().get()[jobid]
+  #   p = {}
+  #   p['time']     = job['time_limit_str']
+  #   p['nodes']    = job['num_nodes']
+  #   p['cpus-per-task'] = job['cpus_per_task']
+  #   p['partition']= job['partition'].decode()
+  #   p['job-name'] = job['name'].decode()
+  #   p['workdir']  = job['work_dir'].decode()
+  #   return p
 
-  @classmethod
-  def time_left(cls, jobid):
-    """ Return Time left IN SECONDS
-    """
-    job = pyslurm.job().get()[jobid]
-    ts = dt.now().timestamp()
-    return (job['end_time'] - ts)
+  # @classmethod
+  # def time_left(cls, jobid):
+  #   """ Return Time left IN SECONDS
+  #   """
+  #   job = pyslurm.job().get()[jobid]
+  #   ts = dt.now().timestamp()
+  #   return (job['end_time'] - ts)
 
 
   @classmethod

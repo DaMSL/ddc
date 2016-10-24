@@ -3,6 +3,7 @@ import numpy as np
 import logging
 import math
 import redis
+import copy
 
 import itertools as itr
 
@@ -84,7 +85,7 @@ class Basin(object):
     self.traj = traj_id
 
   def kv(self):
-    d = self.__dict__
+    d = copy.copy(self.__dict__)
     if self.minima is not None:
       del d['minima']
     return d

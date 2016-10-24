@@ -343,9 +343,9 @@ class controlJob(macrothread):
           # Build Delta Lattice Object
           logging.info('Building Delta lattice. Num new items: %d', len(delta_ds))
 
-          # Multiple by 10 (convert nm to angstrom)
+          # Multiple by 10 (convert nm to angstrom) 
           delta_ds = 10 * np.array(delta_ds)
-          delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, support)
+          delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, 1)
           delta_lattice.maxminer()
           delta_lattice.derive_lattice()
 
