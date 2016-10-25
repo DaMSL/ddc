@@ -86,13 +86,26 @@ class simulationJob(macrothread):
     # self.slurmParams['time'] = '2:00:0'
 
     self.skip_simulation = False
+    self.skip_timescape = False
+    self.skip_notify = False
 
     self.parser.add_argument('-a', '--analysis', action='store_true')
     self.parser.add_argument('--useid')
+    self.parser.add_argument('--skiptimescape', action='store_true')
+    self.parser.add_argument('--skipnotify', action='store_true')
+
     args = self.parser.parse_args()
     if args.analysis:
       logging.info('SKIPPING SIMULATION')
       self.skip_simulation = True
+
+    if args.skiptimescape:
+      logging.info('SKIPPING TIMESCAPE')
+      self.skip_timescape = True
+
+    if args.skipnotify:
+      logging.info('SKIPPING DOWNSTREAM NOTIFY')
+      self.skip_notify = True
 
     if args.useid:
       self.job_id = args.useid
@@ -334,8 +347,10 @@ class simulationJob(macrothread):
     # TODO: VERTIFY this filter
     hfilt = self.protein.hfilt()
     pfilt = self.protein.pfilt()
+    afilt = self.protein.afilt()
     traj_prot = traj.atom_slice(pfilt)
     traj_heavy = traj.atom_slice(hfilt)
+    traj_alpha = traj.atom_slice(afilt)
 
     # Superpose Coordinates to Common Reference
     traj_prot.superpose(topo)
@@ -345,7 +360,9 @@ class simulationJob(macrothread):
     # The atom pairs and selected atoms are in the timescape module
     sc_pairs = side_chain_pairs(traj_prot)
     n_features = len(sc_pairs)
-    dist_space = DR.distance_space(traj_prot, pairs=sc_pairs)
+
+    # Use the CA atoms to calculate distance space
+    dist_space = DR.distance_space(traj_alpha)
 
     # lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
     # landmark  = md.load(lm_file)
@@ -363,45 +380,43 @@ class simulationJob(macrothread):
     # psi = np.array([LA.norm(a - psi_lm) for a in psi_angles])
 
     # Execute Timescapes agility program to detect spatial-temporal basins
-    # Get the frame rate to save from catalog:
+    output_prefix = os.path.join(job['workdir'], job['name'])
+    # Get the frame rate to for conversion between source and timescape
+    #  NOTE: Timescae is run at a more coarse level
     logging.debug('Preprocessing output for TimeScapes: terrain')
     traj_frame_per_ps = SIMULATE_RATIO * int(job['interval']) / 1000.   # jc interval is in fs
     ts_frame_per_ps = int(self.data['timescape:rate'])  # this value is in ps
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
-
     logging.debug('%5.2f fr/ps (Traj)     %5.2f fr/ps (TS)    FrameRate= %4.1f', traj_frame_per_ps, ts_frame_per_ps, frame_rate)
 
-    # FOR DEBUGGING
-    # logging.warning("DEBUGGING IS ON..... FRAME RATE MANUALLY SET TO 1")
-    # frame_rate = 1
+    if not self.skip_timescape:
+      # Prep file and save locally in shm
+      tmploc = gettempdir()
 
-    # Prep file and save locally in shm
-    tmploc = gettempdir()
+      ts_out = tmploc + 'traj_ts'
+      ts_dcd = ts_out + '.dcd'
+      ts_pdb = ts_out + '.pdb'
+      heavy = traj_heavy.slice(range(0, traj.n_frames, frame_rate))
+      heavy.slice(0).save_pdb(ts_pdb)
+      heavy.save_dcd(ts_dcd)
 
-    tmp_out = tmploc + 'traj_ts'
-    tmp_dcd = tmp_out + '.dcd'
-    tmp_pdb = tmp_out + '.pdb'
-    output_prefix = os.path.join(job['workdir'], job['name'])
-    heavy = traj_heavy.slice(range(0, traj.n_frames, frame_rate))
-    heavy.slice(0).save_pdb(tmp_pdb)
-    heavy.save_dcd(tmp_dcd)
+      # Gaussuan Full Width at Half-Max value affects sliding window size
+      # ref:  http://timescapes.biomachina.org/guide.pdf
+      gmd_cut1 = int(self.data['timescape:gmd:low'])
+      gmd_cut2 = int(self.data['timescape:gmd:hi'])
+      gauss_wght_delta = int(self.data['timescape:delta'])
 
-    # Gaussuan Full Width at Half-Max value affects sliding window size
-    # ref:  http://timescapes.biomachina.org/guide.pdf
-    gmd_cut1 = int(self.data['timescape:gmd:low'])
-    gmd_cut2 = int(self.data['timescape:gmd:hi'])
-    gauss_wght_delta = int(self.data['timescape:delta'])
+      # Execute timescapes' terrain.py on the pre-processed trajectory
+      cmd = 'terrain.py %s %s %d %d %d GMD %s' %\
+        (ts_pdb, ts_dcd, gmd_cut1, gmd_cut2, gauss_wght_delta, output_prefix)
+      logging.info('Running Timescapes:\n  %s', cmd)
+      stdout = executecmd(cmd)
+      logging.info('TimeScapes COMPLETE:\n%s', stdout)
 
-    # Execute timescapes' terrain.py on the pre-processed trajectory
-    cmd = 'terrain.py %s %s %d %d %d GMD %s' %\
-      (tmp_pdb, tmp_dcd, gmd_cut1, gmd_cut2, gauss_wght_delta, output_prefix)
-    logging.info('Running Timescapes:\n  %s', cmd)
-    stdout = executecmd(cmd)
-    logging.info('TimeScapes COMPLETE:\n%s', stdout)
 
     # Collect and parse Timescape output
     logging.debug('Parsing Timescapes output')
-    ts_parse = TimeScapeParser(tmp_pdb, output_prefix, job['name'], 
+    ts_parse = TimeScapeParser(job['pdb'], output_prefix, job['name'], 
       dcd=dcdFile, traj=traj, uniqueid=False)
     basin_list = ts_parse.load_basins(frame_ratio=frame_rate)
     corr_matrix = ts_parse.correlation_matrix()
@@ -511,7 +526,7 @@ class simulationJob(macrothread):
     bench.mark('catalog')
 
     # # COPY OUT TimeScapes Logs (to help debug):
-    # ts_logfiles = [f for f in os.listdir(tmp_out) if f.endswith('log')]
+    # ts_logfiles = [f for f in os.listdir(ts_out) if f.endswith('log')]
     # for f in ts_logfiles:
     #   shutil.copy(f, os.path.join(settings.jobdir, job['name']))
 
@@ -531,7 +546,7 @@ class simulationJob(macrothread):
 
     logging.info('SIM WORKER has detected %d other simulations running/pending.', len(job_queue))
     remain_percent = n_simjobs / self.data['numresources']
-    if remain_percent < .1:
+    if not self.skip_notify and remain_percent < .1:
       # Notify the control manager 'CM'
       # TODO: can abstract this with notify_downstream
       self.notify('ctl')
