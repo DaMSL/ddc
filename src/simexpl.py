@@ -437,14 +437,16 @@ class simulationJob(macrothread):
     downstream_list = []
 
     # FOR BOOTSTRAPPING USING RMSD
+    ref_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
     logging.info('Loading RMSD reference frame from %s', self.data['pdb:ref:0'])
-    refframe = md.load(self.data['pdb:ref:0'])
+    refframe = md.load(ref_file)
     ref_alpha = refframe.atom_slice(afilt)
     rmsd = 10*md.rmsd(traj_alpha, ref_alpha)
 
     # FOR RESIDUE RMSD
+    res_rms_Kr = FEATURE_SET
     resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in traj_alpha.xyz])
-    basin_res_rms = np.zeros(shape=len(basin_list, traj_alpha.n_atoms))
+    basin_res_rms = np.zeros(shape=(len(basin_list), traj_alpha.n_atoms))
 
     # Process each basin
     for i, basin in enumerate(basin_list):
@@ -484,8 +486,11 @@ class simulationJob(macrothread):
         basin_hash['start'], basin_hash['end'])
 
     # RMSD DELTA (RESIDUE)
-    basin_red_rms_delta = np.array([rms_delta(i) for i in basin_res_rms.T]).T
-    basin_rms_delta_bykey = {basin.bid: basin_red_rms_delta[i] for i, basin in enumerate(basin_list)}
+    basin_res_rms_delta = np.array([rms_delta(i) for i in basin_res_rms.T]).T
+    basin_rms_delta_bykey = {basin.id: basin_res_rms_delta[i] for i, basin in enumerate(basin_list)}
+    for k in basins.keys():
+      basins[k]['resrms_delta'] = np.sum(basin_rms_delta_bykey[k][res_rms_Kr])
+
 
     # TODO:  Use Min Index as snapshot, median (or mean) DistSpace vals for each basin?????
 
@@ -510,6 +515,7 @@ class simulationJob(macrothread):
           pipe.multi()
 
           pipe.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
+          pipe.set('resrms:' + job['name'], resrmsd)
 
           logging.debug('Updating %s basins', len(basins))
           for bid in sorted(basins.keys()):
@@ -522,10 +528,11 @@ class simulationJob(macrothread):
 
 
 
-            if setting.EXPERIMENT_NUMBER == 16:
-              pipe.set('basin:dmu:'+bid, pickle.dumps(basin_rms_delta_bykey))
+            if settings.EXPERIMENT_NUMBER == 16:
+              pipe.set('basin:dmu:'+bid, pickle.dumps(basin_rms_delta_bykey[bid]))
             else:
               pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
+              pipe.set('basin:rmsdelta:'+bid, pickle.dumps(basin_rms_delta_bykey[bid]))
 
             # pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
 

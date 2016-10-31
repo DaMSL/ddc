@@ -80,6 +80,7 @@ class controlJob(macrothread):
       self.addMut('dspace_mu')
       self.addMut('dspace_sigma')
       self.addMut('raritytheta')
+      self.addMut('sampler:explore')
 
       # self.addMut('lattice:max_fis')
       # self.addMut('lattice:low_fis')
@@ -323,8 +324,10 @@ class controlJob(macrothread):
           logging.info('Mering DEShaw with existing generated data')
 
           # Set parameters for lattice
-          Kr = FEATURE_SET
+          Kr = self.catalog.lrange('lattice:features', 0, -1)
           support = int(self.data['lattice:support'])
+          dspt = self.catalog.get('lattice:delta_support')
+          delta_support = 5 if dspt is None else int(dspt)
           cutoff  = float(self.data['lattice:cutoff'])
 
           # Load existing (base) lattice data
@@ -360,7 +363,7 @@ class controlJob(macrothread):
 
           if not self.force_decision:
             delta_ds = np.array(delta_ds)
-            delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, 1, invert=invert_vals)
+            delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, delta_support, invert=invert_vals)
             delta_lattice.maxminer()
             delta_lattice.derive_lattice()
 
@@ -450,11 +453,16 @@ class controlJob(macrothread):
 
         # DENOVO Exploratory Bootstrapping (RMSD)
         explore_factor = float(self.data['sampler:explore'])
+
+        # TODO:  Better transtion plan from explore to exploit
+        self.data['sampler:explore'] *= .75   
+
         if explore_factor > 0:
           basindata = [self.catalog.hgetall(bid) for bid in old_basin_ids]
           for bid in new_basin_list:
             basindata.append(self.data[key])          
-          basin_by_rmsd = sorted(basindata, key=lambda x: x['rmsd'], reverse=True)
+
+          basin_by_rmsd = sorted(basindata, key=lambda x: x['resrms_delta'], reverse=True)
           explore_samples = int(np.floor(numresources * explore_factor))
           for i in range(explore_samples):
             selected_basin_list.append(basin_by_rmsd[0])

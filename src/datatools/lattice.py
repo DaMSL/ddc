@@ -180,11 +180,6 @@ class Lattice(object):
 
       # Merge itemsets
       self.Ik[nkey] = np.concatenate((cur_iset, delta_iset))
-      # if max(self.Ik[nkey]) >= 90050:
-      #   logging.error('\nERROR on ISET Merge: ', 
-      #     max(delta_iset), nkey, type(cur_iset), type(delta_iset), max(cur_iset), max(delta_iset),
-      #     CM.shape, self.E.shape)
-      #   return
       progress.incr()      
 
     # 3. Merge event lists & update contact matrix
@@ -221,7 +216,10 @@ class Lattice(object):
         Ik_update[key] = self.Ik[key]
       for p in v:
         if p not in Ik_update:
-          Ik_update[p] = self.Ik[p]
+          if p in self.Ik:
+            Ik_update[p] = self.Ik[p]
+          else:
+            Ik_update[p] = self.Ik[p] = np.where(np.logical_and(CM[:,list(p)], True).all(1))[0]
 
     H = histograms(Ik_update, self.E[:,self.Kr], Lattice.nbins, Lattice.brange)
 

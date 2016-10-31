@@ -25,6 +25,7 @@ import datatools.datareduce as DR
 
 from mdtools.simtool import *
 from mdtools.structure import Protein
+from mdtools.trajectory import rms_delta
 import mdtools.deshaw as deshaw
 import bench.db as db
 
@@ -65,6 +66,19 @@ def bootstrap(catalog, num=4, build_new=False):
   fs = lat.reduced_feature_set(cm,.075); len(fs)
   dr, cr = ds[:,fs], cm[:,fs]
 
+  # FOR RESIDUE RMSD
+  ref_alpha = md.load(home+'/work/' + catalog.get('pdb:ref:0')).atom_slice(afilt)
+  res_rms_Kr = FEATURE_SET
+  traj_alpha = traj.atom_slice(afilt)
+  resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in traj_alpha.xyz])
+  basin_res_rms = np.zeros(shape=(len(ts_traj.basins), traj_alpha.n_atoms))
+  for i, (a,b) in enumerate(W):
+    basin_res_rms[i] = np.median(resrmsd[a:b], axis=0)
+  basin_res_rms_delta = np.array([rms_delta(i) for i in basin_res_rms.T]).T
+
+  # FOR SEED SAMPLING USING RMS_DELTA
+  rms_delta_list = []
+
   # Note: skip the first basin
   for i, basin in enumerate(ts_traj.basins[1:]):
     pipe = catalog.pipeline()
@@ -85,6 +99,13 @@ def bootstrap(catalog, num=4, build_new=False):
     pipe.set('basin:cm:'+bid, pickle.dumps(cm[i]))
     pipe.set('basin:dmu:'+bid, pickle.dumps(ds[i]))
     pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
+
+    # FOR RESIDUE RMSD
+    resrms_d = np.sum(basin_res_rms_delta[i][res_rms_Kr])
+    basin_hash['resrms_delta'] = resrms_d
+    rms_delta_list.append((i, resrms_d))
+    pipe.set('basin:rmsdelta:'+bid, pickle.dumps(basin_res_rms_delta[i]))
+
     pipe.execute()
 
 
@@ -119,12 +140,16 @@ def bootstrap(catalog, num=4, build_new=False):
   # lattice.set_dlat(dlat, Ik)
   # sampler = LatticeSampler(lattice)
 
-  # Sample
+  # Sample -- FOR USING LATTICE TO BOOTSTRAP
   cl,sc,el = lat.clusterlattice(dlat, cr, dr, ik, num_k=8)
   cl_list = sorted(el, key=lambda x: len(x))
 
   # TODO: Check if fan out > single item clusters
-  start_indices = [clu[0][0] for clu in cl_list[:num]]
+  # start_indices = [clu[0][0] for clu in cl_list[:num]]
+
+  rms_delta_ranked = [x[0] for x in sorted(rms_delta_list, key=lambda i: i[1], reverse=True)]
+  start_indices = rms_delta_ranked[:num]
+
   seedlist = [catalog.lindex('basin:list', i) for i in start_indices]
   sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
   global_params = getSimParameters(sim_init, 'seed')
