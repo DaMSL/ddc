@@ -177,6 +177,32 @@ def load_historical_DEShaw(catalog):
         pipe.rpush('dspace', pickle.dumps(elm))
       pipe.execute()
 
+  if settings.EXPERIMENT_NUMBER == 16:
+
+    if not os.path.exists(settings.datadir + '/iset.p'):
+      os.symlink(settings.workdir + '/tran_iset.p', settings.datadir + '/iset.p')
+    if not os.path.exists(settings.datadir + '/resrms.npy'):
+      os.symlink(settings.workdir + '/data/resrms.npy', settings.datadir + '/resrms.npy')
+
+    dlat    = open(os.path.join(settings.workdir, 'tran_dlat.p'), 'rb').read()
+    max_fis = open(os.path.join(settings.workdir, 'tran_mfis.p'), 'rb').read()
+    low_fis = open(os.path.join(settings.workdir, 'tran_lowfis.p'), 'rb').read()
+
+    logging.info('Loading max, low FIS and derived lattice')
+    with catalog.pipeline() as pipe:
+      pipe.set('lattice:max_fis', max_fis)
+      pipe.set('lattice:low_fis', low_fis)
+      pipe.set('lattice:dlat', dlat)
+      pipe.execute()
+
+    logging.info('Loading raw distance from file')
+    de_ds = np.load(settings.datadir + '/resrms.npy')
+    logging.info('Loading raw distance space into catalog')
+    with catalog.pipeline() as pipe:
+      for elm in de_ds:
+        pipe.rpush('dspace', pickle.dumps(elm))   # NOTE DS is RESID_RMSD
+      pipe.execute()
+
   logging.info('DEShaw data loaded. ALL Done!')
   # FOR CREATING CM/MU/SIGMA vals for first time
   # C_T = np.zeros
@@ -395,7 +421,7 @@ def make_jobs(catalog, num=1):
     for i in seedlist:
       logging.info("Select index: %s", i)
 
-  elif settings.EXPERIMENT_NUMBER == 14:
+  elif settings.EXPERIMENT_NUMBER in [14, 16]:
     global_params = getSimParameters(sim_init, 'deshaw')
     logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
 
@@ -405,7 +431,8 @@ def make_jobs(catalog, num=1):
     logging.info('Loading raw distance space from catalog')
     de_ds_raw = catalog.lrange('dspace', 0, -1)
     logging.info("Unpickling distance space")
-    de_ds = np.zeros(shape=(len(de_ds_raw), 1653))
+    n_feat = 1653 if settings.EXPERIMENT_NUMBER == 14 else 58
+    de_ds = np.zeros(shape=(len(de_ds_raw), n_feat))
     for i, elm in enumerate(de_ds_raw):
       de_ds[i] = pickle.loads(elm)
     print('DS  : ', de_ds.shape, de_ds[0])
@@ -413,8 +440,9 @@ def make_jobs(catalog, num=1):
     # de_cm = np.load(settings.datadir + '/de_corr_matrix.npy')
 
     Kr = FEATURE_SET
-    support = 900
-    cutoff  = 8
+    support = 900 if settings.EXPERIMENT_NUMBER == 14 else 100
+    cutoff  = 8 if settings.EXPERIMENT_NUMBER == 14 else .5
+    invert = (settings.EXPERIMENT_NUMBER == 16)
 
     logging.info('Loading DEShw Pre-Constructed Lattice Data')
     dlat    = pickle.loads(catalog.get('lattice:dlat'))
@@ -427,11 +455,14 @@ def make_jobs(catalog, num=1):
     print('Ik  : ', len(Ik))
 
     logging.info('Building Existing lattice object')
-    lattice=lat.Lattice(de_ds, Kr, cutoff, support)
+    lattice=lat.Lattice(de_ds, Kr, cutoff, support, invert=invert)
     lattice.set_fis(max_fis, low_fis)
     lattice.set_dlat(dlat, Ik)
 
-    sampler = LatticeSampler(lattice)
+    if settings.EXPERIMENT_NUMBER == 14:
+      sampler = LatticeSampler(lattice)
+    else:
+      sampler = LatticeExplorerSampler(lattice)
 
     start_indices = sampler.execute(num)
     seedlist = [catalog.lindex('basin:list', i) for i in start_indices]

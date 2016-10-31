@@ -417,7 +417,10 @@ def lines(series, xscale=None, showlegend=True, **kwargs): #title, xlim=None, la
     # print(labels)
     xmin, xmax = xscale
     dx = (xmax-xmin) / len(labels)
-    ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
+    if isinstance(xmin, int):
+      ax.set_xticklabels(['%d'%int(xmin+(i*dx)) for i,tick in enumerate(labels)])
+    else:
+      ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
   if showlegend:
     plt.legend(loc='upper left')
   graph_args(kwargs)
@@ -1057,9 +1060,9 @@ def show_dlattice(L, Isize, U={}, theta=.05, clusters=[], **kwargs):
         if set(child) < set(fs) and fs in L[child]:
           if L[child][fs] > 1:
             continue
-          if L[child][fs] > .9:
+          if L[child][fs] < .1:
             linecol = 'royalblue'
-          elif L[child][fs] > .5:
+          elif L[child][fs] < .5:
             linecol = 'lightblue'
           else:
             linecol = 'lightcyan'

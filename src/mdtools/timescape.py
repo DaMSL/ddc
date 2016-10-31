@@ -178,6 +178,24 @@ class TimeScape:
           event_list.append(('break', step, r1, r2))
     return event_list
 
+  @classmethod
+  def act_matrix(cls, fname, nresid=58, nframes=100000):
+    evlist = TimeScape.event_list(fname)
+    W = TimeScape.windows(fname.replace("events", "transitions"))
+    W.append((W[-1][1], nframes))
+    index = list(itr.chain(*[[i]*(b-a) for i, (a,b) in enumerate(W)]))
+    pairs = list(itr.combinations(np.arange(nresid),2))
+    pair_index = {pr: i for i, pr in enumerate(pairs)}
+    tmap = np.zeros(shape=(len(W), len(pairs)))
+    for ev, step, r1, r2 in evlist:
+      if ev == 'init':
+        continue
+      feature = pair_index[(min(r1, r2), max(r1, r2))]
+      try:
+        tmap[index[step]][feature]=1
+      except IndexError as err:
+        print(tmap.shape, step, index[step], feature)
+    return tmap
 
     # def basin_contact_map(cls, prefix, natoms, nframes):
     #   trans = TimeScape.read_log(prefix+'_transitions.log')

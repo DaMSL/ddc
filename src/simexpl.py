@@ -41,6 +41,7 @@ from bench.stats import StatCollector
 
 from mdtools.timescape import TimeScapeParser, side_chain_pairs
 from mdtools.structure import Protein
+from mdtools.trajectory import rms_delta
 
 __author__ = "Benjamin Ring"
 __copyright__ = "Copyright 2016, Data Driven Control"
@@ -362,7 +363,8 @@ class simulationJob(macrothread):
     n_features = len(sc_pairs)
 
     # Use the CA atoms to calculate distance space
-    dist_space = DR.distance_space(traj_alpha)
+    # NOTE THE CONVERSION FROM NM TO ANG!!!!!!
+    dist_space = 10 * DR.distance_space(traj_alpha)
 
     # lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
     # landmark  = md.load(lm_file)
@@ -429,9 +431,20 @@ class simulationJob(macrothread):
     new_corr_vect={}
     new_dmu={}
     new_dsig={}
+    resid_rms_delta = {}
 
     stat.collect('num_basin', n_basins)
     downstream_list = []
+
+    # FOR BOOTSTRAPPING USING RMSD
+    logging.info('Loading RMSD reference frame from %s', self.data['pdb:ref:0'])
+    refframe = md.load(self.data['pdb:ref:0'])
+    ref_alpha = refframe.atom_slice(afilt)
+    rmsd = 10*md.rmsd(traj_alpha, ref_alpha)
+
+    # FOR RESIDUE RMSD
+    resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in traj_alpha.xyz])
+    basin_res_rms = np.zeros(shape=len(basin_list, traj_alpha.n_atoms))
 
     # Process each basin
     for i, basin in enumerate(basin_list):
@@ -454,6 +467,10 @@ class simulationJob(macrothread):
       # Collect Basin metadata
       basin_hash = basin.kv()
       basin_hash['pdbfile'] = jc_filename
+      basin_hash['rmsd'] = np.median(rmsd[a:b])
+      basin_res_rms[i] = np.median(resrmsd[a:b], axis=0)
+
+      # FOR EXP #16 -- Residue RMSD
 
       # Set relative time (in ns)
       # basin_hash['time'] = reltime_start + (a * frame_rate) / 1000
@@ -465,6 +482,10 @@ class simulationJob(macrothread):
 
       logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
         basin_hash['start'], basin_hash['end'])
+
+    # RMSD DELTA (RESIDUE)
+    basin_red_rms_delta = np.array([rms_delta(i) for i in basin_res_rms.T]).T
+    basin_rms_delta_bykey = {basin.bid: basin_red_rms_delta[i] for i, basin in enumerate(basin_list)}
 
     # TODO:  Use Min Index as snapshot, median (or mean) DistSpace vals for each basin?????
 
@@ -498,7 +519,14 @@ class simulationJob(macrothread):
             pipe.set('minima:%s'%bid, pickle.dumps(minima_coords[bid]))
 
             pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
-            pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
+
+
+
+            if setting.EXPERIMENT_NUMBER == 16:
+              pipe.set('basin:dmu:'+bid, pickle.dumps(basin_rms_delta_bykey))
+            else:
+              pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
+
             # pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
 
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)

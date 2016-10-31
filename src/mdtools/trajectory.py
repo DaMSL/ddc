@@ -3,6 +3,16 @@ import numpy.linalg as LA
 import mdtraj as md
   
 
+
+def rms_delta(X):
+  A = [0]
+  for i in range(1, len(X)-1):
+    A.append(np.abs(X[i+1] - X[i-1]))
+  A.append(0)
+  return np.array(A)
+
+  
+
 class SemiConform(object):
   glid = 0
   def __init__(self, traj, ref):

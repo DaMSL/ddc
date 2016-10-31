@@ -5,6 +5,9 @@ import os
 import time
 import logging
 import numpy as np
+import numpy.linalg as LA
+import itertools as it
+import string
 
 from core.slurm import systemsettings
 
@@ -218,6 +221,7 @@ class LatticeSampler(SamplerBasic):
     self.lattice = lattice
     self.theta = .9
     self.num_cluster = 8
+    self.explore = True
 
   def execute(self, num):
     dlat = self.lattice.dlat
@@ -235,9 +239,77 @@ class LatticeSampler(SamplerBasic):
     pdf = score / np.sum(score)
     candidates = []
     for i in range(num):
-      cluster_index = int(np.random.choice(len(pdf), p=pdf))
+      while True:
+        cluster_index = int(np.random.choice(len(pdf), p=pdf))
+        if samplecount[cluster_index] < len(elmlist[cluster_index]):
+          break
       elm, dist = elmlist[cluster_index][samplecount[cluster_index]]
       samplecount[cluster_index] += 1
       candidates.append(elm)
-
     return candidates
+
+ascii_greek = ''.join([chr(i) for i in it.chain(range(915,930), range(931, 938), range(945, 969))])
+k_domain = label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
+tok   = lambda x: ''.join(sorted([k_domain[i] for i in x]))
+toidx = lambda x: [ord(i)-97 for i in x]
+fromm = lambda x: ''.join(sorted([k_domain[i] for i,m in enumerate(x) if m == 1]))
+
+
+
+class LatticeExplorerSampler(SamplerBasic):
+  """ Lattice Sampler uses the derived lattice data to cluster nodes
+  and subsequently drive a scoring function for sampling """
+
+  def __init__(self, lattice):
+    SamplerBasic.__init__(self, "Lattice")
+    self.lattice = lattice
+    self.theta = .9
+    self.num_cluster = 25
+
+  def execute(self, num):
+    dlat = self.lattice.dlat
+    Ik   = self.lattice.Ik
+    CM   = self.lattice._CM()
+    D    = self.lattice.E[:, self.lattice.Kr]
+
+    print('DEBUG: ', len(dlat), len(Ik), CM.shape, D.shape)
+    cuboids, score, elmlist  = clusterlattice(dlat, CM, D, Ik, theta=self.theta, num_k=self.num_cluster)
+
+    keylist = list(cuboids.keys())
+    candlist = [cuboids[k] for k in keylist]
+
+    clu_var = {}
+    for k,v in cuboids.items():
+      try:
+        ew, ev = LA.eigh(np.cov(D[sorted(v)].T))
+        clu_var[k] = 10*np.sum(ew)
+      except LA.LinAlgError:
+        clu_var[k] = 0
+
+    clu_size = [len(v) for v in candlist]
+    clu_cent = [np.mean(D[list(v)], axis=0) for v in candlist]
+    # clu_elsc = [sorted({i:LA.norm(D[i]-clu_cent[k]) for i in v}.items(), key=lambda x: x[1]) for v in candlist]
+    clu_totD = [np.sum(D[list(v)])/len(v) for v in candlist]
+    clu_basc = [sorted({i:D[i][toidx(keylist[n])].sum() for i in v}.items(), key=lambda x: x[1], reverse=True) for n, v in enumerate(candlist)]
+    # if print_c:
+    #   for i, k in enumerate([x[0] for x in sorted(clu_totD.items(), key=lambda p: p[1], reverse=True)]):
+    #     expt, explr = clu_basc[k][0][0], clu_elsc[k][-1][0]
+    #     print('%3d. %4d  %4.2f  %6.2f - %5d (%s)  vs  %5d (%s)' % (i, clu_size[k], clu_var[k], clu_totD[k], expt, rlab(expt), explr, rlab(explr)))
+
+    samplecount = np.zeros(len(cuboids), dtype=np.int16)
+    score = clu_totD
+    pdf = score / np.sum(score)
+    candidates = []
+    for i in range(num):
+      while True:
+        cluster_index = int(np.random.choice(len(pdf), p=pdf))
+        if samplecount[cluster_index] < len(candlist[cluster_index]):
+          break
+      # elm = candlist[cluster_index][samplecount[cluster_index]]
+      elm, _ = clu_basc[cluster_index][samplecount[cluster_index]]
+      samplecount[cluster_index] += 1
+      candidates.append(elm)
+    return candidates
+
+
+

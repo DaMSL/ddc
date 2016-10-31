@@ -67,11 +67,12 @@ class Lattice(object):
   nbins    = 20
   brange = (4, 8)
 
-  def __init__(self, event, feature_set, cutoff=7, support=50):
+  def __init__(self, event, feature_set, cutoff=7, support=50, invert=False):
     self.E = event
     self.Kr = feature_set
     self.support = support
     self.cutoff = cutoff
+    self.invert = invert
 
   def set_dlat(self, dlat, Ik):  
     self.dlat = dlat
@@ -83,7 +84,10 @@ class Lattice(object):
 
   def _CM(self):
     try:
-      return (self.E[:,self.Kr] < self.cutoff)
+      if self.invert:
+        return (self.E[:,self.Kr] > self.cutoff)
+      else:        
+        return (self.E[:,self.Kr] < self.cutoff)
     except IndexError as err:
       print('KR: ', self.Kr, type(self.Kr))
       print('E : ', self.E.shape)
@@ -397,7 +401,7 @@ def reduced_feature_set(A, theta=.02):
   return sorted(set(first_order) - pair_wise) 
 
 
-def reduced_feature_set2(D, cutoff=7, theta=.05, maxk=25):
+def reduced_feature_set2(D, cutoff=7, theta=.05, maxk=25, invert=False):
   '''Reduces te feature set (columns) by eliminating all "trivial" features.
   Accepts a 1-0 Contact Matrix and identifies all columns whose values are
   (1-theta)-percent 1 or 0. Theta represents a noise threshold. E.g. if theta
@@ -408,7 +412,10 @@ def reduced_feature_set2(D, cutoff=7, theta=.05, maxk=25):
   T = theta*N
   low_cut, hi_cut = T,  N - 2*T
 
-  A = (D < cutoff).astype(int)
+  if invert:  
+    A = (D > cutoff).astype(int)
+  else:     
+    A = (D < cutoff).astype(int)
   
   ranged = D.max(0) - D.min(0)
   low_range = np.where(ranged < 3)[0]  # MIN 3 Angstrom separation
@@ -442,10 +449,10 @@ def reduced_feature_set2(D, cutoff=7, theta=.05, maxk=25):
 
   count = A[:,kr].sum(0)
   frequency = [kr[i] for i in np.argsort(count)]
-  rlow, rhigh = [np.sum(A[:,i]) for i in [frequency[0], frequency[maxk]]]
-  print('Return %d   (%d - %d)' % (maxk, rlow, rhigh))
+  # rlow, rhigh = [np.sum(A[:,i]) for i in [frequency[0], frequency[maxk-1]]]
+  # print('Return %d   (%d - %d)' % (maxk, rlow, rhigh))
 
-  return frequency[:maxk]
+  return sorted(frequency[:maxk])
 
 ## FIND item sets from node keys
 def get_itemsets(nodelist):
@@ -641,7 +648,7 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
   logging.info('\nLattice Nodes:  %d', len(nodelist))
 
   # Materialize itemsets (For now, assume they all need materialization for EMD calc)
-  logging.info('Selecting events (basin) for each itemset node')
+  logging.info('Materializing itemsets')
   Ik = {}
   progress = ProgressBar(len(nodelist))
   for node in nodelist:
@@ -665,7 +672,7 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
   H = histograms(Ik, D, nbins, brange)
   logging.info('\nHistograms pre-processed.  %5.1f sec' % (dt.now()-t0).total_seconds())
 
-  logging.info('Calculating Derived Lattice:')
+  logging.info('Applying Approx EMD Op on all nodes:')
   progress = ProgressBar(len(dlat))
 
   # Remove null set
@@ -677,7 +684,6 @@ def derived_lattice(F, D, CM, nbins=20, brange=(4,8)):
 
     #  Calculated distribution delta along every edge
     for parent in parentlist.keys():
-      flow = np.zeros(len(node))
 
       # Calculate bin-by-bin difference
       delta = H[node] - H[parent][[parent.find(i) for i in node]]
@@ -1005,6 +1011,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
 
 
   logging.info('CLUSTERING the derived Lattice - UPDATED!')
+  logging.debug('CM Shape: %s  %d', CM.shape, CM.sum())
 
   # 1. Collapse the Lattice to top nodes
   # gs, ga = topdown_group_single(dlat, theta)
@@ -1030,7 +1037,7 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
     else:
     # Add all off-by-n 
       added = False
-      for level in range(1, 3):
+      for level in range(1, min(5, len(k)-1)):
         immed_lower = [''.join(sorted(i)) for i in it.combinations(k, len(k)-level)]
         for n in immed_lower:
           if n in ga:
@@ -1088,9 +1095,6 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
   #       nogrp.append(i)
 
 
-
-  maxsize = max([len(v) for v in clusters.values()])
-  minsize = min([len(v) for v in clusters.values() if len(v) > 0])
 
   logging.info("  TOTAL # Clusters   :   %d", len(clusters))
 
@@ -1167,12 +1171,12 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
     k_attr, k_donor = keylist[m_attr], keylist[m_donor]
     ext_score = np.abs(minval - gmean) / gvar
 
-    if DO_SIGMA:
-      logging.info ('%4d. '%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  / TotV %4.2f  MeanV %4.2f (%4.2f) MaxV %4.2f /  %4.2f v %4.2f ' \
-        % (gmean, gvar, minval, sum_sig/K, mean_sig, var_sig, max_sig, int_score,  ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
-    else:
-      logging.info ('%4d. '%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  /  %4.2f ' \
-        % (gmean, gvar, minval, ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
+    # if DO_SIGMA:
+    #   logging.info ('%4d. '%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  / TotV %4.2f  MeanV %4.2f (%4.2f) MaxV %4.2f /  %4.2f v %4.2f ' \
+    #     % (gmean, gvar, minval, sum_sig/K, mean_sig, var_sig, max_sig, int_score,  ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
+    # else:
+    #   logging.info ('%4d. '%inum + 'Gmean %4.2f (%4.2f) MinG %4.2f  /  %4.2f ' \
+    #     % (gmean, gvar, minval, ext_score) + ' {%2d-%4d}' % (minsize, maxsize))
 
       # Find node attactor (larger) & donor (smaller)
 
@@ -1215,8 +1219,6 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
         ew, ev = LA.eigh(cov)
         variance[k] = np.sum(ew)
 
-    maxsize = max([len(v) for v in clusters.values()])
-    minsize = min([len(v) for v in clusters.values() if len(v) > 0])
 
     # progress.incr()
     inum += 1
@@ -1328,6 +1330,75 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
   return clusters, clusterscore, elmscore
 
 
+def rollup_lattice(dlat, CM, theta=.9):
+  ''' Roll up lattice and assign events to nodes (if feasible) '''
+  N, K = CM.shape
+  logging.info('Rolling up Lattice into Cuboids')
+
+  # 1. Collapse the Lattice to top nodes
+  gs, ga = botup_collapse(dlat, theta)
+
+  logging.info("  TOTAL # of Itemset-Groups   :   %d", len(gs))
+  grp, nogrp = {}, []
+
+  # 2. For each row in input matrix: assign to a cluster
+  cuboids = defaultdict(list)
+
+
+  ### OPTION A:  Map to corr feature set (for unique key)
+  # 3.  For each item: map to a group:   <map>
+  progress = ProgressBar(N)
+  for i in range(N):
+    k = fromm(CM[i])
+    if k in ga:
+      #  Set its group 
+      grp[i] = ga[k]
+      cuboids[ga[k]].append(i)
+    else:
+    # Add all off-by-n 
+      added = False
+      for level in range(1, len(k)-1):
+        immed_lower = [''.join(sorted(i)) for i in it.combinations(k, len(k)-level)]
+        for n in immed_lower:
+          if n in ga:
+            cuboids[ga[n]].append(i) 
+            added = True
+        if added:
+          break
+
+    #   # Keep track of unassigned nodes (TODO: is this just noise?)
+      if not added:
+        nogrp.append(i)
+    progress.incr()
+
+  logging.info("  Lattice COllapsed   :   %d", len(cuboids))
+  return cuboids
+
+def score_cuboids(D, CM, cuboids, print_res=True):
+  avgD = {k: np.mean(D[list(v)][:,toidx(k)]) for k,v in cuboids.items()}
+  totD = {k: np.sum(D[list(v)][:,toidx(k)]) for k,v in cuboids.items()}
+  size = {k: len(v) for k,v in cuboids.items()}
+  cent = {k: np.mean(D[list(v)], axis=0) for k,v in cuboids.items()}
+  elsc = {k: sorted({i:LA.norm(D[i]-cent[k]) for i in v}.items(), key=lambda x: x[1]) for k,v in cuboids.items()}
+  basc = {k: sorted({i:D[i][toidx(k)].mean() for i in v}.items(), key=lambda x: x[1]) for k,v in cuboids.items()}
+
+  if print_res:
+    for i, k in enumerate([ck[c] for c in [0, 1, 11, 3, 6, 17, 13, 2]]):
+      for n in range(5):
+        expt, explr = clu_elsc[k][n][0], clu_elsc[k][-n][0]
+        print('%3d. %4d  %4.2f  %6.2f - %5d (%s)  vs  %5d (%s)' % (i, clu_size[k], clu_var[k], clu_totD[k], expt, blab(expt-20, expt+60), explr, blab(explr-20, explr+60)))
+
+
+
+def sublattice(L, key):
+  apex = set(key)
+  sublat_keys = [k for k in L.keys() if set(k) <= apex]
+  sublat = {}
+  for fs in sublat_keys:
+    node = {k: v for k,v in L[fs].items() if set(k) <= apex}
+    sublat[fs] = node
+  sublat[key] = {}
+  return sublat
 
 
 
@@ -2059,16 +2130,6 @@ def dlat_by_depth(dlat):
     ca = [i for i in dlat.keys() if len(i) == k]
     L.append({key: dlat[key] for key in sorted(ca)})
   return L
-
-def sublattice(L, key):
-  apex = set(key)
-  sublat_keys = [k for k in L.keys() if set(k) <= apex]
-  sublat = {}
-  for fs in sublat_keys:
-    node = {k: v for k,v in L[fs].items() if set(k) <= apex}
-    sublat[fs] = node
-  sublat[key] = {}
-  return sublat
 
 def enumpaths(a, b, dlat):
   if len(a) + 1 == len(b):

@@ -24,8 +24,8 @@ logging.basicConfig(format='%(module)s> %(message)s', level=logging.DEBUG)
 
 
 # Hard Coded Feature Set (pre-calculated for now)
-FEATURE_SET = [2, 52, 56, 60, 116, 258, 311, 460, 505, 507, 547, 595, 640, 642, 665, 683, 728, 767, 851, 1244, 1485, 1629, 1636]
-
+# FEATURE_SET = [2, 52, 56, 60, 116, 258, 311, 460, 505, 507, 547, 595, 640, 642, 665, 683, 728, 767, 851, 1244, 1485, 1629, 1636]
+FEATURE_SET = [3, 4, 9, 18, 19, 20, 21, 22, 23, 30, 31, 32, 33, 34, 35, 40, 41, 42, 43, 44, 45, 46, 47, 49, 50]
 
 def executecmd(cmd):
   """ Execute single shell command. Block on output and return STDOUT """
