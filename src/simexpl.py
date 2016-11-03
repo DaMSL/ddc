@@ -346,9 +346,10 @@ class simulationJob(macrothread):
       #  Store Data
 
     # TODO: VERTIFY this filter
-    hfilt = self.protein.hfilt()
-    pfilt = self.protein.pfilt()
-    afilt = self.protein.afilt()
+    pdb = md.load(job['pdb'])
+    hfilt = pdb.top.select_atom_indices('heavy')
+    pfilt = pdb.top.select('protein')
+    afilt = pdb.top.select_atom_indices('alpha')
     traj_prot = traj.atom_slice(pfilt)
     traj_heavy = traj.atom_slice(hfilt)
     traj_alpha = traj.atom_slice(afilt)
@@ -440,13 +441,18 @@ class simulationJob(macrothread):
     ref_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
     logging.info('Loading RMSD reference frame from %s', self.data['pdb:ref:0'])
     refframe = md.load(ref_file)
-    ref_alpha = refframe.atom_slice(afilt)
+    ref_alpha = refframe.atom_slice(refframe.top.select_atom_indices('alpha'))
     rmsd = 10*md.rmsd(traj_alpha, ref_alpha)
 
     # FOR RESIDUE RMSD
     res_rms_Kr = FEATURE_SET
     resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in traj_alpha.xyz])
     basin_res_rms = np.zeros(shape=(len(basin_list), traj_alpha.n_atoms))
+
+    if settings.EXPERIMENT_NUMBER == 17:
+      # GRAD CENROIDS -- todo move to immut
+      centroid = pickle.loads(self.catalog.get('centroid:ds'))
+      basin_label_list = {}
 
     # Process each basin
     for i, basin in enumerate(basin_list):
@@ -477,6 +483,14 @@ class simulationJob(macrothread):
       # Set relative time (in ns)
       # basin_hash['time'] = reltime_start + (a * frame_rate) / 1000
       basins[bid] = basin_hash
+
+      # LABEL ATEMPORAL DATA
+      if settings.EXPERIMENT_NUMBER == 17:
+        # Take every 4th frame
+        stride = [dist_space[i] for i in range(a,b,4)]
+        rms = [LA.norm(centroid - i, axis=1) for i in stride]
+        label_seq = [np.argmin(i) for i in rms]
+        basin_label_list[bid] = label_seq
 
       # new_[i] =  = pickle.dumps(corr_vector)
       # new_[i] =         = pickle.dumps(dspace_mean)
@@ -518,7 +532,7 @@ class simulationJob(macrothread):
           pipe.set('resrms:' + job['name'], resrmsd)
 
           logging.debug('Updating %s basins', len(basins))
-          for bid in sorted(basins.keys()):
+          for bid in sorted(basins.keys(), key=lambda x: (x.split('_')[0], int(x.split('_')[1]))):
             pipe.rpush('basin:list', bid)
             # pipe.hset('basin:rms', bid, basin_rms[bid])
             pipe.hmset('basin:'+bid, basins[bid])
@@ -533,6 +547,10 @@ class simulationJob(macrothread):
             else:
               pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
               pipe.set('basin:rmsdelta:'+bid, pickle.dumps(basin_rms_delta_bykey[bid]))
+
+            if settings.EXPERIMENT_NUMBER == 17:
+              for i in basin_label_list[bid]:
+                pipe.rpush('basin:labelseq:'+bid, i)
 
             # pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
 

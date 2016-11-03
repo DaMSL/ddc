@@ -28,7 +28,7 @@ ecolors = {'Serial': 'darkorange',
            'Reweight': 'red'}
 
 arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim']
-
+axis_list = ['xscale', 'yscale']
 st_col = ['red', 'blue', 'green', 'purple', 'black']
 
 def prep_graph():
@@ -56,6 +56,28 @@ def graph_args(kwargs):
   plt.savefig(SAVELOC + '/' + fname + '.png')
   plt.close()
 
+def graph_axis(ax, kwargs):
+  arg = {k: kwargs.get(k, None) for k in axis_list}
+  if arg['xscale'] is not None:
+    xscale = arg['xscale']
+    labels = [item.get_text() for item in ax.get_xticklabels(which='both')]
+    # print(labels)
+    xmin, xmax = xscale
+    dx = (xmax-xmin) / len(labels)
+    if isinstance(xmin, int):
+      ax.set_xticklabels(['%d'%int(xmin+(i*dx)) for i,tick in enumerate(labels)])
+    else:
+      ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
+  if arg['yscale'] is not None:
+    yscale = arg['yscale']
+    labels = [item.get_text() for item in ax.get_yticklabels(which='both')]
+    # print(labels)
+    xmin, xmax = yscale
+    dx = (xmax-xmin) / len(labels)
+    if isinstance(xmin, int):
+      ax.set_yticklabels(['%d'%int(xmin+(i*dx)) for i,tick in enumerate(labels)])
+    else:
+      ax.set_yticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
 
 
 
@@ -396,7 +418,7 @@ def seriesLines(X, series, title, xlabel=None):
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-def lines(series, xscale=None, showlegend=True, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
+def lines(series, xseries=None, showlegend=True, dolog=False, yticks = None, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
   if isinstance(series, list):
     seriesList = series
     # if labelList is None:
@@ -410,19 +432,21 @@ def lines(series, xscale=None, showlegend=True, **kwargs): #title, xlim=None, la
   colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
   plt.clf()
   ax = plt.subplot(111)
-  for X, C, L in zip(seriesList, colorList, labelList):
-    plt.plot(np.arange(len(X)), X, color=C, label=L)
-  if xscale is not None:
-    labels = [item.get_text() for item in ax.get_xticklabels(which='both')]
-    # print(labels)
-    xmin, xmax = xscale
-    dx = (xmax-xmin) / len(labels)
-    if isinstance(xmin, int):
-      ax.set_xticklabels(['%d'%int(xmin+(i*dx)) for i,tick in enumerate(labels)])
-    else:
-      ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
+  if xseries is None:
+    for X, C, L in zip(seriesList, colorList, labelList):
+      plt.plot(np.arange(len(X)), X, color=C, label=L)
+  else:
+    xseriesList = [xseries[k] for k in labelList]
+    for X, Y, C, L in zip(xseriesList, seriesList, colorList, labelList):
+      plt.plot(X, Y, color=C, label=L)
+  if dolog:
+    ax.set_yscale('log')
+  if yticks is not None:
+      print('setting yticks: ', yticks)
+      ax.set_yticklabels(yticks)
   if showlegend:
     plt.legend(loc='upper left')
+  graph_axis(ax, kwargs)
   graph_args(kwargs)
 
 

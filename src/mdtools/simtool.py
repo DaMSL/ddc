@@ -219,8 +219,7 @@ def generateDEShawJC(fileno, frame, jcid=None):
     logging.info("  Running PSFGen to set up simulation pdf/pdb files.")
     stdout = executecmd(DE.psfgen(newsimJob))
     logging.debug("  PSFGen COMPLETE!!")
-    logging.debug(stdout)
-    logging.debug(" ------------ ")
+    # logging.debug(stdout)
 
     # 5. Update PDB file with unitcell data and temperature control factors
     logging.info('Updating Unit Cell data and setting contraints in PDB')

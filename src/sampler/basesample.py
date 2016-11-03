@@ -55,6 +55,52 @@ class UniformSampler(SamplerBasic):
     return candidates  
 
 
+ 
+class BiasSampler(SamplerBasic):
+  """ Biased Sampler sampler takes a list of object and values and performs 
+  a biased sampling strategy
+  """
+  #  TODO:  Ensure catalog and cache run on separate servers
+  def __init__(self, distro):
+    SamplerBasic.__init__(self, "Biased")
+    self.distribution = distro
+
+  def umbrella_pdf(self, vals):
+    max_val = max(vals) * (1/len(vals))
+    wght = np.array([max(0, (max_val - i)) if i > 0 else 0 for i in vals])
+    return wght / np.sum(wght)
+
+  def execute(self, num):
+    n_bins = len(self.distribution)
+    logging.info('BIASED SAMPLER (Umbrella):  sampling called for %d  items', num)
+    pdf = self.umbrella_pdf(self.distribution)
+    logging.info('USING Followng Distrbution:\n %s', str(pdf))
+    need_replace = (n_bins < num)
+    candidates = np.random.choice(np.arange(n_bins), size=num, \
+      replace=need_replace, p=pdf)
+
+    # Check to ensure we don't oversample
+    sample_count = np.bincount(candidates, minlength = n_bins)
+    adjusted_distro = [i for i in self.distribution]  #copy
+    remove_list = []
+    for i, num in enumerate(sample_count):
+      adjusted_distro[num] -= 1
+      if sample_count[i] > self.distribution[i]:
+        # Oversampled
+        remove_list.append(i)
+        pdf = self.umbrella_pdf(adjusted_distro)
+        logging.info('RE-SAMPLING.. Oversampled %d. USING Followng Updated Distrbution:\n %s', num, str(pdf))
+        candidates.append(np.random.choice(np.arange(n_bins), p=pdf))
+        logging.info('Replaced bin %d with bin %s', num, candidates[-1])
+    for i in remove_list:
+      logging.info('Popping %d', i)
+      candidates.pop(i)
+
+    return candidates  
+
+
+
+
 
 class CorrelationSampler(SamplerBasic):
   """ Corelation Feature Sampler using correlating features to derive a scoring

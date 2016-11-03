@@ -6,6 +6,8 @@ import json
 import bisect
 import datetime as dt
 import shutil
+from collections import defaultdict, OrderedDict
+
 
 import mdtraj as md
 import numpy as np
@@ -13,7 +15,6 @@ from numpy import linalg as LA
 
 
 from core.common import *
-import mdtools.deshaw as deshaw
 from overlay.redisOverlay import RedisClient
 from core.kvadt import kv2DArray
 from core.slurm import slurm
@@ -28,6 +29,7 @@ import bench.db as db
 import plot as P
 
 from mdtools.timescape import *
+from mdtools.trajectory import bin_label_10, bin_label_25, rms_delta
 from sampler.basesample import *
 
 import datatools.lattice as lat
@@ -97,6 +99,11 @@ def initializecatalog(catalog):
   for k, v in initvals.items():
     logging.debug("Initializing data elm %s  =  %s", k, str(v))
 
+  if settings.EXPERIMENT_NUMBER == 17:
+    # LOADING CENTROIDS
+    cent = 10 * np.load('data/bpti-alpha-dist-centroid.npy')
+    catalog.set('centroid:ds', pickle.dumps(cent))
+
 def load_historical_DEShaw(catalog):
   """ Load all DEShaw data into basins for processing """
   settings = systemsettings()
@@ -106,6 +113,14 @@ def load_historical_DEShaw(catalog):
   file_pref = home+'/work/timescape/desh_' #'/root/heavy/out/expl'
   basin_list = []
   logging.info('Loading all D.E.Shaw Time Scape data and processing basins')
+  # To re-label basin
+  atemp_labels = np.load(home+'/work/results/DE_label_full.npy')
+
+  bnum = 0
+  bin_labels_10 = ['T0', 'T1', 'T2', 'T3', 'T4', 'W0', 'W1', 'W2', 'W3', 'W4']
+  bin_labels_25 = [(a,b) for a in range(5) for b in range(5)]
+  bin_list_10 = defaultdict(list)
+  bin_list_25 = defaultdict(list)
   for i in range(42):  
     nframes = 100000 if i < 41 else 25000
     minima_list = TimeScape.read_log(file_pref + '%02d_minima.log'%i)
@@ -114,6 +129,7 @@ def load_historical_DEShaw(catalog):
     last = None
     offset = 100000*i
     pipe = catalog.pipeline()
+
     while basin_index < len(minima_list):
       ### MINIMA IS LOCAL TO FULL 2.5us FILE
       ### WINDOW IS GLOBAL INDEX OVER ALL 4.125Mil Frames
@@ -127,16 +143,28 @@ def load_historical_DEShaw(catalog):
       if last is not None:
         basin.prev = last.id
         basin_list[-1].next = basin.id
+
+
       basin_list.append(basin)
       last = basin
       basin_index += 1
 
       basin_hash = basin.kv()
-      # fname = ('bpti-all-%03d.dcd' if local_file_num < 1000 else 'bpti-all-%04d.dcd')%local_file_num
-      # basin_hash['pdbfile'] = os.path.join(settings.workir, 'bpti', fname)
-      # logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
+
+
+      if settings.EXPERIMENT_NUMBER == 17:
+        label_seq = atemp_labels[a+offset:b+offset]
+        basin_hash['label:10'] = label10 = bin_label_10(label_seq)
+        basin_hash['label:25'] = label25 = bin_label_25(label_seq)
+        bin_list_10[label10].append(bnum)
+        bin_list_25[label25].append(bnum)
+
+      pipe.rpush('bin:10:%s' % label10, bnum)
+      pipe.rpush('bin:25:%d_%d' % label25, bnum)
       pipe.rpush('basin:list', basin_id)
       pipe.hmset('basin:%s'%basin_id, basin_hash)
+      bnum += 1
+
     pipe.execute()
 
   # logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
@@ -202,6 +230,26 @@ def load_historical_DEShaw(catalog):
       for elm in de_ds:
         pipe.rpush('dspace', pickle.dumps(elm))   # NOTE DS is RESID_RMSD
       pipe.execute()
+
+
+  if settings.EXPERIMENT_NUMBER == 17:
+    # Calculate Centroids -- for explore/exploit within cluster
+    logging.info('Retrieving raw distance space from file')
+    de_ds = 10*np.load('data/de_ds_mu.npy')
+    logging.info('Calculating bin centroids (for 10-Bin labels)')
+    for i, b in enumerate(bin_labels_10):
+      centroid = np.mean(de_ds[bin_list_10[b]], axis=0)
+      catalog.set('bin:10:centroid:%s' % b, pickle.dumps(centroid))
+    logging.info('Calculating bin centroids (for 25-Bin labels)')
+    for i, b in enumerate(bin_labels_25):
+      centroid = np.mean(de_ds[bin_list_25[b]], axis=0)
+      catalog.set('bin:25:centroid:%d_%d' % b, pickle.dumps(centroid))
+    logging.info('Loading raw distance space into catalog')
+    with catalog.pipeline() as pipe:
+      for elm in de_ds:
+        pipe.rpush('dspace', pickle.dumps(elm))
+      pipe.execute()
+
 
   logging.info('DEShaw data loaded. ALL Done!')
   # FOR CREATING CM/MU/SIGMA vals for first time
@@ -470,6 +518,61 @@ def make_jobs(catalog, num=1):
       logging.info("Selected index: %s", i)
 
 
+  elif settings.EXPERIMENT_NUMBER == 17:
+    global_params = getSimParameters(sim_init, 'deshaw')
+    explore_factor = float(catalog.get('sampler:explore'))
+
+    logging.info('Loading basin distance values')
+    dmu = 10 * np.load('data/de_ds_mu.npy')
+
+    # USING 10-BIN LABELS
+    bin_labels_10 = ['T0', 'T1', 'T2', 'T3', 'T4', 'W0', 'W1', 'W2', 'W3', 'W4']
+    bin_list_10 = {k: [int(i) for i in catalog.lrange('bin:10:%s' % k, 0, -1)] for k in bin_labels_10}
+
+    distro = [len(bin_list_10[i]) for i in bin_labels_10]
+
+    # Create and invoke the sampler
+    sampler = BiasSampler(distro)
+    samplecount = np.zeros(len(bin_labels_10), dtype=np.int16)
+    # Find the first index for each bin:
+    explore_direction = 1 if explore_factor < .5 else -1
+    for i, b in enumerate(bin_list_10):
+      if len(b) == 0:
+        idx = 0
+      else:
+        idx = np.floor(explore_factor * (len(b) - 1))
+      samplecount[i] = idx
+
+    sel_bins = sampler.execute(num)
+
+    candidate_list = {}
+    basin_idx_list = []
+    target_bin_list = []
+    for b in sel_bins:
+      target_bin = bin_labels_10[b]
+      if target_bin not in candidate_list:
+        centroid = pickle.loads(catalog.get('bin:10:centroid:%s' % target_bin))
+        dist_center = np.array([LA.norm(centroid - dmu[i]) for i in bin_list_10[target_bin]])
+        candidate_list[target_bin] = sorted(zip(bin_list_10[target_bin], dist_center), key=lambda x: x[1])
+
+      basin_idx, basin_diff = candidate_list[target_bin][samplecount[b]]
+      samplecount[b] += explore_direction
+      # Wrap
+      if samplecount[b] == 0:
+        samplecount = len(candidate_list[target_bin]) - 1
+      if samplecount[b] == len(candidate_list[target_bin]):
+        samplecount = 0
+
+      logging.info('BIAS SAMPLER:       Bin: %s      basin: %d     Delta from Center: %6.3f', \
+        target_bin, basin_idx, basin_diff)
+      basin_idx_list.append(basin_idx)
+      target_bin_list.append(target_bin)
+
+    seedlist = [catalog.lindex('basin:list', i) for i in basin_idx_list]
+    for i in seedlist:
+      logging.info("Select index: %s", i)
+
+
   else:
     logging.error('No Experiment Defined.')
     return
@@ -478,8 +581,10 @@ def make_jobs(catalog, num=1):
   # Create new jobs from selected basins
   # psf = os.path.join(settings.workdir, catalog.get('psffile'))
 
-  for seed in seedlist:
-    logging.debug('\nSeeding Job: %s ', seed)
+  for i, seed in enumerate(seedlist):
+    logging.debug('------------------------------\n  Seeding Job: %s ', seed)
+    if settings.EXPERIMENT_NUMBER == 17:
+      logging.info('  TARGET BIN: %s', target_bin_list[i])
     basin = catalog.hgetall('basin:%s'%seed)
 
     # Generate new set of params/coords
@@ -487,6 +592,9 @@ def make_jobs(catalog, num=1):
 
     # Update Additional JC Params and Decision History, as needed
     config.update(global_params)
+
+    if settings.EXPERIMENT_NUMBER == 17:
+      config['target_bin'] = target_bin_list[i]
 
     # Push to catalog
     logging.info("New Simulation Job Created: %s", jcID)

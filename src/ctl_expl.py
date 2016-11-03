@@ -36,13 +36,14 @@ import datatools.lattice as lat
 from datatools.pca import PCAnalyzer, PCAKernel, PCAIncremental
 from datatools.approx import ReservoirSample
 from mdtools.simtool import *
+from mdtools.trajectory import bin_label_10, bin_label_25
 from mdtools.structure import Protein 
 from overlay.redisOverlay import RedisClient
 from overlay.cacheOverlay import CacheClient
 from bench.timer import microbench
 from bench.stats import StatCollector
 
-from sampler.basesample import UniformSampler, CorrelationSampler, LatticeSampler
+from sampler.basesample import *
 
 from datatools.feature import feal
 import plot as G
@@ -247,12 +248,125 @@ class controlJob(macrothread):
         for bid in basin_id_list:
           selected_basin_list.append(self.catalog.hgetall('basin:%s'%bid))
 
+      if EXPERIMENT_NUMBER == 17:
+        n_features = 1653
+        explore_factor = float(self.data['sampler:explore'])
+        
+
+        # Load previous distance space
+        de_ds_raw = self.catalog.lrange('dspace', 0, -1)
+        ds_prev = np.zeros(shape=(len(de_ds_raw), n_features))
+        logging.info("Unpickling distance space to array: %s", ds_prev.shape)
+        for i, elm in enumerate(de_ds_raw):
+          ds_prev[i] = pickle.loads(elm)
+
+        # Merge new data
+        old_basin_ids = self.data['basin:list'][:start_index-1]
+        bnum = len(old_basin_ids)
+        delta_ds = []
+        for bid in new_basin_list:
+          key = 'basin:' + bid
+          logging.debug("  Loading Basin: %s", key)
+          basin = self.data[key]
+          dmu_ = pickle.loads(self.catalog.get('basin:dmu:'+bid))
+          if dmu_ is None:
+            logging.debug("No Data for Basin:  %s", bid)
+          else:
+            delta_ds.append(dmu_)
+
+            label_seq = [int(i) for i in self.catalog.lrange('basin:labelseq:'+bid, 0, -1)]
+
+            label10 = bin_label_10(label_seq)
+            label25 = bin_label_25(label_seq)
+
+            with self.catalog.pipeline() as pipe:
+              pipe.hset(key, 'label:10', label10)
+              pipe.hset(key, 'label:25', label25)
+              pipe.rpush('bin:10:%s' % label10, bnum)
+              pipe.rpush('bin:25:%d_%d' % label25, bnum)
+              pipe.execute()
+          bnum += 1
+
+
+
+        if not self.force_decision and len(delta_ds) > 0:
+          delta_ds = np.array(delta_ds)
+          with self.catalog.pipeline() as pipe:
+            for elm in delta_ds:
+              pipe.rpush('dspace', pickle.dumps(elm))
+            pipe.execute()
+
+        if len(delta_ds) > 0:
+          dist_space = np.vstack((ds_prev, delta_ds))
+        else:
+          dist_space = ds_prev
+
+        logging.info('Loading Basin Lists')
+        bin_labels_10 = ['T0', 'T1', 'T2', 'T3', 'T4', 'W0', 'W1', 'W2', 'W3', 'W4']
+        bin_labels_25 = [(a,b) for a in range(5) for b in range(5)]
+        bin_list_10 = {k: [int(i) for i in self.catalog.lrange('bin:10:%s' % k, 0, -1)] for k in bin_labels_10}
+        bin_list_25 = {k: [int(i) for i in self.catalog.lrange('bin:25:%d_%d' % k, 0, -1)] for k in bin_labels_25}
+
+        # USING 10-BIN LABELS
+        distro = [len(bin_list_10[i]) for i in bin_labels_10]
+
+        # Create and invoke the sampler
+        logging.info('Running the biased (umbrella) samplers')
+        sampler = BiasSampler(distro)
+        samplecount = np.zeros(len(bin_labels_10), dtype=np.int16)
+        # Find the first index for each bin:
+        explore_direction = 1 if explore_factor < .5 else -1
+        for i, b in enumerate(bin_list_10):
+          if len(b) == 0:
+            idx = 0
+          else:
+            idx = np.floor(explore_factor * (len(b) - 1))
+          samplecount[i] = idx
+
+        sel_bins = sampler.execute(numresources)
+
+        logging.info('Processing selected bins to find starting candidates')
+        candidate_list = {}
+        basin_idx_list = []
+        for b in sel_bins:
+          target_bin = bin_labels_10[b]
+          if target_bin not in candidate_list:
+            # Lazy Update to centroid -- push to catalog immediately
+            vals = dist_space[bin_list_10[target_bin]]
+            logging.info('Updating Centroid for bin %s,  bindata: %s', target_bin, vals.shape)
+            centroid = np.mean(vals, axis=0)
+            self.catalog.set('bin:10:centroid:%s' % target_bin, pickle.dumps(centroid))
+            dist_center = [LA.norm(centroid - dist_space[i]) for i in bin_list_10[target_bin]]
+            candidate_list[target_bin] = sorted(zip(bin_list_10[target_bin], dist_center), key=lambda x: x[1])
+
+          basin_idx, basin_diff = candidate_list[target_bin][samplecount[b]]
+          basin_idx_list.append(basin_idx)
+          samplecount[b] += explore_direction
+          # Wrap
+          if samplecount[b] == 0:
+            samplecount = len(candidate_list[target_bin]) - 1
+          if samplecount[b] == len(candidate_list[target_bin]):
+            samplecount = 0
+
+          logging.info('BIAS SAMPLER:\n   Bin: %s\n   basin: %d     Delta from Center: %6.3f', \
+            target_bin, basin_idx, basin_diff)
+          basin_idx_list.append(basin_idx)
+
+        seedlist = [self.catalog.lindex('basin:list', i) for i in basin_idx_list]
+        for i in seedlist:
+          logging.info("Select index: %s", i)
+
+
       # LATTICE SAMPLER (WITH HISTORICAL DATA)
       if EXPERIMENT_NUMBER in [13, 14, 16]:
 
         # PREPROCESS
-        n_features = 58 if EXPERIMENT_NUMBER == 16 else 1653
+        if EXPERIMENT_NUMBER == 16:
+          n_features = 58  
+        else:
+          n_features = 1653
     
+        logging.info("NUmber of Features: %d", n_features)
         #####   BASIN LIST HERE
         # Get ALL basins metadata:
         old_basin_ids = self.data['basin:list'][:start_index-1]
@@ -263,8 +377,8 @@ class controlJob(macrothread):
         # Explicitly manage distance space load here
         logging.info('Loading raw distance space from catalog')
         de_ds_raw = self.catalog.lrange('dspace', 0, -1)
-        logging.info("Unpickling distance space")
         ds_prev = np.zeros(shape=(len(de_ds_raw), n_features))
+        logging.info("Unpickling distance space to array: %s", ds_prev.shape)
         for i, elm in enumerate(de_ds_raw):
           ds_prev[i] = pickle.loads(elm)
 
@@ -321,14 +435,16 @@ class controlJob(macrothread):
         
         else:
         # Merge Existing delta with DEShaw Pre-Processed data:
-          logging.info('Mering DEShaw with existing generated data')
+          logging.info('Merging DEShaw with existing generated data')
 
           # Set parameters for lattice
-          Kr = self.catalog.lrange('lattice:features', 0, -1)
+          Kr = [int(i) for i in self.catalog.lrange('lattice:features', 0, -1)]
           support = int(self.data['lattice:support'])
           dspt = self.catalog.get('lattice:delta_support')
           delta_support = 5 if dspt is None else int(dspt)
           cutoff  = float(self.data['lattice:cutoff'])
+
+          logging.info('PARAMS  Kr:%s\n support:%d  dspt:%d  cutoff:%f', Kr, support, delta_support, cutoff)
 
           # Load existing (base) lattice data
           logging.info("Unpickling max/low FIS and derived lattice EMD values")
@@ -348,12 +464,13 @@ class controlJob(macrothread):
             Ik_delta = {}
 
           # Merge previous item set delta with DEShaw index
+          logging.info("Merging DEShaw Ik with Delta IK")
           for k,v in Ik_delta.items():
             Ik[k] = np.concatenate((Ik[k], v)) if k in Ik else v
 
           # Build Lattice Object
           invert_vals = (EXPERIMENT_NUMBER == 16)
-          logging.info('Building Existing lattice object')
+          logging.info('Building Existing lattice object (do invert? %s', invert_vals)
           base_lattice=lat.Lattice(ds_prev, Kr, cutoff, support, invert=invert_vals)
           base_lattice.set_fis(max_fis, low_fis)
           base_lattice.set_dlat(dlat, Ik)
@@ -361,7 +478,7 @@ class controlJob(macrothread):
           # Build Delta Lattice Object
           logging.info('Building Delta lattice. Num new items: %d', len(delta_ds))
 
-          if not self.force_decision:
+          if not self.force_decision and len(delta_ds) > 0:
             delta_ds = np.array(delta_ds)
             delta_lattice = lat.Lattice(delta_ds, Kr, cutoff, delta_support, invert=invert_vals)
             delta_lattice.maxminer()
@@ -393,7 +510,7 @@ class controlJob(macrothread):
           logging.info('Invoking the Lattice Sampler')
 
         if settings.EXPERIMENT_NUMBER == 16:
-          sampler = LatticeExplorerSampler(lattice)
+          sampler = LatticeExplorerSampler(base_lattice)
         else:
           sampler = LatticeSampler(base_lattice)
 
@@ -458,16 +575,23 @@ class controlJob(macrothread):
         self.data['sampler:explore'] *= .75   
 
         if explore_factor > 0:
+          logging.info("EXPLORING Most active basins....")
           basindata = [self.catalog.hgetall(bid) for bid in old_basin_ids]
           for bid in new_basin_list:
-            basindata.append(self.data[key])          
+            basindata.append(self.data['basin:'+bid])          
 
-          basin_by_rmsd = sorted(basindata, key=lambda x: x['resrms_delta'], reverse=True)
+          logging.info('A:  %s', basindata[2])
+          basins_with_rms = [b for b in basindata if 'resrms_delta' in b]
+          logging.info('B:  %s\n %s', basins_with_rms[2], basins_with_rms[3])
+
+          basin_by_rmsd = sorted(basins_with_rms, key=lambda x: float(x['resrms_delta']), reverse=True)
           explore_samples = int(np.floor(numresources * explore_factor))
+          logging.info('Num to explore: %d  out of %d', explore_samples, len(basin_by_rmsd))
           for i in range(explore_samples):
-            selected_basin_list.append(basin_by_rmsd[0])
+            selb = basin_by_rmsd[i]
+            selected_basin_list.append(selb)
+            logging.info('  (%d) EXPLORE BASIN:  %s  %f', i, selb['id'], float(selb['resrms_delta']))
           numresources -= explore_samples 
-
 
 
         # TODO:  Reduced Feature Sets
@@ -483,9 +607,12 @@ class controlJob(macrothread):
         if BUILD_NEW:
           tval = .05
           Kr = lat.reduced_feature_set2(ds_total, cutoff, theta=tval, maxk=25)
-          while len(Kr) < 20:
+          retry = 5
+          while len(Kr) < 12 and retry > 0:
             tval /= 2
+            retry -= 1
             Kr = lat.reduced_feature_set2(ds_total, cutoff, theta=tval, maxk=25)
+
 
           base_lattice = lat.Lattice(ds_total, Kr, cutoff, support)
           base_lattice.maxminer()

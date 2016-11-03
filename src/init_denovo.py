@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+ 
 import argparse
 import math
 import json
@@ -141,8 +141,8 @@ def bootstrap(catalog, num=4, build_new=False):
   # sampler = LatticeSampler(lattice)
 
   # Sample -- FOR USING LATTICE TO BOOTSTRAP
-  cl,sc,el = lat.clusterlattice(dlat, cr, dr, ik, num_k=8)
-  cl_list = sorted(el, key=lambda x: len(x))
+  # cl,sc,el = lat.clusterlattice(dlat, cr, dr, ik, num_k=8, invert=True)
+  # cl_list = sorted(el, key=lambda x: len(x))
 
   # TODO: Check if fan out > single item clusters
   # start_indices = [clu[0][0] for clu in cl_list[:num]]

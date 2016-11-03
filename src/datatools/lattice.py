@@ -33,7 +33,7 @@ deref = lambda T, key: np.where(np.logical_and(T[:,key], True).all(1))[0]
 
 factorial = lambda x: 1 if x==1 else x * factorial(x-1)
 
-
+ 
 class ProgressBar(object):
   def __init__(self, total, interval=100):
     self.total    = total
@@ -480,7 +480,8 @@ def maxminer_initgrps (T, epsilon):
     tg = [j for j in range(k+1, K)]  #frozenset([j for j in range(k+1, K)])
     C.append((hg, tg))
   F = [[] for i in range(len(F_init)+1)]
-  F[1].append(frozenset((F_init[-1],))) 
+  if len(F_init) > 0:
+    F[1].append(frozenset((F_init[-1],))) 
   return C, F
 
 def maxminer_subnodes(g, T, C, epsilon):
@@ -581,7 +582,8 @@ def maxminer(T, epsilon):
 
 
   end = dt.now()
-  logging.info('BENCH TIMES:     %s', ('%5.2f s  ' * len(times)) % tuple(times))
+  if times is not None:
+    logging.info('BENCH TIMES:     %s', ('%5.2f s  ' * len(times)) % tuple(times))
   logging.info('TOTAL TIME: %5.1f sec   /  %4d loops' % ((end-start).total_seconds(), n_iter))
   F_agg = []
   for k in range(len(F)-1, 0, -1):

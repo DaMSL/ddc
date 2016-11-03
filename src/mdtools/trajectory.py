@@ -13,6 +13,30 @@ def rms_delta(X):
 
   
 
+def bin_label_25(L):
+  count = np.bincount(L, minlength=5)
+  A, A2 = np.argsort(count)[::-1][:2]
+  A_amt = count[A] / len(L)
+  if A_amt < .75:
+    B = A2
+  elif L[0] != L[-1] and (L[0] in [A, A2] and L[-1] in [A, A2]):
+    A, B = L[0], L[-1]
+  else:
+    B = A
+  return(A,B)
+
+
+def bin_label_10(L):
+  count = np.bincount(L, minlength=5)
+  A, A2 = np.argsort(count)[::-1][:2]
+  A_amt = count[A] / len(L)
+  if A_amt < .75 or L[0] != L[-1]:
+    return 'T%d' % A
+  else:
+    return 'W%d' % A
+
+
+
 class SemiConform(object):
   glid = 0
   def __init__(self, traj, ref):
