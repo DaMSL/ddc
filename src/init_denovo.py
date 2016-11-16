@@ -37,95 +37,120 @@ import datatools.lattice as lat
 import init_exp as initialize
 
 
-def bootstrap(catalog, num=4, build_new=False):
+def bootstrap_lattice(catalog, num=10, build_new=False):
   ''' Bootstrap After TimeScape has run on source trajectory '''
   home = os.getenv("HOME")
   support = 1
   cutoff  = 8
-  wkdir = home+'/work/jc/serial2/'
-  pdb_file = wkdir+'serinit.pdb'
 
-  topo = md.load(pdb_file)
-  traj = md.load(wkdir+'serinit.dcd', top=topo)
-  afilt = topo.top.select_atom_indices('alpha')
-  alpha = traj.atom_slice(afilt)
+  start_coord = ['de2586_315', 'de531_20', 'de3765_63', 'de3305_668', 'de1732_139']
+  dcdfile = lambda x: home + '/work/data/{0}.dcd'.format(x)
+  outloc  = lambda x: home+'/work/jc/denovouniform1/{0}/{0}'.format(x)
 
-  W = TS.TimeScape.windows(home+'/work/jc/serial2/serial_transitions.log')
-  ts_traj=TS.TimeScapeParser(pdb_file, wkdir+'serial', 'serial', dcd=wkdir+'serinit.dcd', traj=traj)  
-  basins = ts_traj.load_basins()
 
-  src_traj = wkdir + 'de0_0/serial.dcd'
-  src_topo = md.load(wkdir + 'de0_0/de0_0.pdb')
+  traj_list = {}
 
-  ds = []
-  dsa = DR.distance_space(alpha)
-  for a,b in W: 
-    ds.append(dsa[a:b].mean(0))
-  ds = 10*np.array(ds[1:])
-  cm = ds<cutoff
-  fs = lat.reduced_feature_set(cm,.075); len(fs)
-  dr, cr = ds[:,fs], cm[:,fs]
+  basin_list = catalog.lrange('basin:list', 0, -1)
+  if len(basin_list) == 134:
+    logging.info('Basin Data already loaded!')
+    rms_delta_list = [(i, np.sum(pickle.loads(catalog.get('basin:rmsdelta:'+b)))) for i, b in enumerate(basin_list)]
+  else:
+    logging.info('Loading all bootstrap data to initialize...')
+    basin_list = []
+    rms_delta_list = []
+    pdb_file = home+'/work/data/alpha.pdb'
+    topo = md.load(pdb_file)
+    ref_alpha = md.load(home+'/work/' + catalog.get('pdb:ref:0'))
+    ref_alpha.atom_slice(ref_alpha.top.select_atom_indices('alpha'), inplace=True)
+    res_rms_Kr = FEATURE_SET
+
+    for sc in start_coord:
+      dist_space = []
+      srcfile = outloc(sc) + '.dcd'
+      pdbfile = srcfile.replace('dcd', 'pdb')
+      logging.debug('LOADING TRAJ:  %s', srcfile)
+      traj = md.load(srcfile, top = pdbfile)
+      traj_list[sc] = traj
+      alpha = traj.atom_slice(traj.top.select_atom_indices('alpha'))
+
+      logging.info('Grabbing TS data...')
+      W = TS.TimeScape.windows(outloc(sc) + '_transitions.log')
+      ts_traj = TS.TimeScapeParser(pdbfile, outloc(sc), sc, dcd=srcfile, traj=traj)
+      basins = ts_traj.load_basins()
+
+      logging.info("Processing distance space and residue RMS")
+      dsa = DR.distance_space(alpha)
+      resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in alpha.xyz])
+      basin_res_rms = np.zeros(shape=(len(ts_traj.basins), alpha.n_atoms))
+      for i, (a,b) in enumerate(W):
+        dist_space.append(dsa[a:b].mean(0))
+        basin_res_rms[i] = np.median(resrmsd[a:b], axis=0)
+
+      basin_res_rms_delta = np.array([rms_delta(i) for i in basin_res_rms.T]).T
+      logging.debug('RMS LEN CHECK:  %d =?= %d    -- Updating RMS Delta',len(basins), len(basin_res_rms_delta))
+
+
+      for i, basin in enumerate(basins):
+        pipe = catalog.pipeline()
+        bid = basin.id
+
+        # Store on Disk and in redis
+        jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
+        logging.info('MIN for %s:   Idx# %d  to %s', bid, basin.mindex, jc_filename)
+        minima_frame = traj.slice(basin.mindex)  #md.load_frame(src_traj, basin.mindex, top=src_traj.replace('dcd', 'pdb'))
+        minima_frame.save_pdb(jc_filename)
+
+        basin_hash = basin.kv()
+        basin_hash['pdbfile'] = jc_filename
+        logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
+
+        pipe.rpush('basin:list', bid)
+        pipe.hmset('basin:%s'%bid, basin_hash)
+        pipe.set('basin:dmu:'+bid, pickle.dumps(dist_space[i]))
+        pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
+
+        # FOR RESIDUE RMSD
+        resrms_d = np.sum(basin_res_rms_delta[i][res_rms_Kr])
+        basin_hash['resrms_delta'] = resrms_d
+        rms_delta_list.append((len(basin_list), resrms_d))
+        basin_list.append(basin_hash)
+        pipe.set('basin:rmsdelta:'+bid, pickle.dumps(basin_res_rms_delta[i]))
+
+        pipe.execute()
+
+
+
 
   # FOR RESIDUE RMSD
-  ref_alpha = md.load(home+'/work/' + catalog.get('pdb:ref:0')).atom_slice(afilt)
-  res_rms_Kr = FEATURE_SET
-  traj_alpha = traj.atom_slice(afilt)
-  resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in traj_alpha.xyz])
-  basin_res_rms = np.zeros(shape=(len(ts_traj.basins), traj_alpha.n_atoms))
-  for i, (a,b) in enumerate(W):
-    basin_res_rms[i] = np.median(resrmsd[a:b], axis=0)
-  basin_res_rms_delta = np.array([rms_delta(i) for i in basin_res_rms.T]).T
 
   # FOR SEED SAMPLING USING RMS_DELTA
-  rms_delta_list = []
 
   # Note: skip the first basin
-  for i, basin in enumerate(ts_traj.basins[1:]):
-    pipe = catalog.pipeline()
-    bid = basin.id
-    # Store on Disk and in redis
-    jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
-    minima_frame = md.load_frame(src_traj, basin.mindex, top=src_topo)
-    minima_frame.save_pdb(jc_filename)
-
-    a, b = basin.start, basin.end
-   
-    basin_hash = basin.kv()
-    basin_hash['pdbfile'] = jc_filename
-    logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
-
-    pipe.rpush('basin:list', bid)
-    pipe.hmset('basin:%s'%bid, basin_hash)
-    pipe.set('basin:cm:'+bid, pickle.dumps(cm[i]))
-    pipe.set('basin:dmu:'+bid, pickle.dumps(ds[i]))
-    pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
-
-    # FOR RESIDUE RMSD
-    resrms_d = np.sum(basin_res_rms_delta[i][res_rms_Kr])
-    basin_hash['resrms_delta'] = resrms_d
-    rms_delta_list.append((i, resrms_d))
-    pipe.set('basin:rmsdelta:'+bid, pickle.dumps(basin_res_rms_delta[i]))
-
-    pipe.execute()
 
 
 
   # Re-Construct the Lattice from 
   if build_new:
+    dist_space = 10*np.array(dist_space)
+    cm = ds<cutoff
+    fs = lat.reduced_feature_set(cm,.115); len(fs)
+    dr, cr = ds[:,fs], cm[:,fs]
+
+
     mfis,lfis = lat.maxminer(cr, 1)
     dlat, ik = lat.derived_lattice(mfis, dr, cr)
-    pickle.dump(mfis, open(wkdir+'mfis.p', 'wb'))
-    pickle.dump(lfis, open(wkdir+'lfis.p', 'wb'))
-    pickle.dump(iset, open(wkdir+'iset.p', 'wb'))
-    pickle.dump(ik, open(wkdir+'iset.p', 'wb'))
+    pickle.dump(mfis, open(home + '/work/data/denovo_mfis.p', 'wb'))
+    pickle.dump(lfis, open(home + '/work/data/denovo_lfis.p', 'wb'))
+    pickle.dump(ik, open(home + '/work/data/denovo_iset.p', 'wb'))
+    pickle.dump(dlat, open(home + '/work/data/denovo_dlat.p', 'wb'))
 
   else:
 
     logging.info('Loading Pre-Constructed Lattice Data')
-    dlat = pickle.load(open(wkdir+'dlat.p', 'rb'))
-    mfis = pickle.load(open(wkdir+'mfis.p', 'rb'))
-    lfis = pickle.load(open(wkdir+'lfis.p', 'rb'))
-    ik = pickle.load(open(wkdir+'iset.p', 'rb'))
+    dlat = pickle.load(open(home + '/work/data/denovo_dlat.p', 'rb'))
+    mfis = pickle.load(open(home + '/work/data/denovo_mfis.p', 'rb'))
+    lfis = pickle.load(open(home + '/work/data/denovo_lfis.p', 'rb'))
+    ik = pickle.load(open(home + '/work/data/denovo_iset.p', 'rb'))
 
   with catalog.pipeline() as pipe:
     pipe.set('lattice:max_fis', pickle.dumps(mfis))
@@ -153,11 +178,12 @@ def bootstrap(catalog, num=4, build_new=False):
   seedlist = [catalog.lindex('basin:list', i) for i in start_indices]
   sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
   global_params = getSimParameters(sim_init, 'seed')
-  global_params['psf'] = wkdir+'de0_0/de0_0.psf'
+  global_params['psf'] = home+'/work/jc/serial2/de0_0/de0_0.psf'
 
   for seed in seedlist:
     logging.debug('\nSeeding Job: %s ', seed)
     basin = catalog.hgetall('basin:%s'%seed)
+    catalog.rpush('executed', seed)
 
     # Generate new set of params/coords
     jcID, config = generateFromBasin(basin)
@@ -178,8 +204,8 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('name', default='default')
   parser.add_argument('--initcatalog', action='store_true')
-  parser.add_argument('--initjobs', action='store_true')
-  parser.add_argument('--all', action='store_true')
+  parser.add_argument('--lattice', action='store_true')
+  parser.add_argument('--centroid', action='store_true')
 
   args = parser.parse_args()
   confile = args.name + '.json'
@@ -188,10 +214,15 @@ if __name__ == '__main__':
   settings.applyConfig(confile)
   catalog = RedisClient(args.name)
 
-  if args.initcatalog or args.all:
+  if args.initcatalog:
     settings.envSetup()
     initialize.initializecatalog(catalog)
 
-  if args.initjobs or args.all:
+  if args.lattice:
     numresources = int(catalog.get('numresources'))
-    bootstrap(catalog, numresources)
+    bootstrap_lattice(catalog, numresources)
+
+  if args.centroid:
+    start_coords = [(2586,315), (531,20), (3765,63), (3305,668), (1732,139)]
+    for fileno, frame in start_coords:
+      initialize.manual_de_job(catalog, fileno, frame)

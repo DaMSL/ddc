@@ -184,16 +184,18 @@ def generateDEShawJC(fileno, frame, jcid=None):
     # 1. Load starting coordinate from source traj and save to pdb file
     filename = DE.getDEShawfilename(fileno) % fileno
     src_file = os.path.join(config.workdir, 'bpti', filename) 
-    tmpdir = gettempdir()
+    tmpdir = 'tmp_%d%d' % (fileno, frame) #gettempdir()
     logging.info('Loading Source Coordinate from file: %s  (frame # %d)', src_file, frame)
     logging.info("LABELED_STATE:   %d   (seq # %d/4125)", label[fileno], fileno)
     coord = md.load_frame(src_file, frame, top=DE.PDB_ALL)
+    logging.info('Coord Loaded: %s', str(coord))
     os.makedirs(tmpdir, exist_ok=True)
     tmpfile = tmpdir + '/coord.pdb'
+    # tmpfile = 'coord.pdb'
     coord.save_pdb(tmpfile)
 
     # 2. Convert topology PDB file (in place)
-    logging.info("Converting Topology to Charmm compatiable Force Fields")
+    logging.info("Converting Topology to Charmm compatiable Force Fields on: %s", tmpfile)
     DE.convert_topology(tmpfile, split_dir=tmpdir)
 
     # 3. Prepare new job metadata
@@ -252,6 +254,8 @@ def getSimParameters(state, origin='gen'):
     for rp in rel_paths:
         if rp in params:
             params[rp] = os.path.join(settings.workdir, params[rp])
+    if 'psf' not in params:
+      params['psf'] = params['psffile']
     params['interval'] = int(int(params['dcdfreq']) * float(params['sim_step_size']))
     params['gc'] = 1
     params['origin'] = origin

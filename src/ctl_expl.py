@@ -255,14 +255,19 @@ class controlJob(macrothread):
 
         # Load previous distance space
         de_ds_raw = self.catalog.lrange('dspace', 0, -1)
-        ds_prev = np.zeros(shape=(len(de_ds_raw), n_features))
-        logging.info("Unpickling distance space to array: %s", ds_prev.shape)
-        for i, elm in enumerate(de_ds_raw):
-          ds_prev[i] = pickle.loads(elm)
+        prev_size = len(de_ds_raw)
+        local_basins = {}
+        if  prev_size > 0:
+          ds_prev = np.zeros(shape=(prev_size, n_features))
+          logging.info("Unpickling distance space to array: %s", ds_prev.shape)
+          for i, elm in enumerate(de_ds_raw):
+            ds_prev[i] = pickle.loads(elm)
+          logging.info('Prev DS loaded. Size = %d', len(ds_prev))
+        else:
+          logging.info('NO Prev DS')
+          ds_prev = []
 
         # Merge new data
-        old_basin_ids = self.data['basin:list'][:start_index-1]
-        bnum = len(old_basin_ids)
         delta_ds = []
         for bid in new_basin_list:
           key = 'basin:' + bid
@@ -279,27 +284,34 @@ class controlJob(macrothread):
             label10 = bin_label_10(label_seq)
             label25 = bin_label_25(label_seq)
 
+            basin_index = self.catalog.rpush('dspace', pickle.dumps(dmu_)) - 1
+            local_basins[basin_index] = basin
             with self.catalog.pipeline() as pipe:
               pipe.hset(key, 'label:10', label10)
               pipe.hset(key, 'label:25', label25)
-              pipe.rpush('bin:10:%s' % label10, bnum)
-              pipe.rpush('bin:25:%d_%d' % label25, bnum)
+              pipe.rpush('bin:10:%s' % label10, basin_index)
+              pipe.rpush('bin:25:%d_%d' % label25, basin_index)
               pipe.execute()
-          bnum += 1
 
 
+        # if not self.force_decision and len(delta_ds) > 0:
+        #   logging.debug('Pushing DELTA_DS to catalog: %d', len(delta_ds))
+        #   with self.catalog.pipeline() as pipe:
+        #     for elm in delta_ds:
+        #       pipe.rpush('dspace', pickle.dumps(elm))
+        #     pipe.execute()
 
-        if not self.force_decision and len(delta_ds) > 0:
-          delta_ds = np.array(delta_ds)
-          with self.catalog.pipeline() as pipe:
-            for elm in delta_ds:
-              pipe.rpush('dspace', pickle.dumps(elm))
-            pipe.execute()
-
-        if len(delta_ds) > 0:
-          dist_space = np.vstack((ds_prev, delta_ds))
+        if len(delta_ds) > 0 and len(ds_prev) > 0:
+          dist_space = np.vstack((ds_prev, np.array(delta_ds)))
+        elif len(delta_ds) == 0:
+          dist_space = np.array(ds_prev)
+        elif len(ds_prev) == 0:
+          logging.info('FIRST Set of Distance Coord laoded')
+          dist_space = np.array(delta_ds)
         else:
-          dist_space = ds_prev
+          logging.error("ERROR! NO DISTANCE SPACE IN THE CATALOG")
+
+        logging.debug("Dist_space: %s", dist_space.shape)
 
         logging.info('Loading Basin Lists')
         bin_labels_10 = ['T0', 'T1', 'T2', 'T3', 'T4', 'W0', 'W1', 'W2', 'W3', 'W4']
@@ -331,30 +343,43 @@ class controlJob(macrothread):
         for b in sel_bins:
           target_bin = bin_labels_10[b]
           if target_bin not in candidate_list:
+            candidate_list[target_bin] = bin_list_10[target_bin]
+
+          #  TODO:  FULLY IMPLEMENT EXPLORE/EXPLOIT BUT INCL HISTORY/PROVONANCE
+
             # Lazy Update to centroid -- push to catalog immediately
-            vals = dist_space[bin_list_10[target_bin]]
-            logging.info('Updating Centroid for bin %s,  bindata: %s', target_bin, vals.shape)
-            centroid = np.mean(vals, axis=0)
-            self.catalog.set('bin:10:centroid:%s' % target_bin, pickle.dumps(centroid))
-            dist_center = [LA.norm(centroid - dist_space[i]) for i in bin_list_10[target_bin]]
-            candidate_list[target_bin] = sorted(zip(bin_list_10[target_bin], dist_center), key=lambda x: x[1])
+            # vals = dist_space[bin_list_10[target_bin]]
+            # logging.info('Updating Centroid for bin %s,  bindata: %s', target_bin, vals.shape)
+            # centroid = np.mean(vals, axis=0)
+            # self.catalog.set('bin:10:centroid:%s' % target_bin, pickle.dumps(centroid))
+            # dist_center = [LA.norm(centroid - dist_space[i]) for i in bin_list_10[target_bin]]
+            # candidate_list[target_bin] = sorted(zip(bin_list_10[target_bin], dist_center), key=lambda x: x[1])
 
-          basin_idx, basin_diff = candidate_list[target_bin][samplecount[b]]
+          # basin_idx, basin_diff = candidate_list[target_bin][samplecount[b]]
+          # samplecount[b] += explore_direction
+          # # Wrap
+          # if samplecount[b] == 0:
+          #   samplecount = len(candidate_list[target_bin]) - 1
+          # if samplecount[b] == len(candidate_list[target_bin]):
+          #   samplecount = 0
+
+          # FOR NOW PICK A RANDOM CANDIDATE 
+          rand_index = np.random.choice(len(candidate_list[target_bin]))
+          basin_idx = candidate_list[target_bin][rand_index]
+          logging.info('BIAS SAMPLER:\n   Bin: %s\n   basin: %d     Delta from Center: %6.3f  (note: dist not factored in)', \
+            target_bin, basin_idx, 0.)
           basin_idx_list.append(basin_idx)
-          samplecount[b] += explore_direction
-          # Wrap
-          if samplecount[b] == 0:
-            samplecount = len(candidate_list[target_bin]) - 1
-          if samplecount[b] == len(candidate_list[target_bin]):
-            samplecount = 0
 
-          logging.info('BIAS SAMPLER:\n   Bin: %s\n   basin: %d     Delta from Center: %6.3f', \
-            target_bin, basin_idx, basin_diff)
-          basin_idx_list.append(basin_idx)
-
-        seedlist = [self.catalog.lindex('basin:list', i) for i in basin_idx_list]
-        for i in seedlist:
-          logging.info("Select index: %s", i)
+        for i in basin_idx_list:
+          if i < prev_size:
+            logging.info("Select index: %s   (Retrieve from Catalog)", i)
+            bid = self.data['basin:list'][i]
+            basin = self.catalog.hgetall('basin:%s'%bid)
+          else:
+            logging.info("Select index: %s   (New locally built basin in mem)", i)  
+            basin = local_basins[i]
+          logging.debug('   BASIN:  %s', basin['id'])
+          selected_basin_list.append(basin)
 
 
       # LATTICE SAMPLER (WITH HISTORICAL DATA)
@@ -573,6 +598,7 @@ class controlJob(macrothread):
 
         # TODO:  Better transtion plan from explore to exploit
         self.data['sampler:explore'] *= .75   
+        executed_basins = self.catalog.lrange('executed', 0, -1)
 
         if explore_factor > 0:
           logging.info("EXPLORING Most active basins....")
@@ -580,18 +606,23 @@ class controlJob(macrothread):
           for bid in new_basin_list:
             basindata.append(self.data['basin:'+bid])          
 
-          logging.info('A:  %s', basindata[2])
           basins_with_rms = [b for b in basindata if 'resrms_delta' in b]
-          logging.info('B:  %s\n %s', basins_with_rms[2], basins_with_rms[3])
 
           basin_by_rmsd = sorted(basins_with_rms, key=lambda x: float(x['resrms_delta']), reverse=True)
           explore_samples = int(np.floor(numresources * explore_factor))
           logging.info('Num to explore: %d  out of %d', explore_samples, len(basin_by_rmsd))
-          for i in range(explore_samples):
-            selb = basin_by_rmsd[i]
-            selected_basin_list.append(selb)
-            logging.info('  (%d) EXPLORE BASIN:  %s  %f', i, selb['id'], float(selb['resrms_delta']))
-          numresources -= explore_samples 
+          idx, num_sampled = 0, 0
+
+          while idx < len(basin_by_rmsd) and num_sampled < explore_samples:
+            selb = basin_by_rmsd[idx]
+            if selb['id'] in executed_basins:
+              logging.info('Selected %s, but it has been executed. Selecting next option', selb['id'])
+            else:
+              selected_basin_list.append(selb)
+              logging.info('  (%d) EXPLORE BASIN:  %s  %f', selb['id'], selb['id'], float(selb['resrms_delta']))
+              numresources -= 1
+              num_sampled += 1
+            idx += 1
 
 
         # TODO:  Reduced Feature Sets
@@ -662,7 +693,15 @@ class controlJob(macrothread):
           self.wait_catalog()
           for index in basin_id_list:
             bid = all_basins[index]
-            selected_basin_list.append(self.catalog.hgetall('basin:%s'%bid))
+            key = 'basin:%s'%bid
+            # Check to ensure its not a new basin and that it exists in the DB
+            if self.catalog.exists(key):
+              logging.debug('KEY EXISTS: %s', key)
+              selbasin = self.catalog.hgetall(key)
+            else:
+              logging.debug('NO KEY: %s\n%s', key, self.data[key])
+              selbasin = self.data[key]
+            selected_basin_list.append(selbasin)
 
       bench.mark('GlobalAnalysis')
 
@@ -670,6 +709,8 @@ class controlJob(macrothread):
       jcqueue = OrderedDict()
       src_traj_list = []
       for basin in selected_basin_list:
+
+
         #  TODO:  DET HOW TO RUN FOLLOW ON FROM GEN SIMS
         src_traj_list.append(basin['traj'])
         if basin['traj'].startswith('desh'):
@@ -702,6 +743,11 @@ class controlJob(macrothread):
     #  POST-PROCESSING  -------------------------------------
       logging.debug("============================  <POST-PROCESSING & OUTPUT>  =============================")
       self.wait_catalog()
+
+      with self.catalog.pipeline() as pipe:
+        for basin in selected_basin_list:
+          pipe.rpush('executed', basin['id'])
+        pipe.execute()
 
       # Append new distance values
       if EXPERIMENT_NUMBER in [14, 16]:

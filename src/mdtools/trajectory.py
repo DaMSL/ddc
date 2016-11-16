@@ -26,11 +26,13 @@ def bin_label_25(L):
   return(A,B)
 
 
-def bin_label_10(L):
+def bin_label_10(L, theta=0.75):
+  ''' Label Heuristic:  either most of L is in 1 state (above support theta) or 
+  first and last are different (with larger mininal support theta)'''
   count = np.bincount(L, minlength=5)
   A, A2 = np.argsort(count)[::-1][:2]
   A_amt = count[A] / len(L)
-  if A_amt < .75 or L[0] != L[-1]:
+  if A_amt < theta or (L[0] != L[-1] and A_amt < (.5 + .5 * theta)):
     return 'T%d' % A
   else:
     return 'W%d' % A

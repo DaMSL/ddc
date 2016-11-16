@@ -34,7 +34,7 @@ from sampler.basesample import *
 
 import datatools.lattice as lat
 
-# For changes to schema
+# For changes to schema 
 def updateschema(catalog):
   """
     # TODO: Do away with pre-defined schema and infer datatypes
@@ -622,7 +622,7 @@ def manual_de_job(catalog, fileno, frame, runtime=1000000):
 
   jcID = 'de%d_%d' % (fileno, frame)
 
-  _, config = generateDEShawJC(0, 0, jcid=jcID)
+  _, config = generateDEShawJC(fileno, frame, jcid=jcID)
   config.update(global_params)
 
   # Push to catalog

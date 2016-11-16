@@ -19,6 +19,13 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
+
+ascii_greek = ''.join([chr(i) for i in it.chain(range(915,930), range(931, 938), range(945, 969))])
+k_domain = label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
+tok   = lambda x: ''.join(sorted([k_domain[i] for i in x]))
+toidx = lambda x: [ord(i)-97 for i in x]
+fromm = lambda x: ''.join(sorted([k_domain[i] for i,m in enumerate(x) if m == 1]))
+
  
 
 class SamplerBasic(object):
@@ -66,16 +73,25 @@ class BiasSampler(SamplerBasic):
     self.distribution = distro
 
   def umbrella_pdf(self, vals):
-    max_val = max(vals) * (1/len(vals))
+    if max(vals)/sum(vals) > .5 * (sum(vals)):
+      max_val = max(vals) * (1/len(vals))
+    else:
+      max_val = max(vals) + .01 * sum(vals)
     wght = np.array([max(0, (max_val - i)) if i > 0 else 0 for i in vals])
     return wght / np.sum(wght)
 
+  def umbrella2_pdf(self, vals):
+    max_val = 1 + sum(vals) * (1/len(vals))
+    wght = np.array([max(0, (max_val - i)) if i > 0 else 0 for i in vals])
+    return wght / np.sum(wght)
+
+
   def execute(self, num):
     n_bins = len(self.distribution)
-    logging.info('BIASED SAMPLER (Umbrella):  sampling called for %d  items', num)
+    logging.info('BIASED SAMPLER (Umbrella):  sampling called for %d  items  on %d bins', num, n_bins)
     pdf = self.umbrella_pdf(self.distribution)
     logging.info('USING Followng Distrbution:\n %s', str(pdf))
-    need_replace = (n_bins < num)
+    need_replace = (n_bins <= num)
     candidates = np.random.choice(np.arange(n_bins), size=num, \
       replace=need_replace, p=pdf)
 
@@ -278,9 +294,6 @@ class LatticeSampler(SamplerBasic):
     print('DEBUG: ', len(dlat), len(Ik), CM.shape, D.shape)
     clusters, score, elmlist  = clusterlattice(dlat, CM, D, Ik, theta=self.theta, num_k=self.num_cluster)
 
-    for elm in elmlist:
-      print(elm)
-
     samplecount = np.zeros(len(clusters), dtype=np.int16)
     pdf = score / np.sum(score)
     candidates = []
@@ -294,11 +307,6 @@ class LatticeSampler(SamplerBasic):
       candidates.append(elm)
     return candidates
 
-ascii_greek = ''.join([chr(i) for i in it.chain(range(915,930), range(931, 938), range(945, 969))])
-k_domain = label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
-tok   = lambda x: ''.join(sorted([k_domain[i] for i in x]))
-toidx = lambda x: [ord(i)-97 for i in x]
-fromm = lambda x: ''.join(sorted([k_domain[i] for i,m in enumerate(x) if m == 1]))
 
 
 
