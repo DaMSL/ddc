@@ -28,7 +28,7 @@ ecolors = {'Serial': 'darkorange',
            'Reweight': 'red'}
 
 arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim']
-axis_list = ['xscale', 'yscale']
+axis_list = ['xscale', 'yscale', 'xlog', 'ylog', 'xticks', 'yticks']
 st_col = ['red', 'blue', 'green', 'purple', 'black']
 
 def prep_graph():
@@ -58,6 +58,13 @@ def graph_args(kwargs):
 
 def graph_axis(ax, kwargs):
   arg = {k: kwargs.get(k, None) for k in axis_list}
+
+  if arg['xlog'] is not None:
+    ax.set_xscale('log')
+
+  if arg['ylog'] is not None:
+    ax.set_yscale('log')
+
   if arg['xscale'] is not None:
     xscale = arg['xscale']
     labels = [item.get_text() for item in ax.get_xticklabels(which='both')]
@@ -68,6 +75,7 @@ def graph_axis(ax, kwargs):
       ax.set_xticklabels(['%d'%int(xmin+(i*dx)) for i,tick in enumerate(labels)])
     else:
       ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
+
   if arg['yscale'] is not None:
     yscale = arg['yscale']
     labels = [item.get_text() for item in ax.get_yticklabels(which='both')]
@@ -79,6 +87,11 @@ def graph_axis(ax, kwargs):
     else:
       ax.set_yticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
 
+  if arg['xticks'] is not None:
+      ax.set_xticklabels(xticks)
+
+  if arg['yticks'] is not None:
+      ax.set_yticklabels(yticks)
 
 
 # ecolors = {'Serial': '#FF8C00', 
@@ -91,9 +104,7 @@ def graph_axis(ax, kwargs):
 ####  SCATTER PLOTS
 
 def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, xlim=None, ylim=None, ):
-  plt.cla()
-  plt.clf()
-  loc = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  prep_graph()
   if L is None:
     plt.scatter(X, Y, s=size, lw=0)
     # plt.plot(X, Y)
@@ -102,21 +113,7 @@ def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, x
   col = ['red', 'blue', 'green', 'purple', 'black']
   patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(col)]
   plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
-
-  plt.title(title)
-  if ylabel is not None:
-    plt.ylabel(ylabel)
-  if xlabel is not None:
-    plt.xlabel(xlabel)
-  if ylim is not None:
-    plt.ylim(ylim)
-  if xlim is not None:
-    plt.xlim(xlim)
-  # plt.legend()
-  if fname is None:
-    fname = title
-  plt.savefig(loc + '/' + fname + '.png')
-  plt.close()
+  graph_args()
 
 
 def network2D(nodeList, edgeList, **kwargs):
@@ -198,7 +195,8 @@ def scatter3D(X, Y, Z, L=None, **kwargs):
     ax.set_zlabel = kwargs['zlabel']
   graph_args(kwargs)
 
-def scats (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=None):
+def scats (series, size=10, labels=None, **kwargs):
+  prep_graph()
   if isinstance(series, dict):
     keys = sorted(series.keys())
     if labels is None:
@@ -210,26 +208,20 @@ def scats (series, title, size=10, xlabel=None, xlim=None, ylim=None, labels=Non
     print("Series must be either a list of lists or a mapping to lists")
     return
   colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
-  plt.clf()
+
   ax = plt.subplot(111)
   for D, C, L in zip(seriesList, colorList, labelList):
     X, Y = zip(*D)
-    # plt.scatter(X, Y, s=size, c=C, lw=0)
-    plt.plot(X, Y, c=C)
-  plt.title(title)
-
-  if xlabel is not None:
-    plt.xlabel(xlabel)
-  if xlim is not None:
-    plt.xlim(xlim)
-  if ylim is not None:
-    plt.ylim(ylim)
+    # plt.scatter(X, Y, s=size, c=C)
+    plt.scatter(X, Y, c=C)
+    # plt.plot(X, Y, c=C)
 
   patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
   plt.legend(handles=patches, loc='upper right')  
 
-  plt.savefig(SAVELOC + '/' + title + '.png')
-  plt.close()
+  graph_axis(ax, kwargs)
+  graph_args(kwargs)
+
 
 def scat_Transtions (series, title, size=10, xlabel=None, xlim=None, labels=None):
   plt.clf()
@@ -418,7 +410,7 @@ def seriesLines(X, series, title, xlabel=None):
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-def lines(series, xseries=None, showlegend=True, dolog=False, yticks = None, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
+def lines(series, xseries=None, showlegend=True, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
   if isinstance(series, list):
     seriesList = series
     # if labelList is None:
@@ -439,11 +431,6 @@ def lines(series, xseries=None, showlegend=True, dolog=False, yticks = None, **k
     xseriesList = [xseries[k] for k in labelList]
     for X, Y, C, L in zip(xseriesList, seriesList, colorList, labelList):
       plt.plot(X, Y, color=C, label=L)
-  if dolog:
-    ax.set_yscale('log')
-  if yticks is not None:
-      print('setting yticks: ', yticks)
-      ax.set_yticklabels(yticks)
   if showlegend:
     plt.legend(loc='upper left')
   graph_axis(ax, kwargs)

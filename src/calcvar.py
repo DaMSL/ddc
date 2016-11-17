@@ -70,7 +70,7 @@ for i in range(42):
 dL = [delabel[a:b] for a,b in DW]
 slab = lambda x: ''.join([str(i) for i in dL[x]])
 iswell = lambda x: (dL[x] == dL[x][0]).all()
-getstate  = lambda x: int(np.median(dL[x])) if iswell(x) else 6
+getstate  = lambda x: int(np.median(dL[x])) if iswell(x) else 5+np.argmax(np.bincount(dL[x]))
 
 
 iset    = pickle.load(open(home + '/work/latt_intrinsics/iset_%d.p' % support, 'rb')); len(iset)

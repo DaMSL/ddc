@@ -7,10 +7,12 @@ import copy
 import threading
 import logging
 import sys
-
+ 
 from datetime import datetime as dt
 from sortedcontainers import SortedSet, SortedList
 from collections import OrderedDict, deque, defaultdict
+
+import core.ops as op
 
 ascii_greek = ''.join([chr(i) for i in it.chain(range(915,930), range(931, 938), range(945, 969))])
 ascii_latin = ''.join([chr(i) for i in it.chain(range(384,460), range(550, 590))])
@@ -956,7 +958,7 @@ def update_lattice(dlat, Ik, D_old, CM, Mtrack, D_new, M_new, M_delta, epsilon, 
   return D, dlat, Ik, Mtrack
 
 ## CLUSTER AND SAMPLE
-def botup_collapse(dlat, theta=.9):
+def botup_collapse(dlat, theta=.5):
   
   # 1. Invert derived lattice to similarity weights (1 = identical, 0 = not similar)
   #     Note this will prune edges with high (>1) EMD values
@@ -1335,6 +1337,273 @@ def clusterlattice(dlat, CM, D, Ik, theta=.9, num_k=10, minclusize=0, bL=None):
       sampidx[clidx] -= 1
 
   return clusters, clusterscore, elmscore
+
+
+
+def clusterscoreFunc(clulist, variance, G, verbose=False, dL=None):
+  if dL is not None:
+    iswell = lambda x: (dL[x] == dL[x][0]).sum() >= len(dL[x] - 2)
+    getstate  = lambda x: int(np.median(dL[x])) if iswell(x) else 5+np.argmax(np.bincount(dL[x]))
+
+
+  cluster_well, cluster_tran = np.zeros(len(clulist)), np.zeros(len(clulist))
+
+  Cws, Cwv, Cwu = .6, .2, .2
+  Cts, Ctv, Ctu = .2, .6, .2
+
+  high_var = np.max(variance)
+  sizeFunc     = op.makeLogisticFunc(1, 0.0005, 91116/len(clulist))
+  smallPenalty = op.makeLogisticFunc(1, .5, 15)
+  largePenalty = op.makeLogisticFunc(2, -.001, 91116/min(10, len(clulist)))
+  if verbose:
+    logging.info('Processing %d clusters  (highVar: %6.2f) Updated', len(clulist), high_var)
+
+  # Unique-ness component: # of neighbors within 1 STD of overall delta
+  nneigh   = np.array([len([i for i in g if i < G.mean()-G.std()]) for g in G])
+  sc_prox  = 1 - (nneigh - np.min(nneigh))/np.max(nneigh-np.min(nneigh))
+
+  for n, clu in enumerate(clulist):
+    cSize, cVar = len(clu), variance[n]
+    sc_var  = 0 if cVar == 0 else min(1, cVar / high_var)
+    sc_size = sizeFunc(cSize) - smallPenalty(cSize) - largePenalty(cSize)
+    sc_uniq = sc_prox[n]
+    cluster_well[n]  =  max(0, Cws*sc_size   +  Cwv * (1-sc_var) + Cwu * sc_uniq )
+    cluster_tran[n]  =  max(0, Cts * sc_size +  Ctv * sc_var     + Ctu * sc_uniq )
+
+    if verbose:
+      if dL is not None:
+        labelcnt = np.bincount([getstate(i) for i in clu], minlength=10) / len(clu)
+      else:
+        labelcnt = ''
+      logging.info('  %2d. |  uq=%3.1f  |  sz=%5d  (%5.2f)  |  var=%6.2f  (%5.2f)  |  W: %4.2f   T: %4.2f  | %s',
+        n, sc_uniq, cSize, sc_size, cVar, sc_var, cluster_well[n], cluster_tran[n], labelcnt)
+
+  return cluster_well, cluster_tran
+
+
+def basinscoreFunc(clulist, D, centroid, sigma):
+  N, Nc = len(sigma), len(clulist)
+  Bwd, Bwv = .8, .2
+  Btd, Btv = .25, .75
+
+  basin_well, basin_tran, basin_dist = np.zeros(N), np.zeros(N), np.zeros(N)
+  cluster_radius  = np.zeros(Nc)
+  for n, (clu, cent) in enumerate(zip(clulist, centroid)):
+    totdist = 0
+    for basin in clu:
+      basin_dist[basin] = LA.norm(D[basin] - cent)
+      totdist += basin_dist[basin]
+    cluster_radius[n] = totdist / len(clu)
+
+    # Score ea basin in the cuboid
+    max_sigma  = np.max([sigma[i] for i in clu])
+    for basin in clu:
+      sc_dist  =  (cluster_radius[n] - basin_dist[basin]) / cluster_radius[n]
+      sc_var   =  sigma[basin] / max_sigma
+      basin_well[basin] = max(0, Bwd * sc_dist     + Bwv * (1-sc_var))
+      basin_tran[basin] = max(0, Btd * (1-sc_dist) + Btv * sc_var)
+
+  return basin_well, basin_tran
+
+
+def score_clusters(clulist, D, centroid, variance, G, sigma, labellist):
+  score_well, score_tran = clusterscoreFunc(clulist, variance, G)
+  pdf_well = score_well/np.sum(score_well)
+  pdf_tran = score_tran/np.sum(score_tran)
+
+  labelscore_well = {k: 0. for k in set(labellist)}
+  labelscore_tran = {k: 0. for k in set(labellist)}
+
+  # Basin Score and PDF
+  basin_well, basin_tran = basinscoreFunc(clulist, D, centroid, sigma)
+  pdf_baswell, pdf_bastran = [], []
+  for n, clu in enumerate(clulist):
+    totW = np.sum([basin_well[i] for i in clu])
+    totT = np.sum([basin_tran[i] for i in clu])
+
+    if np.isnan(totW) or totW == 0:
+      logging.error('PDF totW CALC ERROR on clu #%d, %d', n, len(clu))
+    if np.isnan(totW) or totT == 0:
+      logging.error('PDF totT CALC ERROR on clu #%d', n)
+
+    cluintern_well_pdf = np.nan_to_num(np.array([basin_well[i] for i in clu]) / totW)
+    cluintern_tran_pdf = np.nan_to_num(np.array([basin_tran[i] for i in clu]) / totT)
+
+    for basin, pW, pT in zip(clu, cluintern_well_pdf, cluintern_tran_pdf):
+      L = labellist[basin]
+      labelscore_well[L] += pW * pdf_well[n]
+      labelscore_tran[L] += pT * pdf_tran[n]
+
+    pdf_baswell.append(cluintern_well_pdf)
+    pdf_bastran.append(cluintern_tran_pdf)
+
+  return labelscore_well, labelscore_tran
+
+def cluster_harch(dlat, CM, D, theta=.5, num_k=10, dL=None, verbose=False):
+  ''' USes full distrubution of clustered items to merge clusters based 
+  on eucidean distance to centroid '''
+  N, K = D.shape
+
+  # FOR INTERNAL SCORING
+  slab = lambda x: ''.join([str(i) for i in dL[x]])
+  iswell = lambda x: (dL[x] == dL[x][0]).all()
+  getstate  = lambda x: int(np.median(dL[x])) if iswell(x) else 6
+
+  logging.info('CLUSTERING the derived Lattice - UPDATED!')
+  logging.debug('CM Shape: %s    ReductionRate: %6.3f', CM.shape, CM.sum()/(N*K))
+
+# 1. Collapse the Lattice to top nodes
+  # gs, ga = topdown_group_single(dlat, theta)
+  logging.info("Collapsing feature lattice bottom to top...")
+  gs, ga = botup_collapse(dlat, theta)
+  logging.info("  TOTAL # of Cuboids   :   %d", len(gs))
+  grp, nogrp = {}, []
+
+# 2. For each row in input matrix: assign to a cluster
+  clusters = defaultdict(list)
+
+# 3.  For each item: map to a group:   <map>
+  logging.info('Assigning each basin to "best fit" cuboid (or no fit)')
+  progress = ProgressBar(N)
+  for i in range(N):
+    k = fromm(CM[i])
+    if len(k) == 0:
+      continue
+    if k in ga:
+      #  Set its group 
+      grp[i] = ga[k]
+      clusters[ga[k]].append(i)
+    else:
+    # Add all off-by-n 
+      added = False
+      for level in range(1, min(5, len(k)-1)):
+        immed_lower = [''.join(sorted(i)) for i in it.combinations(k, len(k)-level)]
+        for n in immed_lower:
+          if n in ga:
+            clusters[ga[n]].append(i) 
+            added = True
+        if added:
+          break
+
+    #   # Keep track of unassigned nodes (TODO: is this just noise?)
+      if not added:
+        nogrp.append(i)
+    progress.incr()
+
+  logging.info("\n  # Initial Clust   :   %d", len(clusters))
+
+# 4. remove single cluster nodes:
+  keylist = [i[0] for i in sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)]  
+  for k in keylist:
+    if len(clusters[k]) == 0:
+      logging.info('EMPTY CLUSTER')
+    if len(clusters[k]) == 1:
+      for i in clusters[k]:
+        nogrp.append(i)
+      del clusters[k]
+  logging.info("  Pruned Clusters to :   %d       (remove single elm clusters)", len(clusters))
+  logging.info("  Events w/NO grp    :   %d", len(set(nogrp)))
+
+
+  # Convert Mapping to deterministic list
+  keylist = [i[0] for i in sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)]  
+  clulist = [clusters[k] for k in keylist]
+
+# 5. Calc centroids and variance
+  logging.info("Finding Centroids and Variance")
+  centroid = [D[v].mean(0) for v in clulist]
+  variance = [0 for i in range(len(clulist))]
+  for n, (key, clu) in enumerate(zip(keylist, clulist)):
+    # cov = np.cov(D[clu].T)
+    cov = np.cov(D[clu][:,toidx(key)].T)
+    ew, _ = LA.eigh(cov)
+    # variance[n] = np.sum(ew)
+    variance[n] = np.sum(ew) / len(key)
+
+# 6. Calc dist for all cluster pairs
+  Nc = len(clulist)
+  G = np.zeros(shape=(Nc, Nc))
+  logging.info('Using EMD as cluster delta values...')
+  progress = ProgressBar((Nc**2-Nc)/2)
+  for i in range(Nc-1):
+    for j in range(i+1, Nc):
+      # G[i][j] = G[j][i] = LA.norm(centroid[i] - centroid[j])
+      #  USE EMD
+      minv = min(np.min(D[clulist[i]]), np.min(D[clulist[j]].min()))
+      maxv = max(np.max(D[clulist[i]]), np.min(D[clulist[j]].max()))
+      G[i][j] = G[j][i] = cheapEMD(D[clulist[i]], D[clulist[j]], binrange=(minv,maxv))
+      progress.incr()
+
+# 7. Merge Loop
+  logging.info('Running the merge loop')
+  while Nc > num_k:     # TODO HIEARCHICAL
+
+    # 7a. Find cluster pair closest in proximity and smallest cluster
+    smallest = np.argmin([len(clu) for clu in clulist])
+    maxval = G.max()
+
+    np.fill_diagonal(G, maxval)               # To faciitary indexing for row/col (vice nonzero)
+    minval = G.min()
+    minidx = np.argmin(G)                     # Smallest Dist Pair (of flattened array)
+    small_nn = np.argmin(G[smallest])
+    np.fill_diagonal(G, 0)                    # Reset Diag
+    row, col  = minidx // Nc, minidx % Nc     # Indexing trick
+    
+
+    Gv = G[np.triu_indices(len(G), 1)]
+    gmean, gsum, gvar = Gv.mean(), Gv.sum(), Gv.std()
+
+    # 7b. Identfy a "donor" and "attractor" cluster
+    if len(clulist[smallest]) < .0001 * N and minval > 0:
+      m_donor, m_attr = smallest, small_nn
+
+    # Otherwise, merge two clusters closest in proximity
+    else:
+      m_attr  = row if len(clulist[row]) > len(clulist[col]) else col
+      m_donor = col if m_attr == row else row
+
+    k_attr, k_donor = keylist[m_attr], keylist[m_donor]
+    retain_key = max(k_donor, k_attr, key=lambda x: len(x))
+
+    if verbose:
+      logging.info('MERGE   %d.  dis= %5.2f  var=%7.2f  szD=%5d   szA=%5d     maxVar=%5.2f     %s --> %s' % 
+        (Nc, minval, variance[m_donor], len(clulist[m_donor]), len(clulist[m_attr]), np.max(variance),
+          k_donor, k_attr))
+
+    # 7c. Merge donor and attractor basin sets
+
+    # variance[m_attr] = \
+    #   (len(clulist[m_attr]) * variance[m_attr] + len(clulist[m_donor]) * variance[m_donor]) / \
+    #   (len(clulist[m_attr]) + len(clulist[m_donor]))
+
+    clulist[m_attr] = sorted(set(clulist[m_attr]) | set(clulist[m_donor]))
+
+    # 7d. Update: Centroid, Variance, & EdgeMap
+    centroid[m_attr] = D[clulist[m_attr]].mean(0)
+    cov = np.cov(D[clulist[m_attr]][:,toidx(retain_key)].T)
+    ew, _ = LA.eigh(cov)
+    variance[m_attr] = np.sum(ew) / len(retain_key)
+
+    for i in range(Nc):
+      if i in [m_attr, m_donor]:
+        continue
+      # G[m_attr][i] = G[i][m_attr] = LA.norm(centroid[m_attr] - centroid[i])
+      G[m_attr][i] = G[i][m_attr] = cheapEMD(D[clulist[m_attr]], D[clulist[i]], binrange=(minv,maxv))
+
+    # Update Data Stucts
+    keylist[m_attr] = retain_key
+    keylist.pop(m_donor)
+    clulist.pop(m_donor)
+    centroid.pop(m_donor)
+    variance.pop(m_donor)
+    G = np.delete(G, m_donor, 0)
+    G = np.delete(G, m_donor, 1)
+    Nc = len(clulist)
+
+  logging.info("  TOTAL # CLUSTERS   :   %d", len(clulist))
+  return keylist, clulist, centroid, variance, G
+
+
 
 
 def rollup_lattice(dlat, CM, theta=.9):

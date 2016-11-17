@@ -1,5 +1,5 @@
 """Database module for maintaining experiment-wide metrics
-""" 
+"""  
 import sqlite3
 import sys
 import os
@@ -163,6 +163,15 @@ tables = {
   obs text NOT NULL,
   CONSTRAINT PK_sw PRIMARY KEY (expid, idx),
   CONSTRAINT FK_expid FOREIGN KEY (expid) REFERENCES expr (expid)
+);
+""",
+'latt':
+"""CREATE TABLE IF NOT EXISTS latt (
+  wt text,
+  support integer,
+  numclu integer,
+  bin text,
+  score real
 );
 """
 }
