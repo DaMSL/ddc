@@ -1,4 +1,5 @@
 import os
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import rc
 from mpl_toolkits.mplot3d import Axes3D
@@ -27,8 +28,9 @@ ecolors = {'Serial': 'darkorange',
            'MVNN': 'darkmagenta', 
            'Reweight': 'red'}
 
-arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim']
+arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim', 'latex']
 axis_list = ['xscale', 'yscale', 'xlog', 'ylog', 'xticks', 'yticks']
+figure_list = ['figsize']
 st_col = ['red', 'blue', 'green', 'purple', 'black']
 
 def prep_graph():
@@ -53,7 +55,14 @@ def graph_args(kwargs):
   title = 'graph' if arg['title'] is None else arg['title']
   plt.title(title)
   fname = title if arg['fname'] is None else arg['fname']
-  plt.savefig(SAVELOC + '/' + fname + '.png')
+
+  if arg['latex']:
+    # plot_latex()
+    ftype = '.pdf'
+  else:
+    ftype = '.png'
+
+  plt.savefig(SAVELOC + '/' + fname + ftype)
   plt.close()
 
 def graph_axis(ax, kwargs):
@@ -88,10 +97,54 @@ def graph_axis(ax, kwargs):
       ax.set_yticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
 
   if arg['xticks'] is not None:
-      ax.set_xticklabels(xticks)
+      # start, end = ax.get_xlim()
+      # dx = (end - start) / len(arg['xticks'])
+      # ax.xaxis.set_ticks(np.arange(start, end, dx)+dx/2.)
+      ax.set_xticklabels(arg['xticks'])
 
   if arg['yticks'] is not None:
-      ax.set_yticklabels(yticks)
+      # start, end = ax.get_ylim()
+      # dy = (end - start) / len(arg['yticks'])
+      # ax.yaxis.set_ticks(np.arange(start, end, dy)+dy/2.)
+      ax.set_yticklabels(arg['yticks'])
+
+def graph_figure(kwargs):
+  arg = {k: kwargs.get(k, None) for k in figure_list}
+  fig = plt.gcf()
+  if arg['figsize'] is not None:
+    fig.set_size_inches(*arg['figsize'])
+
+
+def latex_figsize(scale):
+    fig_width_pt = 347.12354                          # Get this from LaTeX using \the\textwidth
+    inches_per_pt = 1.0/72.27                       # Convert pt to inch
+    golden_mean = (np.sqrt(5.0)-1.0)/2.0            # Aesthetic ratio (you could change this)
+    fig_width = fig_width_pt*inches_per_pt*scale    # width in inches
+    fig_height = fig_width*golden_mean              # height in inches
+    fig_size = [fig_width,fig_height]
+    return fig_size
+
+def plot_latex():
+  # mpl.use('agg')
+  pgf_with_latex = {                      # setup matplotlib to use latex for output
+    # "pgf.texsystem": "pdflatex",        # change this if using xetex or lautex
+    "text.usetex": True,                # use LaTeX to write all text
+    "font.family": "serif",
+    "font.serif": [],                   # blank entries should cause plots to inherit fonts from the document
+    "font.sans-serif": [],
+    "font.monospace": [],
+    "axes.labelsize": 10,               # LaTeX default is 10pt font.
+    "text.fontsize": 10,
+    "legend.fontsize": 8,               # Make the legend/label fonts a little smaller
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "figure.figsize": latex_figsize(0.9)     # default fig size of 0.9 textwidth
+    # "pgf.preamble": [
+    #     r"\usepackage[utf8x]{inputenc}",    # use utf8 fonts becasue your computer can handle it :)
+    #     r"\usepackage[T1]{fontenc}",        # plots will be generated using this preamble
+    #     ]
+    }
+  mpl.rcParams.update(pgf_with_latex)  
 
 
 # ecolors = {'Serial': '#FF8C00', 
@@ -434,6 +487,7 @@ def lines(series, xseries=None, showlegend=True, **kwargs): #title, xlim=None, l
   if showlegend:
     plt.legend(loc='upper left')
   graph_axis(ax, kwargs)
+  graph_figure(kwargs)
   graph_args(kwargs)
 
 
@@ -636,7 +690,7 @@ def stackhisto(data, **kwargs):
   state_legend()
   graph_args(kwargs)
 
-def bargraph_simple(data, err=None, **kwargs):
+def bargraph_simple(data, err=None, revsort=False, **kwargs):
   prep_graph()
   fig, ax = plt.subplots()
   labels = None
@@ -645,7 +699,7 @@ def bargraph_simple(data, err=None, **kwargs):
     if err is not None:
       error = err
   elif isinstance(data, dict):
-    labels = sorted(data.keys())
+    labels = sorted(data.keys(), reverse=revsort)
     Y = [data[i] for i in labels]
     if err is not None:
       error = [err[i] for i in labels]
@@ -666,7 +720,8 @@ def bargraph_simple(data, err=None, **kwargs):
     if err is not None:
       vmax += np.max(error)
     kwargs['ylim'] = (0, vmax)
-  plt.tight_layout()
+  # plt.tight_layout()
+  graph_axis(ax, kwargs)
   graph_args(kwargs)
 
 def feadist(data, title, fname=None, err=None, pcount=None, norm=1, negval=False):

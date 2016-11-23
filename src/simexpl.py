@@ -49,6 +49,24 @@ __version__ = "0.1.1"
 __email__ = "ring@cs.jhu.edu"
 __status__ = "Development"
 
+# EXPERIMENT NUMBER REFERENCE:
+    # 12 - UNIFORM
+    # 13 - LATTICE (DS)
+    # 14 - LATTICE (orig)
+    # 15 - DENOVO (w/lattice)
+    # 16 - LATTICE_T (TRANSITION w/resrmds)
+    # 17 - BIASED
+
+# FOR METRICS:::
+def LABEL10(L, theta=0.9):
+  count = np.bincount(L, minlength=5)
+  A, A2 = np.argsort(count)[::-1][:2]
+  A_amt = count[A] / len(L)
+  return 'T%d' % A if A_amt < theta or (L[0] != L[-1]) else 'W%d' % A
+
+
+
+
 logging.basicConfig(format=' %(message)s', level=logging.DEBUG)
 
 PARALLELISM = 24
@@ -168,11 +186,7 @@ class simulationJob(macrothread):
     EXPERIMENT_NUMBER = settings.EXPERIMENT_NUMBER
     logging.info('Running Experiment Configuration #%d', EXPERIMENT_NUMBER)
 
-
     # # Grab historical basin data's relative time to start (for lineage)
-    # reltime_start = self.catalog.hget('basin:' + job['src_basin'], 'time')
-
-
     traj = None
 
   # EXECUTE SIMULATION ---------------------------------------------------------
@@ -317,39 +331,21 @@ class simulationJob(macrothread):
   # 1. With combined Sim-analysis: file is loaded locally from shared mem
     logging.debug("2. Load DCD")
 
-    # topofile = os.path.join(settings.workdir, self.data['pdb:topo'])
+    # Load topology and define filters
     topo = self.protein.pdb
-
-    # Load full higher dim trajectory
-    # traj = datareduce.filter_heavy(dcd_ramfile, job['pdb'])
-    if traj is None:
-      if USE_SHM:
-        traj = md.load(dcd_ramfile, top=job['pdb'])
-      else:
-        traj = md.load(dcdFile, top=job['pdb'])
-
-
-    # bench.mark('File_Load')
-    logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
-
-
-    # Slice / filter traj
-    # Calc RMSD / CA-DiH for each obs
-    # Run Timescapes agility
-    # Parse Timescapes results (from seg.dat)
-    # Spatio-Temp cluster
-    # For each basin:
-      #  Create basin Object  (?)
-      #  ID/Store local minima as JC
-      #  Calc median RMSD, CA-DiH (phi/psi??), atom-variance
-      #  Label via atom variance
-      #  Store Data
-
-    # TODO: VERTIFY this filter
     pdb = md.load(job['pdb'])
     hfilt = pdb.top.select_atom_indices('heavy')
     pfilt = pdb.top.select('protein')
     afilt = pdb.top.select_atom_indices('alpha')
+
+    # Load full higher dim trajectory
+    if traj is None:
+      if USE_SHM:
+        traj = md.load(dcd_ramfile, top=pdb)
+      else:
+        traj = md.load(dcdFile, top=pdb)
+
+    logging.debug('Trajectory Loaded: %s (%s)', job['name'], str(traj))
     traj_prot = traj.atom_slice(pfilt)
     traj_heavy = traj.atom_slice(hfilt)
     traj_alpha = traj.atom_slice(afilt)
@@ -367,23 +363,6 @@ class simulationJob(macrothread):
     # NOTE THE CONVERSION FROM NM TO ANG!!!!!!
     dist_space = 10 * DR.distance_space(traj_alpha)
 
-    # lm_file = os.path.join(settings.workdir, self.data['pdb:ref:0'])
-    # landmark  = md.load(lm_file)
-
-    # Calculate RMSD for ea (note conversion nm -> angstrom)
-    # logging.info('Running Metrics on local output:  RMSD')
-    # rmsd = 10 * md.rmsd(traj_prot, landmark, 0, hfilt, hfilt, precentered=True)
-
-    # Calc Phi/Psi angles
-    # phi_angles = md.compute_phi(traj)[1][0]
-    # psi_angles = md.compute_psi(traj)[1][0]
-    # phi_lm = md.compute_phi(landmark)[1][0]
-    # psi_lm = md.compute_psi(landmark)[1][0]
-    # phi = np.array([LA.norm(a - phi_lm) for a in phi_angles])
-    # psi = np.array([LA.norm(a - psi_lm) for a in psi_angles])
-
-    # Execute Timescapes agility program to detect spatial-temporal basins
-    output_prefix = os.path.join(job['workdir'], job['name'])
     # Get the frame rate to for conversion between source and timescape
     #  NOTE: Timescae is run at a more coarse level
     logging.debug('Preprocessing output for TimeScapes: terrain')
@@ -392,10 +371,11 @@ class simulationJob(macrothread):
     frame_rate = int(ts_frame_per_ps / traj_frame_per_ps)
     logging.debug('%5.2f fr/ps (Traj)     %5.2f fr/ps (TS)    FrameRate= %4.1f', traj_frame_per_ps, ts_frame_per_ps, frame_rate)
 
+    # Execute Timescapes agility program to detect spatial-temporal basins
+    output_prefix = os.path.join(job['workdir'], job['name'])
     if not self.skip_timescape:
       # Prep file and save locally in shm
       tmploc = gettempdir()
-
       ts_out = tmploc + 'traj_ts'
       ts_dcd = ts_out + '.dcd'
       ts_pdb = ts_out + '.pdb'
@@ -422,14 +402,12 @@ class simulationJob(macrothread):
     ts_parse = TimeScapeParser(job['pdb'], output_prefix, job['name'], 
       dcd=dcdFile, traj=traj, uniqueid=False)
     basin_list = ts_parse.load_basins(frame_ratio=frame_rate)
-    corr_matrix = ts_parse.correlation_matrix()
     n_basins = len(basin_list)
 
     minima_coords = {}
     basin_rms = {}
     basins = {}
 
-    new_corr_vect={}
     new_dmu={}
     new_dsig={}
     resid_rms_delta = {}
@@ -445,14 +423,13 @@ class simulationJob(macrothread):
     rmsd = 10*md.rmsd(traj_alpha, ref_alpha)
 
     # FOR RESIDUE RMSD
-    res_rms_Kr = FEATURE_SET
+    res_rms_Kr = FEATURE_SET_RESID
     resrmsd = 10*np.array([LA.norm(i-ref_alpha.xyz[0], axis=1) for i in traj_alpha.xyz])
     basin_res_rms = np.zeros(shape=(len(basin_list), traj_alpha.n_atoms))
 
-    if settings.EXPERIMENT_NUMBER == 17:
-      # GRAD CENROIDS -- todo move to immut
-      centroid = pickle.loads(self.catalog.get('centroid:ds'))
-      basin_label_list = {}
+    # LOAD CENROIDS -- todo move to immut
+    centroid = pickle.loads(self.catalog.get('centroid:ds'))
+    basin_label_list = {}
 
     # Process each basin
     for i, basin in enumerate(basin_list):
@@ -468,7 +445,6 @@ class simulationJob(macrothread):
 
       # METRIC CALCULATION
       a, b = basin.start, basin.end
-      new_corr_vect[bid] = np.mean(corr_matrix[a:b], axis=0)
       new_dmu[bid]    = np.mean(dist_space[a:b], axis=0)
       new_dsig[bid]   = np.std(dist_space[a:b], axis=0)
 
@@ -485,17 +461,11 @@ class simulationJob(macrothread):
       basins[bid] = basin_hash
 
       # LABEL ATEMPORAL DATA
-      if settings.EXPERIMENT_NUMBER == 17:
-        # Take every 4th frame
-        stride = [dist_space[i] for i in range(a,b,4)]
-        rms = [LA.norm(centroid - i, axis=1) for i in stride]
-        label_seq = [np.argmin(i) for i in rms]
-        basin_label_list[bid] = label_seq
-
-      # new_[i] =  = pickle.dumps(corr_vector)
-      # new_[i] =         = pickle.dumps(dspace_mean)
-      # new_[i] =      = pickle.dumps(dspace_std)
-
+      # Take every 4th frame
+      stride = [dist_space[i] for i in range(a,b,4)]
+      rms = [LA.norm(centroid - i, axis=1) for i in stride]
+      label_seq = [np.argmin(i) for i in rms]
+      basin_label_list[bid] = label_seq
       logging.info('  Basin Processed: #%s, %d - %d', basin_hash['traj'], 
         basin_hash['start'], basin_hash['end'])
 
@@ -515,6 +485,32 @@ class simulationJob(macrothread):
     # except OverlayNotAvailable as e:
     #   logging.warning("Catalog Overlay Service is not available. Scheduling ASYNC Analysis")
 
+  # FOR EXPERIMENT METRICS
+    src_basin = self.catalog.hgetall("basin:" + job['src_basin'])
+    with open('/home-1/bring4@jhu.edu/ddc/results/{0}_prov.log'.format(settings.name), 'a') as metric_out:
+      for i, basin in enumerate(basin_list):
+        bid = basin.id
+        label_seq = basin_label_list[bid]
+        basin_metric_label = LABEL10(label_seq)
+        metric_out.write('BASIN,%s,%s,%s,%s\n'% \
+          (bid, src_basin['label:10'], basin_metric_label, ''.join([str(i) for i in label_seq])))
+
+  # Update Index Synchronized data lists
+    basin_list_sorted =sorted(basins.keys(), key=lambda x: (x.split('_')[0], int(x.split('_')[1])))
+    for bid in basin_list_sorted:
+      with self.catalog.pipeline() as pipe:
+        while True:
+          try:
+            logging.debug('Updating %s basin indeces and distance space', len(basins))
+            pipe.rpush('basin:list', bid)
+            pipe.rpush('dspace', pickle.dumps(new_dmu[bid]))
+            basin_index,_ = pipe.execute()
+            break
+          except redis.WatchError as e:
+            logging.debug('WATCH ERROR. Someone else is writing to the catalog. Retrying...')
+            continue
+      basins[bid]['dsidx'] = basin_index - 1
+
   # Update Catalog with 1 Long Atomic Transaction  
     with self.catalog.pipeline() as pipe:
       while True:
@@ -527,64 +523,32 @@ class simulationJob(macrothread):
           logging.debug('Update HD Points')
           start_index = pipe.llen('xid:reference')
           pipe.multi()
-
           pipe.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
           pipe.set('resrms:' + job['name'], resrmsd)
 
+          # Store all basin data
           logging.debug('Updating %s basins', len(basins))
           for bid in sorted(basins.keys(), key=lambda x: (x.split('_')[0], int(x.split('_')[1]))):
-            pipe.rpush('basin:list', bid)
-            # pipe.hset('basin:rms', bid, basin_rms[bid])
             pipe.hmset('basin:'+bid, basins[bid])
             pipe.set('minima:%s'%bid, pickle.dumps(minima_coords[bid]))
-
-            pipe.set('basin:cm:'+bid, pickle.dumps(new_corr_vect[bid]))
-
-
-
-            if settings.EXPERIMENT_NUMBER == 16:
-              pipe.set('basin:dmu:'+bid, pickle.dumps(basin_rms_delta_bykey[bid]))
-            else:
-              pipe.set('basin:dmu:'+bid, pickle.dumps(new_dmu[bid]))
-              pipe.set('basin:rmsdelta:'+bid, pickle.dumps(basin_rms_delta_bykey[bid]))
-
-            if settings.EXPERIMENT_NUMBER == 17:
-              for i in basin_label_list[bid]:
-                pipe.rpush('basin:labelseq:'+bid, i)
-
-            # pipe.set('basin:dsig:'+bid, pickle.dumps(new_dsig[bid]))
+            for i in basin_label_list[bid]:
+              pipe.rpush('basin:labelseq:'+bid, i)
 
           pipe.hset('anl_sequence', job['name'], mylogical_seqnum)
-
-          # if EXPERIMENT_NUMBER == 14:
-          #   # Push Lattice Delta  -- SHOULD Ik be included or derived????
-          #   # DO WE EVEN CREATE IT HERE OR JUST PUSH DIST_SPACE items
-
-          #   pipe.set('lattice:delta:%s:max_fis'%job['name'], pickle.dumps(lattice.max_fis))
-          #   pipe.set('lattice:delta:%s:low_fis'%job['name'], pickle.dumps(lattice.low_fis))
-          #   pipe.set('lattice:delta:%s:dlat'%job['name'], pickle.dumps(lattice.dlat))
-          #   pipe.set('lattice:delta:%s:Ik'%job['name'], pickle.dumps(lattice.Ik))
-          #   pipe.set('lattice:delta:%s:E'%job['name'], pickle.dumps(basin_DS))
 
           logging.debug('Executing')
           pipe.execute()
           break
 
         except redis.WatchError as e:
-          logging.debug('WATCH ERROR')
+          logging.debug('WATCH ERROR. Someone else is writing to the catalog. Retrying...')
           continue
 
     self.data[key]['xid:start'] = start_index
     self.data[key]['xid:end'] = start_index + traj.n_frames
     bench.mark('catalog')
 
-    # # COPY OUT TimeScapes Logs (to help debug):
-    # ts_logfiles = [f for f in os.listdir(ts_out) if f.endswith('log')]
-    # for f in ts_logfiles:
-    #   shutil.copy(f, os.path.join(settings.jobdir, job['name']))
-
   # ---- POST PROCESSING
-
     # Check for total data in downstream queue  & Notify control manager to run
     # 1. Det. what's still running
     job_queue = slurm.currentqueue()
@@ -593,26 +557,25 @@ class simulationJob(macrothread):
       if j['name'].startswith('sw'):
         n_simjobs += 1
 
+    logging.info('SIM WORKER has detected %d other simulations running/pending.', len(job_queue))
+    remain_percent = n_simjobs / self.data['numresources']
+
+    # Fault Tolerance: ensure the pipeline persists
     if n_simjobs == 0:
       logging.info('I am the last simulation. Ensuring the controler executes.')
       self.catalog.set('ctl:force', 1)
 
-    logging.info('SIM WORKER has detected %d other simulations running/pending.', len(job_queue))
-    remain_percent = n_simjobs / self.data['numresources']
+    # Send downstream notification when less than 10% of jobs are still running
     if not self.skip_notify and remain_percent < .1:
       # Notify the control manager 'CM'
-      # TODO: can abstract this with notify_downstream
       self.notify('ctl')
-
 
     if USE_SHM:
       shutil.rmtree(ramdisk)
       shm_contents = os.listdir('/dev/shm')
-      # shm_contents = os.listdir('/tmp')
       logging.debug('Ramdisk contents (should be empty of DDC) : %s', str(shm_contents))
     
     # For benchmarching:
-    # print('##', job['name'], dcdfilesize/(1024*1024*1024), traj.n_frames)
     bench.show()
     stat.show()
 

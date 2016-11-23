@@ -22,12 +22,12 @@ cutoff = 8
 # ARG PARSER
 parser = argparse.ArgumentParser()
 parser.add_argument('support', type=int)
-parser.add_argument('clusters', type=int)
-parser.add_argument('--seqnum', type=int, default=1)
+# parser.add_argument('clusters', type=int)
+parser.add_argument('--seqnum', type=int, default=0)
 args = parser.parse_args()
 support = args.support
 seqnum = args.seqnum
-num_clu = args.clusters
+# num_clu = args.clusters
 
 def LABEL10(L, theta=0.9):
   count = np.bincount(L, minlength=5)
@@ -39,9 +39,8 @@ def LABEL10(L, theta=0.9):
   else:
     return 'W%d' % A
 
-
 # LOGGING
-LOGFILE = home + '/work/latt_intrinsics/cluster_%d_%d.log'% (support, num_clu)
+LOGFILE = home + '/work/latt_intrinsics/bench_%d_%d.log'% (support, seqnum)
 
 for handler in logging.root.handlers[:]:
     logging.root.removeHandler(handler)
@@ -54,9 +53,8 @@ logging.getLogger('').addHandler(console)
 
 
 logging.info('SUPPORT,%d', support)
-logging.info('NUM_CLUSTER,%d', num_clu)
 
-logging.info('Loading sigma...')
+logging.info('Loading sigma.. .')
 sigma = np.load(home+'/work/results/DE_basin_sigma_Km.npy')
 logging.info('Loading distance space...')
 DS = 10*np.load('../data/de_ds_mu.npy')
@@ -82,29 +80,34 @@ logging.info('\n\n----------------------')
 logging.info('SIZE,iset,%d', len(iset))
 logging.info('SIZE,dlat,%d', len(dlat))
 
+clunumlist = [1000, 500, 250, 100, 50, 30, 25, 20, 18, 16, 14, 12, 10, 8, 6]
+for seqnum in range(1,3):
+  for num_clu in clunumlist:
+    logging.info('\n\n----------------------')
+    logging.info('NUM_CLUSTER,%d', num_clu)
+    logging.info('----------------------')
+    logging.info('Clustering Lattice:')
+    keylist, clulist, centroid, variance, G = lat.cluster_harch(dlat, CMr, Dr, theta=.5, num_k=num_clu, dL=None, verbose=False)
 
-for n in range(seqnum):
-  logging.info('\n\n----------------------')
-  logging.info('%2d. Clustering Lattice:', n)
-  keylist, clulist, centroid, variance, G = lat.cluster_harch(dlat, CMr, Dr, theta=.5, num_k=num_clu, dL=None, verbose=False)
+    logging.info('Scoring Lattice:')
+    well, tran = lat.score_clusters(clulist, Dr, centroid, variance, G, sigma, DE_LABEL)
 
-  logging.info('%2d. Scoring Lattice:', n)
-  well, tran = lat.score_clusters(clulist, Dr, centroid, variance, G, sigma, DE_LABEL)
+    TBIN10 = sorted(set(DE_LABEL))
+    for k in TBIN10:
+      logging.info('SCORE,%d,W,%d,%d,%s,%.5f', seqnum, support, num_clu, k, well[k])
 
-  TBIN10 = sorted(set(DE_LABEL))
-  for k in TBIN10:
-    logging.info('SCORE,%d,W,%d,%d,%s,%.5f', n, support, num_clu, k, well[k])
+    for k in TBIN10:
+      logging.info('SCORE,%d,T,%d,%d,%s,%.5f', seqnum, support, num_clu, k, tran[k])
 
-  for k in TBIN10:
-    logging.info('SCORE,%d,T,%d,%d,%s,%.5f', n, support, num_clu, k, tran[k])
-
-
-
+# keylist, clulist, centroid, variance, G = lat.cluster_harch(dlat, CMr, Dr, theta=.5, num_k=num_clu, dL=dL, verbose=True)
+# well, tran = lat.score_clusters(clulist, Dr, centroid, variance, G, sigma, DE_LABEL)
 # FOR BASE VALUES
-# cnt = defaultdict(int)
-# for i in L: cnt[i] += 1
+base = defaultdict(int)
+for i in L: base[i] += 1
 
-# for k,v in sorted(cnt.items()): print(k, v/91116)
+
+
+for k,v in sorted(cnt.items()): print(k, v/91116)
 
 
 

@@ -133,10 +133,12 @@ def generateFromBasin(basin, jcid=None):
     if basin['id'].isdigit():
         fileno = int(basin['traj'][-4:])
         frame = int(basin['mindex'])
-        return generateDEShawJC(fileno, frame, jcid)
+        jcuid, params = generateDEShawJC(fileno, frame, jcid)
+        params['src_basin'] = '%07d' % int(basin['id'])
     else:
-        return generateExplJC(basin, jcid)
-
+        jcuid, params = generateExplJC(basin, jcid)
+        params['src_basin'] = basin['id']
+    return jcuid, params
 
 def generateExplJC(basin, jcid=None):
     """Creates input parameters for a running explcit solvenet simulation.
@@ -209,7 +211,7 @@ def generateDEShawJC(fileno, frame, jcid=None):
         pdb     = newPdbFile,
         psf     = newPsfFile,
         src_traj = src_file,
-        src_basin = '%07d' % index)
+        )
 
     # Add in the force field data from global config and pre-set constraint file:
     newsimJob['ffield_dir'] = os.path.join(config.workdir, config.sim_params['ffield_dir'])

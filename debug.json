@@ -24,6 +24,7 @@
         "timescape:gmd:low": 2,
         "timescape:gmd:hi": 3,
         "raritytheta": 0.15,
+        "sampler:explore": 0.0,
         "sampler:n_clust": 25,
         "sampler:cutoff": 12
     },
@@ -39,7 +40,7 @@
         "protein:bpti": "bpti/5PTI.pdb"
     },
     "settings": {
-        "experiment_number": 14,
+        "experiment_number": 13,
         "simulation_ratio": 10,
         "catalog_port": 6399,
         "catalog_idle_theta": 300,

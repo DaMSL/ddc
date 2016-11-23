@@ -99,10 +99,9 @@ def initializecatalog(catalog):
   for k, v in initvals.items():
     logging.debug("Initializing data elm %s  =  %s", k, str(v))
 
-  if settings.EXPERIMENT_NUMBER == 17:
     # LOADING CENTROIDS
-    cent = 10 * np.load('data/bpti-alpha-dist-centroid.npy')
-    catalog.set('centroid:ds', pickle.dumps(cent))
+  cent = 10 * np.load('data/bpti-alpha-dist-centroid.npy')
+  catalog.set('centroid:ds', pickle.dumps(cent))
 
 def load_historical_DEShaw(catalog):
   """ Load all DEShaw data into basins for processing """
@@ -129,7 +128,6 @@ def load_historical_DEShaw(catalog):
     last = None
     offset = 100000*i
     pipe = catalog.pipeline()
-
     while basin_index < len(minima_list):
       ### MINIMA IS LOCAL TO FULL 2.5us FILE
       ### WINDOW IS GLOBAL INDEX OVER ALL 4.125Mil Frames
@@ -143,29 +141,23 @@ def load_historical_DEShaw(catalog):
       if last is not None:
         basin.prev = last.id
         basin_list[-1].next = basin.id
-
-
       basin_list.append(basin)
       last = basin
       basin_index += 1
-
       basin_hash = basin.kv()
-
-
-      if settings.EXPERIMENT_NUMBER == 17:
-        label_seq = atemp_labels[a+offset:b+offset]
-        basin_hash['label:10'] = label10 = bin_label_10(label_seq)
-        basin_hash['label:25'] = label25 = bin_label_25(label_seq)
-        bin_list_10[label10].append(bnum)
-        bin_list_25[label25].append(bnum)
-
+      basin_hash['dsidx'] = bnum
+      label_seq = atemp_labels[a+offset:b+offset]
+      basin_hash['label:10'] = label10 = bin_label_10(label_seq)
+      basin_hash['label:25'] = label25 = bin_label_25(label_seq)
+      bin_list_10[label10].append(bnum)
+      bin_list_25[label25].append(bnum)
       pipe.rpush('bin:10:%s' % label10, bnum)
       pipe.rpush('bin:25:%d_%d' % label25, bnum)
       pipe.rpush('basin:list', basin_id)
       pipe.hmset('basin:%s'%basin_id, basin_hash)
       bnum += 1
-
     pipe.execute()
+  catalog.set('basin:processed', bnum)
 
   # logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
   # corr_matrix = np.load('data/de_corr_matrix.npy')
@@ -231,25 +223,22 @@ def load_historical_DEShaw(catalog):
         pipe.rpush('dspace', pickle.dumps(elm))   # NOTE DS is RESID_RMSD
       pipe.execute()
 
-
-  if settings.EXPERIMENT_NUMBER == 17:
-    # Calculate Centroids -- for explore/exploit within cluster
-    logging.info('Retrieving raw distance space from file')
-    de_ds = 10*np.load('data/de_ds_mu.npy')
-    logging.info('Calculating bin centroids (for 10-Bin labels)')
-    for i, b in enumerate(bin_labels_10):
-      centroid = np.mean(de_ds[bin_list_10[b]], axis=0)
-      catalog.set('bin:10:centroid:%s' % b, pickle.dumps(centroid))
-    logging.info('Calculating bin centroids (for 25-Bin labels)')
-    for i, b in enumerate(bin_labels_25):
-      centroid = np.mean(de_ds[bin_list_25[b]], axis=0)
-      catalog.set('bin:25:centroid:%d_%d' % b, pickle.dumps(centroid))
-    logging.info('Loading raw distance space into catalog')
-    with catalog.pipeline() as pipe:
+  # Calculate Centroids -- for explore/exploit within cluster
+  logging.info('Retrieving raw distance space from file')
+  de_ds = 10*np.load('data/de_ds_mu.npy')
+  logging.info('Calculating bin centroids (for 10-Bin labels)')
+  for i, b in enumerate(bin_labels_10):
+    centroid = np.mean(de_ds[bin_list_10[b]], axis=0)
+    catalog.set('bin:10:centroid:%s' % b, pickle.dumps(centroid))
+  logging.info('Calculating bin centroids (for 25-Bin labels)')
+  for i, b in enumerate(bin_labels_25):
+    centroid = np.mean(de_ds[bin_list_25[b]], axis=0)
+    catalog.set('bin:25:centroid:%d_%d' % b, pickle.dumps(centroid))
+  logging.info('Loading raw distance space into catalog')
+  with catalog.pipeline() as pipe:
       for elm in de_ds:
         pipe.rpush('dspace', pickle.dumps(elm))
       pipe.execute()
-
 
   logging.info('DEShaw data loaded. ALL Done!')
   # FOR CREATING CM/MU/SIGMA vals for first time
@@ -264,171 +253,6 @@ def load_historical_DEShaw(catalog):
   # jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
   # minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
   # minima_frame.save_pdb(jc_filename)
-
-def load_historical_Expl(catalog):
-  """ Load all DEShaw data into basins for processing """
-  settings = systemsettings()
-  
-  # idx_list      = [0,1,2,3,4,20,23,24,30,32,34,40,41,42]
-  idx_list      = [0,34]
-  tlist         = {k: 'tr%d.dcd'%k for k in idx_list}
-  seed_dir      = os.path.join(settings.WORKDIR, 'seed')
-  seed_ts_ratio = 16     # TimeScape ran on 4ps frame rate (16x source)
-
-  # Load topology and anscillary data
-  # bpti = Protein(bpti, catalog, load=True)
-  pdb_file = os.path.join(seed_dir, 'coord.pdb')
-  topo = md.load(pdb_file)
-  pfilt = topo.top.select('protein')
-
-  logging.info('Topology loaded %s', topo)
-
-  # ID Side Chain pair atoms for each distance space calc 
-  sc_pairs = side_chain_pairs(topo.atom_slice(pfilt))
-  logging.info('Identified side chains: %d', len(sc_pairs))
-
-
-  # Process all sorce trajectories
-  basin_list = []
-  C_T, mu_T, sigma_T = [], [], []
-  for idx in idx_list:
-    logging.info('Procesing Seed index: %d', idx)
-    # Load SRC seed trajetory & calc distance space  -- TODO: make this optional
-    tfile = os.path.join(seed_dir, tlist[idx])
-    traj = md.load(tfile, top=topo)
-    traj.superpose(topo)
-    ds = datareduce.distance_space(traj, pairs=sc_pairs)
-
-      # Push to Catalog
-    file_idx = catalog.rpush('xid:filelist', tfile) - 1
-    start_index = catalog.llen('xid:reference')
-    # TODO: Do I still need to index every frame??????
-    catalog.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
-
-    # Process Trajectory as basins
-    logging.info("  Seed Loaded. Loading TimeScape Data...")
-    seed_name = 'tr%d'%idx
-    ts_data_path  = os.path.join(seed_dir, 'TEST', seed_name)
-    ts_traj = TimeScapeParser(pdb_file, 
-        ts_data_path, seed_name, dcd=tfile, traj=traj)
-    basin_list = ts_traj.load_basins(frame_ratio=seed_ts_ratio)
-    corr_mat   = ts_traj.correlation_matrix()
-
-    for i, basin in enumerate(ts_traj.basins):
-      a, b = basin.start, basin.end
-      bid = basin.id
-      if a > traj.n_frames:
-        logging.info('Finished processing all basins for this Trajectory!')
-        break
-
-      # Store on Disk and in redis
-      jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
-      minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
-      minima_frame.save_pdb(jc_filename)
-
-      C_T.append(np.mean(corr_mat[a:b], axis=0))
-      mu_T.append(np.mean(ds[a:b], axis=0))
-      sigma_T.append(np.std(ds[a:b], axis=0))
-     
-      basin_hash = basin.kv()
-      basin_hash['pdbfile'] = jc_filename
-      logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
-
-      pipe = catalog.pipeline()
-      pipe.rpush('basin:list', bid)
-      pipe.hmset('basin:%s'%bid, basin_hash)
-      pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
-      pipe.execute()
-
-  catalog.storeNPArray(np.array(C_T), 'corr_vector')
-  catalog.storeNPArray(np.array(mu_T), 'dspace_mu')
-  # catalog.storeNPArray(np.array(sigma_T), 'dspace_sigma')
-
-def load_seeds(catalog, calc_seed_rms=False):
-    settings = systemsettings()
-    idx_list  = [0,1,2,3,4,20,23,24,30,32,34,40,41,42]
-    # seed_frame_length = 8000
-
-
-    # slist = {k: 'seed%d'%k for k in idx_list}
-    tlist = {k: 'tr%d.dcd'%k for k in idx_list}
-    logging.info('Loading %d seeds for experiment %s', len(slist.keys()), catalog.get('name'))
-
-    seed_dir = os.path.join(settings.WORKDIR, 'seed')
-    seed_frame_rate = 0.25  # in ps
-    seed_ts_factor = 16     # TimeScape ran on 4ps frame rate (16x source)
-
-    bpti = Protein(bpti, catalog, load=True)
-    pdb_file = bpti.pdbfile
-
-    print("PDB FILE: ", settings.workdir, pdb_file)
-    topo = bpti.pdb
-    logging.info('Topology file: %s  <%s>', pdb_file, str(topo))
-
-    # ref_file = os.path.join(settings.workdir, catalog.get('pdb:ref:0'))
-    # ref_traj = md.load(ref_file)
-    # logging.info('RMS Reference file: %s  <%s>', ref_file, str(ref_traj))
-
-    hfilt = bpti.get_filter('heavy')
-
-    ts_rate = catalog.get('timescape:rate')
-
-    for idx in idx_list:
-      s, t = slist[idx], tlist[idx]
-      logging.info('Trajectory SEED:  %s', s)
-      tfile = os.path.join(seed_dir, t)
-
-
-      # FOR RMSD CALCULATIONS  EXP #12
-      # rms_file = os.path.join(seed_dir, 'rms', 'rms%d'%idx)
-      # if calc_seed_rms:
-      #   traj = md.load(tfile, top=topo)
-      #   traj.superpose(topo)
-      #   protein = traj.atom_slice(bpti.get_filter('protein'))
-      #   ####  METRIC GOES HERE
-      #   rms = 10*md.rmsd(protein, ref_traj, 0, hfilt, hfilt, precentered=True)
-      #   np.save(rms_file, rms)
-      # else:
-      #   traj = None
-      #   rms = np.load(rms_file + '.npy')
-
-      # Push to Catalog
-      file_idx = catalog.rpush('xid:filelist', tfile) - 1
-      start_index = catalog.llen('xid:reference')
-
-      # TODO: Do I still need to index every frame??????
-      catalog.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
-      # catalog.rpush('metric:rms', *rms)
-
-      # Process Trajectory as basins
-      logging.info("  Seed Loaded. Loading TimeScape Data...")
-      seed_name = 'seed%d'%idx
-      ts_traj = TimeScapeParser(pdb_file, 
-          os.path.join(seed_dir, 'out', seed_name),
-          seed_name, dcd=tfile, traj=traj)
-      ts_traj.load_basins(frame_ratio=seed_ts_factor)
-
-      for i, basin in enumerate(ts_traj.basins):
-        pipe = catalog.pipeline()
-        bid = basin.id
-        # Store on Disk and in redis
-        jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
-        minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
-        minima_frame.save_pdb(jc_filename)
-
-
-        a, b = basin.start, basin.end
-        basin_rms = np.median(rms[a:b])
-       
-        basin_hash = basin.kv()
-        basin_hash['pdbfile'] = jc_filename
-        logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
-
-        pipe.rpush('basin:list', bid)
-        pipe.hset('basin:rms', bid, basin_rms)
-        pipe.hmset('basin:%s'%bid, basin_hash)
-        pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
-        pipe.execute()
 
 def make_jobs(catalog, num=1):
   """
@@ -451,25 +275,86 @@ def make_jobs(catalog, num=1):
   force_field_dir = os.path.join(settings.workdir, catalog.get('ffield_dir'))
   sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
 
+  bin_labels_10 = ['T0', 'T1', 'T2', 'T3', 'T4', 'W0', 'W1', 'W2', 'W3', 'W4']
+  bin_list_10 = {k: [int(i) for i in catalog.lrange('bin:10:%s' % k, 0, -1)] for k in bin_labels_10}
+
   # Apply sampling Algorithm HERE
+  # UNIFORM SAMPLER (BASIC)
   if settings.EXPERIMENT_NUMBER == 12:
-    sampler = UniformSampler(basinlist)
+    basin_idx_list = []
     global_params = getSimParameters(sim_init, 'seed')
-    seedlist = sampler.execute(num)
+    target_bin_list = []
+    candidate_list = [[] for i in range(5)]
+    for k,v in bin_list_10.items():
+      candidate_list[int(k[1])].extend(v)
+    # UNIFORM SAMPLING
+    for sel_num in range(num):
+      # Select Random start state
+      start_state = np.random.randint(5)
+      target_bin_list.append(start_state)
+      # Select random index
+      rand_index = np.random.choice(len(candidate_list[start_state]))
+      basin_idx = candidate_list[start_state][rand_index]
+      print("Select:  Start State=", start_state, "  BasinIdx=",basin_idx)
+      basin_idx_list.append(basin_idx)
 
-  elif settings.EXPERIMENT_NUMBER == 13:
-    global_params = getSimParameters(sim_init, 'deshaw')
-
-    logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
-    corr_matrix = np.load('data/de_corr_matrix.npy')
-    dmu = np.load('data/de_ds_mu.npy')
-    dsig = np.load('data/de_ds_mu.npy')
-    sampler = CorrelationSampler(corr_matrix, dmu, dsig)
-    seedlist = [catalog.lindex('basin:list', i) for i in sampler.execute(num)]
+    seedlist = [catalog.lindex('basin:list', i) for i in basin_idx_list]
     for i in seedlist:
       logging.info("Select index: %s", i)
 
-  elif settings.EXPERIMENT_NUMBER in [14, 16]:
+
+  # UNIFORM SAMPLER (BASIC)
+  elif settings.EXPERIMENT_NUMBER == 13:
+    global_params = getSimParameters(sim_init, 'deshaw')
+    explore_factor = float(catalog.get('sampler:explore'))
+
+    logging.info('Loading basin distance values')
+    dmu = 10 * np.load('data/de_ds_mu.npy')
+    distro = [len(bin_list_10[i]) for i in bin_labels_10]
+
+
+    # Create and invoke the sampler
+    sampler = BiasSampler(distro)
+    samplecount = np.zeros(len(bin_labels_10), dtype=np.int16)
+    # Find the first index for each bin:
+    explore_direction = 1 if explore_factor < .5 else -1
+    for i, b in enumerate(bin_list_10):
+      if len(b) == 0:
+        idx = 0
+      else:
+        idx = np.floor(explore_factor * (len(b) - 1))
+      samplecount[i] = idx
+
+    sel_bins = sampler.execute(num)
+
+    candidate_list = {}
+    basin_idx_list = []
+    target_bin_list = []
+    for b in sel_bins:
+      target_bin = bin_labels_10[b]
+      if target_bin not in candidate_list:
+        centroid = pickle.loads(catalog.get('bin:10:centroid:%s' % target_bin))
+        dist_center = np.array([LA.norm(centroid - dmu[i]) for i in bin_list_10[target_bin]])
+        candidate_list[target_bin] = sorted(zip(bin_list_10[target_bin], dist_center), key=lambda x: x[1])
+
+      basin_idx, basin_diff = candidate_list[target_bin][samplecount[b]]
+      samplecount[b] += explore_direction
+      # Wrap
+      if samplecount[b] == 0:
+        samplecount = len(candidate_list[target_bin]) - 1
+      if samplecount[b] == len(candidate_list[target_bin]):
+        samplecount = 0
+
+      logging.info('BIAS SAMPLER:       Bin: %s      basin: %d     Delta from Center: %6.3f', \
+        target_bin, basin_idx, basin_diff)
+      basin_idx_list.append(basin_idx)
+      target_bin_list.append(target_bin)
+
+    seedlist = [catalog.lindex('basin:list', i) for i in basin_idx_list]
+    for i in seedlist:
+      logging.info("Select index: %s", i)
+
+  elif settings.EXPERIMENT_NUMBER == 14:
     global_params = getSimParameters(sim_init, 'deshaw')
     logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
 
@@ -517,61 +402,16 @@ def make_jobs(catalog, num=1):
     for i in seedlist:
       logging.info("Selected index: %s", i)
 
-
-  elif settings.EXPERIMENT_NUMBER == 17:
+  elif settings.EXPERIMENT_NUMBER == 18:
     global_params = getSimParameters(sim_init, 'deshaw')
-    explore_factor = float(catalog.get('sampler:explore'))
 
-    logging.info('Loading basin distance values')
-    dmu = 10 * np.load('data/de_ds_mu.npy')
-
-    # USING 10-BIN LABELS
-    bin_labels_10 = ['T0', 'T1', 'T2', 'T3', 'T4', 'W0', 'W1', 'W2', 'W3', 'W4']
-    bin_list_10 = {k: [int(i) for i in catalog.lrange('bin:10:%s' % k, 0, -1)] for k in bin_labels_10}
-
-    distro = [len(bin_list_10[i]) for i in bin_labels_10]
-
-    # Create and invoke the sampler
-    sampler = BiasSampler(distro)
-    samplecount = np.zeros(len(bin_labels_10), dtype=np.int16)
-    # Find the first index for each bin:
-    explore_direction = 1 if explore_factor < .5 else -1
-    for i, b in enumerate(bin_list_10):
-      if len(b) == 0:
-        idx = 0
-      else:
-        idx = np.floor(explore_factor * (len(b) - 1))
-      samplecount[i] = idx
-
-    sel_bins = sampler.execute(num)
-
-    candidate_list = {}
-    basin_idx_list = []
-    target_bin_list = []
-    for b in sel_bins:
-      target_bin = bin_labels_10[b]
-      if target_bin not in candidate_list:
-        centroid = pickle.loads(catalog.get('bin:10:centroid:%s' % target_bin))
-        dist_center = np.array([LA.norm(centroid - dmu[i]) for i in bin_list_10[target_bin]])
-        candidate_list[target_bin] = sorted(zip(bin_list_10[target_bin], dist_center), key=lambda x: x[1])
-
-      basin_idx, basin_diff = candidate_list[target_bin][samplecount[b]]
-      samplecount[b] += explore_direction
-      # Wrap
-      if samplecount[b] == 0:
-        samplecount = len(candidate_list[target_bin]) - 1
-      if samplecount[b] == len(candidate_list[target_bin]):
-        samplecount = 0
-
-      logging.info('BIAS SAMPLER:       Bin: %s      basin: %d     Delta from Center: %6.3f', \
-        target_bin, basin_idx, basin_diff)
-      basin_idx_list.append(basin_idx)
-      target_bin_list.append(target_bin)
-
-    seedlist = [catalog.lindex('basin:list', i) for i in basin_idx_list]
+    logging.info('Loading Pre-Calculated Correlation Matrix and mean/stddev vals')
+    dmu = np.load('data/de_ds_mu.npy')
+    dsig = np.load('data/de_ds_mu.npy')
+    sampler = CorrelationSampler(corr_matrix, dmu, dsig)
+    seedlist = [catalog.lindex('basin:list', i) for i in sampler.execute(num)]
     for i in seedlist:
       logging.info("Select index: %s", i)
-
 
   else:
     logging.error('No Experiment Defined.')
@@ -583,8 +423,7 @@ def make_jobs(catalog, num=1):
 
   for i, seed in enumerate(seedlist):
     logging.debug('------------------------------\n  Seeding Job: %s ', seed)
-    if settings.EXPERIMENT_NUMBER == 17:
-      logging.info('  TARGET BIN: %s', target_bin_list[i])
+
     basin = catalog.hgetall('basin:%s'%seed)
 
     # Generate new set of params/coords
@@ -593,7 +432,8 @@ def make_jobs(catalog, num=1):
     # Update Additional JC Params and Decision History, as needed
     config.update(global_params)
 
-    if settings.EXPERIMENT_NUMBER == 17:
+    # Update Target Bin for Supervised Sampling
+    if settings.EXPERIMENT_NUMBER in [12, 13]:
       config['target_bin'] = target_bin_list[i]
 
     # Push to catalog
@@ -688,6 +528,175 @@ def resetAnalysis(catalog):
     jobfile.write(outline + '\n')
     seqnum += 1
   jobfile.close()
+
+def load_historical_Expl(catalog):
+  """ Load all DEShaw data into basins for processing """
+  settings = systemsettings()
+  
+  # idx_list      = [0,1,2,3,4,20,23,24,30,32,34,40,41,42]
+  idx_list      = [0,34]
+  tlist         = {k: 'tr%d.dcd'%k for k in idx_list}
+  seed_dir      = os.path.join(settings.WORKDIR, 'seed')
+  seed_ts_ratio = 16     # TimeScape ran on 4ps frame rate (16x source)
+
+  # Load topology and anscillary data
+  # bpti = Protein(bpti, catalog, load=True)
+  pdb_file = os.path.join(seed_dir, 'coord.pdb')
+  topo = md.load(pdb_file)
+  pfilt = topo.top.select('protein')
+
+  logging.info('Topology loaded %s', topo)
+
+  # ID Side Chain pair atoms for each distance space calc 
+  sc_pairs = side_chain_pairs(topo.atom_slice(pfilt))
+  logging.info('Identified side chains: %d', len(sc_pairs))
+
+
+  # Process all sorce trajectories
+  basin_list = []
+  C_T, mu_T, sigma_T = [], [], []
+  for idx in idx_list:
+    logging.info('Procesing Seed index: %d', idx)
+    # Load SRC seed trajetory & calc distance space  -- TODO: make this optional
+    tfile = os.path.join(seed_dir, tlist[idx])
+    traj = md.load(tfile, top=topo)
+    traj.superpose(topo)
+    ds = datareduce.distance_space(traj, pairs=sc_pairs)
+
+      # Push to Catalog
+    file_idx = catalog.rpush('xid:filelist', tfile) - 1
+    start_index = catalog.llen('xid:reference')
+    # TODO: Do I still need to index every frame??????
+    catalog.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
+
+    # Process Trajectory as basins
+    logging.info("  Seed Loaded. Loading TimeScape Data...")
+    seed_name = 'tr%d'%idx
+    ts_data_path  = os.path.join(seed_dir, 'TEST', seed_name)
+    ts_traj = TimeScapeParser(pdb_file, 
+        ts_data_path, seed_name, dcd=tfile, traj=traj)
+    basin_list = ts_traj.load_basins(frame_ratio=seed_ts_ratio)
+    corr_mat   = ts_traj.correlation_matrix()
+
+    for i, basin in enumerate(ts_traj.basins):
+      a, b = basin.start, basin.end
+      bid = basin.id
+      if a > traj.n_frames:
+        logging.info('Finished processing all basins for this Trajectory!')
+        break
+
+      # Store on Disk and in redis
+      jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
+      minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
+      minima_frame.save_pdb(jc_filename)
+
+      C_T.append(np.mean(corr_mat[a:b], axis=0))
+      mu_T.append(np.mean(ds[a:b], axis=0))
+      sigma_T.append(np.std(ds[a:b], axis=0))
+     
+      basin_hash = basin.kv()
+      basin_hash['pdbfile'] = jc_filename
+      basin_hash['dsidx'] = i
+      logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
+
+      pipe = catalog.pipeline()
+      pipe.rpush('basin:list', bid)
+      pipe.hmset('basin:%s'%bid, basin_hash)
+      pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
+      pipe.execute()
+
+    catalog.set('basin:processed', len(ts_traj.basins))
+
+  catalog.storeNPArray(np.array(C_T), 'corr_vector')
+  catalog.storeNPArray(np.array(mu_T), 'dspace_mu')
+  # catalog.storeNPArray(np.array(sigma_T), 'dspace_sigma')
+
+def load_seeds(catalog, calc_seed_rms=False):
+    settings = systemsettings()
+    idx_list  = [0,1,2,3,4,20,23,24,30,32,34,40,41,42]
+    # seed_frame_length = 8000
+
+
+    # slist = {k: 'seed%d'%k for k in idx_list}
+    tlist = {k: 'tr%d.dcd'%k for k in idx_list}
+    logging.info('Loading %d seeds for experiment %s', len(slist.keys()), catalog.get('name'))
+
+    seed_dir = os.path.join(settings.WORKDIR, 'seed')
+    seed_frame_rate = 0.25  # in ps
+    seed_ts_factor = 16     # TimeScape ran on 4ps frame rate (16x source)
+
+    bpti = Protein(bpti, catalog, load=True)
+    pdb_file = bpti.pdbfile
+
+    print("PDB FILE: ", settings.workdir, pdb_file)
+    topo = bpti.pdb
+    logging.info('Topology file: %s  <%s>', pdb_file, str(topo))
+
+    # ref_file = os.path.join(settings.workdir, catalog.get('pdb:ref:0'))
+    # ref_traj = md.load(ref_file)
+    # logging.info('RMS Reference file: %s  <%s>', ref_file, str(ref_traj))
+
+    hfilt = bpti.get_filter('heavy')
+
+    ts_rate = catalog.get('timescape:rate')
+
+    for idx in idx_list:
+      s, t = slist[idx], tlist[idx]
+      logging.info('Trajectory SEED:  %s', s)
+      tfile = os.path.join(seed_dir, t)
+
+
+      # FOR RMSD CALCULATIONS  EXP #12
+      # rms_file = os.path.join(seed_dir, 'rms', 'rms%d'%idx)
+      # if calc_seed_rms:
+      #   traj = md.load(tfile, top=topo)
+      #   traj.superpose(topo)
+      #   protein = traj.atom_slice(bpti.get_filter('protein'))
+      #   ####  METRIC GOES HERE
+      #   rms = 10*md.rmsd(protein, ref_traj, 0, hfilt, hfilt, precentered=True)
+      #   np.save(rms_file, rms)
+      # else:
+      #   traj = None
+      #   rms = np.load(rms_file + '.npy')
+
+      # Push to Catalog
+      file_idx = catalog.rpush('xid:filelist', tfile) - 1
+      start_index = catalog.llen('xid:reference')
+
+      # TODO: Do I still need to index every frame??????
+      catalog.rpush('xid:reference', *[(file_idx, x) for x in range(traj.n_frames)])
+      # catalog.rpush('metric:rms', *rms)
+
+      # Process Trajectory as basins
+      logging.info("  Seed Loaded. Loading TimeScape Data...")
+      seed_name = 'seed%d'%idx
+      ts_traj = TimeScapeParser(pdb_file, 
+          os.path.join(seed_dir, 'out', seed_name),
+          seed_name, dcd=tfile, traj=traj)
+      ts_traj.load_basins(frame_ratio=seed_ts_factor)
+
+      for i, basin in enumerate(ts_traj.basins):
+        pipe = catalog.pipeline()
+        bid = basin.id
+        # Store on Disk and in redis
+        jc_filename = os.path.join(settings.datadir, 'basin_%s.pdb' % bid)
+        minima_frame = md.load_frame(tfile, basin.mindex, top=topo) if traj is None else traj.slice(basin.mindex)
+        minima_frame.save_pdb(jc_filename)
+
+
+        a, b = basin.start, basin.end
+        basin_rms = np.median(rms[a:b])
+       
+        basin_hash = basin.kv()
+        basin_hash['pdbfile'] = jc_filename
+        logging.info('  Basin: %(id)s  %(start)d - %(end)d   Minima: %(mindex)d    size=%(len)d' % basin_hash)
+
+        pipe.rpush('basin:list', bid)
+        pipe.hset('basin:rms', bid, basin_rms)
+        pipe.hmset('basin:%s'%bid, basin_hash)
+        pipe.set('minima:%s'%bid, pickle.dumps(minima_frame))
+        pipe.execute()
+
 
 
 if __name__ == '__main__':

@@ -801,8 +801,11 @@ def cheapEMD(d1, d2, nbins=20, binrange=None):
   return np.sqrt(np.sum(flow**2))
 
 
-# def get_itemset(keylist, CM):
-  
+def compdist(k1, k2, I, D, usekeys=None):
+  ''' Compares distributions of key 1 to key 2 using keys in KEY 1'''
+  # keys = [ord(i)-97 for i in (k1 if len(k1)>len(k2) else k2)]
+  keys = tofz(k1) if usekeys is None else usekeys
+  return cheapEMD(D[I[k1]][:,keys], D[I[k2]][:,keys])  
 
 def extend_dlat(dlat, Ik, D, V, epsilon, nbins=20, binrange=(4,8)):
 
@@ -1359,8 +1362,9 @@ def clusterscoreFunc(clulist, variance, G, verbose=False, dL=None):
     logging.info('Processing %d clusters  (highVar: %6.2f) Updated', len(clulist), high_var)
 
   # Unique-ness component: # of neighbors within 1 STD of overall delta
-  nneigh   = np.array([len([i for i in g if i < G.mean()-G.std()]) for g in G])
-  sc_prox  = 1 - (nneigh - np.min(nneigh))/np.max(nneigh-np.min(nneigh))
+  nneigh    = np.array([len([i for i in g if i < G.mean()-G.std()]) for g in G])
+  max_neigh = np.max(nneigh-np.min(nneigh))
+  sc_prox   = np.ones(len(nneigh)) if max_neigh == 0 else 1 - (nneigh - np.min(nneigh))/max_neigh
 
   for n, clu in enumerate(clulist):
     cSize, cVar = len(clu), variance[n]
@@ -1462,7 +1466,7 @@ def cluster_harch(dlat, CM, D, theta=.5, num_k=10, dL=None, verbose=False):
 # 2. For each row in input matrix: assign to a cluster
   clusters = defaultdict(list)
 
-# 3.  For each item: map to a group:   <map>
+# 3. For each item: map to a group:   <map>
   logging.info('Assigning each basin to "best fit" cuboid (or no fit)')
   progress = ProgressBar(N)
   for i in range(N):
@@ -1493,6 +1497,11 @@ def cluster_harch(dlat, CM, D, theta=.5, num_k=10, dL=None, verbose=False):
   logging.info("\n  # Initial Clust   :   %d", len(clusters))
 
 # 4. remove single cluster nodes:
+
+  for k in clusters.keys():
+    clusters[k] = sorted(set(clusters[k]))
+  # print('CLULIST Sizes:', len(clusters), sorted([len(v) for v in clusters.values()][:30]))
+
   keylist = [i[0] for i in sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)]  
   for k in keylist:
     if len(clusters[k]) == 0:
@@ -1501,6 +1510,7 @@ def cluster_harch(dlat, CM, D, theta=.5, num_k=10, dL=None, verbose=False):
       for i in clusters[k]:
         nogrp.append(i)
       del clusters[k]
+
   logging.info("  Pruned Clusters to :   %d       (remove single elm clusters)", len(clusters))
   logging.info("  Events w/NO grp    :   %d", len(set(nogrp)))
 
@@ -1523,15 +1533,15 @@ def cluster_harch(dlat, CM, D, theta=.5, num_k=10, dL=None, verbose=False):
 # 6. Calc dist for all cluster pairs
   Nc = len(clulist)
   G = np.zeros(shape=(Nc, Nc))
-  logging.info('Using EMD as cluster delta values...')
+  logging.info('Using Eucl Dist as cluster delta values...')
   progress = ProgressBar((Nc**2-Nc)/2)
   for i in range(Nc-1):
     for j in range(i+1, Nc):
-      # G[i][j] = G[j][i] = LA.norm(centroid[i] - centroid[j])
+      G[i][j] = G[j][i] = LA.norm(centroid[i] - centroid[j])
       #  USE EMD
-      minv = min(np.min(D[clulist[i]]), np.min(D[clulist[j]].min()))
-      maxv = max(np.max(D[clulist[i]]), np.min(D[clulist[j]].max()))
-      G[i][j] = G[j][i] = cheapEMD(D[clulist[i]], D[clulist[j]], binrange=(minv,maxv))
+      # minv = min(np.min(D[clulist[i]]), np.min(D[clulist[j]].min()))
+      # maxv = max(np.max(D[clulist[i]]), np.min(D[clulist[j]].max()))
+      # G[i][j] = G[j][i] = cheapEMD(D[clulist[i]], D[clulist[j]], binrange=(minv,maxv))
       progress.incr()
 
 # 7. Merge Loop
@@ -1581,14 +1591,19 @@ def cluster_harch(dlat, CM, D, theta=.5, num_k=10, dL=None, verbose=False):
     # 7d. Update: Centroid, Variance, & EdgeMap
     centroid[m_attr] = D[clulist[m_attr]].mean(0)
     cov = np.cov(D[clulist[m_attr]][:,toidx(retain_key)].T)
-    ew, _ = LA.eigh(cov)
+    # print(retain_key, len(clulist[m_attr]), D[clulist[m_attr]][:,toidx(retain_key)].T.shape)
+    try:
+      ew, _ = LA.eigh(cov)
+    except LA.LinAlgError as err:
+      print(retain_key, m_attr, len(clulist[m_attr]), D[clulist[m_attr]][:,toidx(retain_key)].T.shape)
+      raise
     variance[m_attr] = np.sum(ew) / len(retain_key)
 
     for i in range(Nc):
       if i in [m_attr, m_donor]:
         continue
-      # G[m_attr][i] = G[i][m_attr] = LA.norm(centroid[m_attr] - centroid[i])
-      G[m_attr][i] = G[i][m_attr] = cheapEMD(D[clulist[m_attr]], D[clulist[i]], binrange=(minv,maxv))
+      G[m_attr][i] = G[i][m_attr] = LA.norm(centroid[m_attr] - centroid[i])
+      # G[m_attr][i] = G[i][m_attr] = cheapEMD(D[clulist[m_attr]], D[clulist[i]], binrange=(minv,maxv))
 
     # Update Data Stucts
     keylist[m_attr] = retain_key
@@ -2227,11 +2242,7 @@ def apriori(M, epsilon):
     '    N= %d  K= %d  # Nodes= %d' % (N, K, len(I)))
   return L, I
 
-def compdist(k1, k2, I, D, usekeys=None):
-  ''' Compares distributions of key 1 to key 2 using keys in KEY 1'''
-  # keys = [ord(i)-97 for i in (k1 if len(k1)>len(k2) else k2)]
-  keys = tofz(k1) if usekeys is None else usekeys
-  return cheapEMD(D[I[k1]][:,keys], D[I[k2]][:,keys])
+
 
 def mcl_clustering(G, n=1, pow=2, inf=2):
   N = len(G)

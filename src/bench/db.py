@@ -32,6 +32,30 @@ def dict_factory(cursor, row):
         d[col[0]] = row[idx]
     return d
 
+
+class StdevFunc:
+  """STDDEV function for SQLite
+  re: http://stackoverflow.com/questions/2298339/standard-deviation-for-sqlite
+  """
+  def __init__(self):
+      self.M = 0.0
+      self.S = 0.0
+      self.k = 1
+
+  def step(self, value):
+      if value is None:
+          return
+      tM = self.M
+      self.M += (value - tM) / self.k
+      self.S += (value - tM) * (value - self.M)
+      self.k += 1
+
+  def finalize(self):
+      if self.k < 3:
+          return None
+      return np.sqrt(self.S / (self.k-2))
+
+
 HOME = os.environ['HOME']
 DB_FILE = os.path.join(HOME, 'ddc', 'results', 'ddc_data.db')
 GRAPH_LOC = os.path.join(HOME, 'ddc', 'graph')
@@ -167,6 +191,7 @@ tables = {
 """,
 'latt':
 """CREATE TABLE IF NOT EXISTS latt (
+  num integer,
   wt text,
   support integer,
   numclu integer,
@@ -189,7 +214,7 @@ convRecord = namedtuple('convRecord', 'expname ts label val')
 benchctlRecord = namedtuple('benchctlRecord', 'expid ctlid num runtime deltatime label')
 
 conn = sqlite3.connect(DB_FILE)
-
+conn.create_aggregate('stdev', 1, StdevFunc)
 
 def getConn():
   return sqlite3.connect(DB_FILE)

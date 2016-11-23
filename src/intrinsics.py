@@ -11,8 +11,17 @@
  'W2': 0.12718951666008166,
  'W3': 0.018536810219939418,
  'W4': 0.026021774441371437}
-
-
+ 
+base={'T0': 0.07874577461697177,
+ 'T1': 0.009405592870626454,
+ 'T2': 0.007441064138021862,
+ 'T3': 0.0009987268975811055,
+ 'T4': 0.009921418850695817,
+ 'W0': 0.4873458009570218,
+ 'W1': 0.2392554545853637,
+ 'W2': 0.12522498792747705,
+ 'W3': 0.018317309802888624,
+ 'W4': 0.02334386935335177}
 
 Kr = [2, 52, 56, 60, 116, 258, 311, 460, 505, 507, 547, 595, 640, 642, 665, 683, 728, 767, 851, 1244, 1485, 1629, 1636]
 
@@ -89,3 +98,29 @@ well234={k: np.array([i[0] for i in db.runquery("select sum(score) from latt whe
 def printcsv(D):
   for k,v in sorted(D.items()):
     print('%s,%s' % (k, ','.join([str(i) for i in v])))
+
+
+data = db.runquery("select numclu, sum(score) as score, stdev(score) as std from latt where wt='T' and bin in ('T1', 'T2', 'T3', 'T4') group by numclu order by numclu desc")
+
+# GRAPH:  TRANSITIONS by NUMCLU
+baseT = sum([v for k,v in base.items() if k in ['T1', 'T2', 'T3', 'T4']])
+data = db.runquery("select numclu, avg(score), avg(std) from (select numclu, support, sum(score) as score, stdev(score) as std from latt where wt='T' and bin in ('T1', 'T2', 'T3', 'T4') group by numclu,support) group by numclu order by numclu desc")
+X, E = {k:s/baseT for k,s,e in data}, {k:e/baseT for k,s,e in data}
+P.bargraph_simple(X, E, True, fname='Transitions_by_numclu', ylim=(15,32), title='Sampling Improvement: Transitions', yticks=['15x', '20x', '25x', '30x', '35x'], ylabel='Factor Increase', xlabel='Number of Clusters', latex=True)
+for a,b,c in data: print(a,b/baseT,c/baseT)
+
+# GRAPH:  RARE EVENTS by NUMCLU
+baseR = sum([v for k,v in base.items() if k in ['W3', 'W4']])
+data = db.runquery("select numclu, avg(score), avg(std) from (select numclu, support, sum(score) as score, stdev(score) as std from latt where wt='W' and bin in ('W3', 'W4') and support > 450 group by numclu,support) group by numclu order by numclu desc")
+X, E = {k:s/baseR for k,s,e in data}, {k:e/baseR for k,s,e in data}
+P.bargraph_simple(X, E, True, fname='RareEvents_by_numclu', ylim=(20,70), title='Sampling Improvement: Rare Events', yticks=['20x', '30x', '40x', '50x', '60x', '70x'], ylabel='Factor Increase', xlabel='Number of Clusters', latex=True)
+for a,b,c in data: print(a,b/baseR,c/baseR)
+
+
+
+P.bargraph_simple(X, E, True, fname='Transitions_by_numclu', title='Sampling Improvement For Targeting Transitions', yticks=['15x', '20x', '25x', '30x', '35x'], ylabel='Factor Increase', xlabel='Number of Clusters', ylim=(15,35), latex=True)
+
+
+
+data = db.runquery("select numclu, avg(score), avg(std) from (select numclu, support, sum(score) as score, stdev(score) as std from latt where wt='W' and bin in ('W3', 'W4') and support > 450 group by numclu,support) group by numclu order by numclu desc"%state)
+data = db.runquery("select numclu, avg(score), avg(std) from (select numclu, support, sum(score) as score, stdev(score) as std from latt where wt='W' and bin in ('W3', 'W4') and support > 450 group by numclu,support) group by numclu order by numclu desc")
