@@ -13,7 +13,6 @@ import mdtraj as md
 import numpy as np
 from numpy import linalg as LA
 
-
 from core.common import *
 from overlay.redisOverlay import RedisClient
 from core.kvadt import kv2DArray
@@ -103,7 +102,7 @@ def initializecatalog(catalog):
   cent = 10 * np.load('data/bpti-alpha-dist-centroid.npy')
   catalog.set('centroid:ds', pickle.dumps(cent))
 
-def load_historical_DEShaw(catalog):
+def load_historical_DEShaw(catalog, skip_dspace=False):
   """ Load all DEShaw data into basins for processing """
   settings = systemsettings()
   home = os.getenv('HOME')
@@ -235,7 +234,8 @@ def load_historical_DEShaw(catalog):
     centroid = np.mean(de_ds[bin_list_25[b]], axis=0)
     catalog.set('bin:25:centroid:%d_%d' % b, pickle.dumps(centroid))
   logging.info('Loading raw distance space into catalog')
-  with catalog.pipeline() as pipe:
+  if not skip_dspace:
+    with catalog.pipeline() as pipe:
       for elm in de_ds:
         pipe.rpush('dspace', pickle.dumps(elm))
       pipe.execute()
@@ -443,13 +443,16 @@ def make_jobs(catalog, num=1):
     catalog.rpush('jcqueue', jcID)
     catalog.hmset(wrapKey('jc', jcID), config)
 
-def manual_de_job(catalog, fileno, frame, runtime=1000000):
+def manual_de_job(catalog, basinidx=None, fileno=None, frame=None, runtime=1000000):
   """
   Seeds jobs into the JCQueue -- pulled from DEShaw
   Selects equal `num` of randomly start frames from each bin
   to seed as job candidates
   """
   # logging.info('Seeding %d jobs per transtion bin', num)
+  if basinidx is None and fileno is None or (basinidx is not None and fileno is not None):
+    logging.error("Need to define EITHER basinidx OR fileno")
+
   settings = systemsettings()
 
   dcdfreq = int(catalog.get('dcdfreq'))
@@ -459,10 +462,13 @@ def manual_de_job(catalog, fileno, frame, runtime=1000000):
   sim_init = {key: catalog.get(key) for key in settings.sim_params.keys()}
 
   global_params = getSimParameters(sim_init, 'deshaw')
-
-  jcID = 'de%d_%d' % (fileno, frame)
-
-  _, config = generateDEShawJC(fileno, frame, jcid=jcID)
+  if basinidx is not None:
+    basin = catalog.hgetall('basin:%s'%basinidx)
+    jcID, config = generateFromBasin(basin)
+  else:
+    jcID = 'de%d_%d' % (fileno, frame)
+    _, config = generateDEShawJC(fileno, frame, jcid=jcID)
+    config['src_basin'] = '%04d%03d' % (fileno, frame)
   config.update(global_params)
 
   # Push to catalog
@@ -707,6 +713,7 @@ if __name__ == '__main__':
   parser.add_argument('--onejob', action='store_true')
   parser.add_argument('--initcatalog', action='store_true')
   parser.add_argument('--updateschema', action='store_true')
+  parser.add_argument('--parallel', action='store_true')
   # parser.add_argument('--reset', action='store_true')
   parser.add_argument('--all', action='store_true')
 
@@ -742,6 +749,19 @@ if __name__ == '__main__':
   if args.updateschema:
     # archive = redisCatalog.dataStore(**DEFAULT.archiveConfig)
     updateschema(catalog)
+
+  if args.parallel:
+    settings.envSetup()
+    initializecatalog(catalog)
+    load_historical_DEShaw(catalog, skip_dspace=True)
+
+    joblist = [1817281, 338508, 271946, 3282452, 2131294, \
+               2595914, 2268801, 3423182, 3366421, 652324]
+    for j in joblist:
+      idx = '%07d'%j
+      manual_de_job(catalog, basinidx=idx, runtime=40000000)
+
+
 
   # if args.reset:
   #   resetAnalysis(catalog)

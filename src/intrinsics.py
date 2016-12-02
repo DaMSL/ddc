@@ -100,6 +100,8 @@ def printcsv(D):
     print('%s,%s' % (k, ','.join([str(i) for i in v])))
 
 
+data = np.array([well4[k] for k in SPT])
+
 data = db.runquery("select numclu, sum(score) as score, stdev(score) as std from latt where wt='T' and bin in ('T1', 'T2', 'T3', 'T4') group by numclu order by numclu desc")
 
 # GRAPH:  TRANSITIONS by NUMCLU

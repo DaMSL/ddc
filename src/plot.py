@@ -20,6 +20,12 @@ HOME = os.environ['HOME']
 SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
 
  
+LATEX_FIG_WIDTH = 347.12354
+DPI_RASTER = 300
+DPI_LATEX  = 800
+
+LATEX_FONTSIZE = 6
+
 elabels = ['Serial', 'Parallel','Uniform','Biased', 'MVNN', 'Reweight']
 ecolors = {'Serial': 'darkorange', 
            'Parallel': 'maroon',
@@ -28,44 +34,120 @@ ecolors = {'Serial': 'darkorange',
            'MVNN': 'darkmagenta', 
            'Reweight': 'red'}
 
-arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim', 'latex']
-axis_list = ['xscale', 'yscale', 'xlog', 'ylog', 'xticks', 'yticks']
+arg_list = ['title', 'fname', 'xlabel', 'ylabel', 'xlim', 'ylim', 'latex', 'vlines', 'no_save']
+axis_list = ['xscale', 'yscale', 'xlog', 'ylog', 'xticks', 'yticks', \
+  'no_xtick', 'no_ytick', 'xgrid', 'ygrid', 'yaxisright']
 figure_list = ['figsize']
 st_col = ['red', 'blue', 'green', 'purple', 'black']
 
+tableau20 = ['1f77b4', 'aec7e8', 'ff7f0e', 'ffbb78', '2ca02c', '98df8a', 'd62728', 'ff9896', '9467bd', 'c5b0d5',\
+ '8c564b', 'c49c94', 'e377c2', 'f7b6d2', '7f7f7f', 'c7c7c7', 'bcbd22', 'dbdb8d', '17becf', '9edae5']
+tableau10 = ['1f77b4', 'ff7f0e', '2ca02c', 'd62728', '9467bd', '8c564b', 'e377c2', '7f7f7f', 'bcbd22', '17becf']
+
+getColorList = lambda N: plt.cm.brg(np.linspace(0, 1, N))
+ 
+
+def singleton(cls):
+  """ The Singleton Design Pattern. Each execution of the application can
+    only create one instance of this class """
+  instances = {}
+  def getinstance(*args, **kwargs):
+      if cls not in instances:
+          instances[cls] = cls(*args)
+      return instances[cls]
+  return getinstance
+
+@singleton
+class mpl_environ:
+  def __init__(self):
+    self.new = True
+
+def latexify(set_figsize=False, param={}):
+  print('Preparing Vector Graphics for latex')
+  latex_params = {                      # setup matplotlib to use latex for output
+    # "pgf.texsystem": "pdflatex",        # change this if using xetex or lautex
+    # "text.usetex": True,                # use LaTeX to write all text  (requires latex installed)
+    "font.family": "serif",
+    "axes.labelsize": LATEX_FONTSIZE,               # LaTeX default is 10pt font.
+    "font.size": LATEX_FONTSIZE,
+    "legend.fontsize": LATEX_FONTSIZE,               # Make the legend/label fonts a little smaller
+    'legend.labelspacing':0.25,
+    "xtick.labelsize": LATEX_FONTSIZE,
+    "ytick.labelsize": LATEX_FONTSIZE,
+    'figure.autolayout': True,
+    'figure.facecolor': 'white'
+    }
+  latex_params.update(param)
+  if set_figsize:
+      latex_params["figure.figsize"] = latex_figsize(1.)     # fig size of 1.0 of textwidth
+  mpl.rcParams.update(latex_params)  
+
+
 def prep_graph():
-  plt.cla()
-  plt.clf()
+  env = mpl_environ()
+  print('Prepping graph. New Graph: ', env.new)
+  if env.new:
+    plt.cla()
+    plt.clf()
+    env.new = False
 
-def state_legend(loc='upper left'):
-  patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(st_col)]
-  plt.legend(handles=patches, loc=loc, prop={'family': 'monospace'})
-
-def graph_args(kwargs):
+def graph_args(kwargs, legend=None):
   arg = {k: kwargs.get(k, None) for k in arg_list}
+
+  artists = [] if legend is None else [legend]
+
   if arg['ylabel'] is not None:
-    plt.ylabel(arg['ylabel'])
+    art = plt.ylabel(arg['ylabel'])
+    artists.append(art)
   if arg['xlabel'] is not None:
-    plt.xlabel(arg['xlabel'])
-  plt.ylim(arg['ylim'])
-  plt.xlim(arg['xlim'])
-  if 'vlines' in kwargs:
-    for v in kwargs['vlines']:
+    art = plt.xlabel(arg['xlabel'])
+    artists.append(art)
+
+  if arg['ylim'] is not None:
+    plt.ylim(arg['ylim'])
+
+  if arg['xlim'] is not None:
+    plt.xlim(arg['xlim'])
+
+  if arg['vlines'] is not None:
+    for v in arg['vlines']:
       plt.axvline(v, color='k')
-  title = 'graph' if arg['title'] is None else arg['title']
-  plt.title(title)
-  fname = title if arg['fname'] is None else arg['fname']
 
-  if arg['latex']:
-    # plot_latex()
-    ftype = '.pdf'
-  else:
-    ftype = '.png'
+  # if kwargs['hlines'] is not None:
+  #   for v in kwargs['hlines']:
+  #     plt.axvline(v, color='k')
 
-  plt.savefig(SAVELOC + '/' + fname + ftype)
-  plt.close()
 
-def graph_axis(ax, kwargs):
+  if arg['title'] is not None:
+    art = plt.title(arg['title'])
+    artists.append(art)
+
+  if arg['no_save'] is None or not arg['no_save']:
+    # arg = {k: kwargs.get(k, None) for k in arg_list}
+    if arg['fname'] is None:
+      fname = 'graph' if arg['title'] is None else arg['title']
+    else:
+      fname = arg['fname']
+
+    if arg['latex']:
+      # plot_latex()
+      setfig = ('figsize' not in kwargs)
+      texparam = kwargs['texparam'] if 'texparam' in kwargs else {}
+      latexify(set_figsize=setfig, param=texparam)
+      ftype = '.pdf'
+      dpi = DPI_LATEX
+    else:
+      ftype = '.png'
+      dpi = DPI_RASTER
+    print('Saving Figure, {0}   using dpi={1}'.format(fname, dpi))
+    # plt.savefig(SAVELOC + '/' + fname + ftype, bbox_inches='tight', bbox_extra_artists=artists, dpi=dpi, pad_inches=-1)
+    plt.savefig(SAVELOC + '/' + fname + ftype, dpi=dpi,bbox_inches='tight',pad_inches=0.01)
+    plt.close()
+    env = mpl_environ()
+    env.new = True
+
+def graph_axis(kwargs):
+  ax = plt.gca()
   arg = {k: kwargs.get(k, None) for k in axis_list}
 
   if arg['xlog'] is not None:
@@ -73,6 +155,34 @@ def graph_axis(ax, kwargs):
 
   if arg['ylog'] is not None:
     ax.set_yscale('log')
+
+  if arg['xticks'] is not None:
+    if len(arg['xticks']) > 0:
+      if 'xlim' in kwargs:
+        start, end = kwargs['xlim']
+      else:         
+        start, end = ax.get_xlim()
+      dy = (end - start) / (len(arg['xticks'])-1)
+      # ax.xaxis.set_ticks(np.arange(start, end, dy)+dy/2.)
+      ax.xaxis.set_ticks(np.arange(start, end+dy, dy))
+      print('xtikloc: ', np.arange(start, end+dy, dy), 'xticks:', arg['xticks'])
+      ax.xaxis.set_ticklabels(arg['xticks'])
+    else:
+      ax.xaxis.set_ticks([])  
+
+  if arg['yticks'] is not None:
+    if len(arg['yticks']) > 0:
+      if 'ylim' in kwargs:
+        start, end = kwargs['ylim']
+      else:         
+        start, end = ax.get_ylim()
+      dy = (end - start) / (len(arg['yticks'])-1)
+      # ax.xaxis.set_ticks(np.arange(start, end, dy)+dy/2.)
+      ax.yaxis.set_ticks(np.arange(start, end+dy, dy))
+      print('ytikloc: ', np.arange(start, end+dy, dy), 'xticks:', arg['yticks'])
+      ax.yaxis.set_ticklabels(arg['yticks'])
+    else:
+      ax.yaxis.set_ticks([])  
 
   if arg['xscale'] is not None:
     xscale = arg['xscale']
@@ -96,27 +206,76 @@ def graph_axis(ax, kwargs):
     else:
       ax.set_yticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
 
-  if arg['xticks'] is not None:
-      # start, end = ax.get_xlim()
-      # dx = (end - start) / len(arg['xticks'])
-      # ax.xaxis.set_ticks(np.arange(start, end, dx)+dx/2.)
-      ax.set_xticklabels(arg['xticks'])
+  if arg['yaxisright'] is not None and arg['yaxisright']:
+    ax.yaxis.tick_right()
+    ax.yaxis.set_label_position("right")
+ 
+  if arg['no_xtick'] is not None and arg['no_xtick']:
+    for tic in ax.xaxis.get_major_ticks():
+      tic.tick1On = tic.tick2On = False  
 
-  if arg['yticks'] is not None:
-      # start, end = ax.get_ylim()
-      # dy = (end - start) / len(arg['yticks'])
-      # ax.yaxis.set_ticks(np.arange(start, end, dy)+dy/2.)
-      ax.set_yticklabels(arg['yticks'])
+  if arg['no_ytick'] is not None and arg['no_ytick']:
+    for tic in ax.yaxis.get_major_ticks():
+      tic.tick1On = tic.tick2On = False  
 
-def graph_figure(kwargs):
+  if arg['xgrid'] is not None and arg['xgrid']:
+    print('Showing X-Grid')
+    ax.set_axisbelow(True)
+    ax.xaxis.grid(True, color='gray')
+
+  if arg['ygrid'] is not None and arg['ygrid']:
+    print('Showing Y-Grid')
+    ax.set_axisbelow(True)
+    ax.yaxis.grid(True, color='gray')
+
+
+
+  # if 'latex' in kwargs and kwargs['latex']:
+  #   ax.xaxis.set_major_locator(plt.NullLocator())
+  #   ax.yaxis.set_major_locator(plt.NullLocator())
+
+def graph_figure(kwargs, legend = None):
   arg = {k: kwargs.get(k, None) for k in figure_list}
   fig = plt.gcf()
+  ax = plt.gca()
+  
+  # padLeft   = ax.get_position().x0 * fig.get_size_inches()[0]
+  # padBottom = ax.get_position().y0 * fig.get_size_inches()[1]
+  # padTop    = ( 1 - ax.get_position().y0 - ax.get_position().height ) * fig.get_size_inches()[1]
+  # padRight  = ( 1 - ax.get_position().x0 - ax.get_position().width ) * fig.get_size_inches()[0]
+  # dpi       = DPI_LATEX if 'latex' in kwargs and kwargs['latex'] else DPI_RASTER
+
+  # if legend:
+  #   padLegend = legend.get_frame().get_width() 
+  #   print('LEGEND PAD:', padLegend)
+  # else:
+  #   padLegend = 0
+
+  # if arg['figsize'] is not None:
+  #   W, H = arg['figsize']
+  # else:
+  #   W, H = fig.get_size_inches()
+
+  # widthTot = W+padLeft+padRight+padLegend
+  # heightTot = H+padTop+padBottom
+
+  # kwargs['figsize'] = (widthTot,heightTot) 
+  # ax.set_position([padLeft/widthTot, padBottom/heightTot, W/widthTot, H/heightTot])
+
+  # # fig.tight_layout(pad=7)
+  # fig.set_size_inches(widthTot, heightTot)
+  # fig.set_size_inches(W, H)
+
+  # fig.subplots_adjust(left=.1,right=.9,bottom=.1,top=.9)
+
   if arg['figsize'] is not None:
     fig.set_size_inches(*arg['figsize'])
-
+  print('adjusting subplot')
+  fig.subplots_adjust(bottom=0, right=1., left=0, top=1.)
+  ax.axis('tight')
 
 def latex_figsize(scale):
-    fig_width_pt = 347.12354                          # Get this from LaTeX using \the\textwidth
+    fig_width_pt = LATEX_FIG_WIDTH                  # Get this from LaTeX using \the\textwidth
     inches_per_pt = 1.0/72.27                       # Convert pt to inch
     golden_mean = (np.sqrt(5.0)-1.0)/2.0            # Aesthetic ratio (you could change this)
     fig_width = fig_width_pt*inches_per_pt*scale    # width in inches
@@ -124,28 +283,10 @@ def latex_figsize(scale):
     fig_size = [fig_width,fig_height]
     return fig_size
 
-def plot_latex():
-  # mpl.use('agg')
-  pgf_with_latex = {                      # setup matplotlib to use latex for output
-    # "pgf.texsystem": "pdflatex",        # change this if using xetex or lautex
-    "text.usetex": True,                # use LaTeX to write all text
-    "font.family": "serif",
-    "font.serif": [],                   # blank entries should cause plots to inherit fonts from the document
-    "font.sans-serif": [],
-    "font.monospace": [],
-    "axes.labelsize": 10,               # LaTeX default is 10pt font.
-    "text.fontsize": 10,
-    "legend.fontsize": 8,               # Make the legend/label fonts a little smaller
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "figure.figsize": latex_figsize(0.9)     # default fig size of 0.9 textwidth
-    # "pgf.preamble": [
-    #     r"\usepackage[utf8x]{inputenc}",    # use utf8 fonts becasue your computer can handle it :)
-    #     r"\usepackage[T1]{fontenc}",        # plots will be generated using this preamble
-    #     ]
-    }
-  mpl.rcParams.update(pgf_with_latex)  
 
+def state_legend(loc='upper left'):
+  patches = [mpatches.Patch(color=c, label='State %d'%s) for s, c in enumerate(st_col)]
+  plt.legend(handles=patches, loc=loc, prop={'family': 'monospace'})
 
 # ecolors = {'Serial': '#FF8C00', 
 #            'Parallel': '#803030',
@@ -154,9 +295,11 @@ def plot_latex():
 #            'MVNN': '#C030C0', 
 #            'Reweight': 'red'}
 
-####  SCATTER PLOTS
+##################################################
+####  SCATTER GRAPHS  
 
-def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, xlim=None, ylim=None, ):
+def scatter(X, Y, title, size=1, L=None, **kwargs):
+  ''' Scratch scatter plot (designed to be editted for ad-hoc plotting)'''
   prep_graph()
   if L is None:
     plt.scatter(X, Y, s=size, lw=0)
@@ -168,6 +311,64 @@ def scatter(X, Y, title, size=1, L=None, fname=None, ylabel=None, xlabel=None, x
   plt.legend(handles=patches, loc='upper left', prop={'family': 'monospace'})  
   graph_args()
 
+def scatter2D(X, Y, size=1, L=None, **kwargs):
+  ''' Generic 2D Scatter Plot '''
+  prep_graph()
+  if L is None:
+    plt.scatter(X, Y, lw=0)
+  else:
+    plt.scatter(X, Y, c=L, lw=0)
+  graph_args(kwargs)
+
+def scatter3D(X, Y, Z, L=None, **kwargs):
+  ''' Generic 3D Scatter Plot '''
+  prep_graph()
+  fig = plt.figure()
+  ax = Axes3D(fig)
+  if L is None:
+    ax.scatter(X, Y, Z, lw=0)
+  else:
+    ax.scatter(X, Y, Z, c=L, lw=0)
+  if 'zlabel' in kwargs:
+    ax.set_zlabel = kwargs['zlabel']
+  graph_args(kwargs)
+
+def scats (series, size=10, labels=None, **kwargs):
+  ''' For plotting series of 2D data points. Series must contain a dict mapping
+  labels to a list of 2D-tuples (tuple contain X-Y data). Can provide a separate
+  mapping of labels'''
+  prep_graph()
+  if isinstance(series, dict):
+    keys = sorted(series.keys())
+    if labels is None:
+      labelList = keys
+    else:
+      labelList = [labels[i] for i in keys]
+    seriesList = [series[key] for key in keys]
+  elif isinstance(series, list):
+    if labels is None:
+      labelList = list(range(len(series)))
+    else:
+      labelList = labels
+    seriesList = series
+  else:
+    print("Series must be either a list of lists or a mapping to lists")
+    return
+  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
+  ax = plt.subplot(111)
+  for D, C, L in zip(seriesList, colorList, labelList):
+    X, Y = zip(*D)
+    plt.scatter(X, Y, s=size, c=C)
+    # plt.scatter(X, Y, c=C)
+    # plt.plot(X, Y, c=C)
+
+  patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
+  plt.legend(handles=patches, loc='upper right')  
+  graph_axis(kwargs)
+  graph_args(kwargs)
+
+
+#---- Specialty Scatter Plot Graphs
 
 def network2D(nodeList, edgeList, **kwargs):
   prep_graph()
@@ -206,76 +407,6 @@ def nodeGraph1D(nodelist, **kwargs):
     # plt.scatter(n['y'], 0, c='blue', s=3*n['size'], zorder=2, lw=0)
   graph_args(kwargs)
  
-
-
-# class Arrow3D(FancyArrowPatch):
-#   """
-#    re: http://stackoverflow.com/questions/22867620/putting-arrowheads-on-vectors-in-matplotlibs-3d-plot
-#   """
-#   def __init__(self, xs, ys, zs, *args, **kwargs):
-#       FancyArrowPatch.__init__(self, (0,0), (0,0), *args, **kwargs)
-#       self._verts3d = xs, ys, zs
-
-#   def draw(self, renderer):
-#       xs3d, ys3d, zs3d = self._verts3d
-#       xs, ys, zs = proj3d.proj_transform(xs3d, ys3d, zs3d, renderer.M)
-#       self.set_positions((xs[0],ys[0]),(xs[1],ys[1]))
-#       FancyArrowPatch.draw(self, renderer)
-
-
-  # for n in node['edges']:
-  #   x1, y1 = nodeList[n]['x'], nodeList[n]['y']
-  #   plt.plot((x0, x1), (y0, y1), linewidth=1, color='k')
-
-def scatter2D(X, Y, size=1, L=None, **kwargs):
-  prep_graph()
-  if L is None:
-    plt.scatter(X, Y, lw=0)
-  else:
-    plt.scatter(X, Y, c=L, lw=0)
-  graph_args(kwargs)
-
-
-def scatter3D(X, Y, Z, L=None, **kwargs):
-  prep_graph()
-  fig = plt.figure()
-  ax = Axes3D(fig)
-  if L is None:
-    ax.scatter(X, Y, Z, lw=0)
-  else:
-    ax.scatter(X, Y, Z, c=L, lw=0)
-  if 'zlabel' in kwargs:
-    ax.set_zlabel = kwargs['zlabel']
-  graph_args(kwargs)
-
-def scats (series, size=10, labels=None, **kwargs):
-  prep_graph()
-  if isinstance(series, dict):
-    keys = sorted(series.keys())
-    if labels is None:
-      labelList = keys
-    else:
-      labelList = [labels[i] for i in keys]
-    seriesList = [series[key] for key in keys]
-  else:
-    print("Series must be either a list of lists or a mapping to lists")
-    return
-  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
-
-  ax = plt.subplot(111)
-  for D, C, L in zip(seriesList, colorList, labelList):
-    X, Y = zip(*D)
-    # plt.scatter(X, Y, s=size, c=C)
-    plt.scatter(X, Y, c=C)
-    # plt.plot(X, Y, c=C)
-
-  patches = [mpatches.Patch(color=C, label=L) for C, L in zip(colorList, labelList)]
-  plt.legend(handles=patches, loc='upper right')  
-
-  graph_axis(ax, kwargs)
-  graph_args(kwargs)
-
-
 def scat_Transtions (series, title, size=10, xlabel=None, xlim=None, labels=None):
   plt.clf()
   ax = plt.subplot(111)
@@ -385,9 +516,11 @@ def edges(A, B, L=None, size=10, **kwargs):
 
 
 
-#####   LINE Graph 
+################################################## 
+#####   LINE GRAPHS
  
 def line(X, **kwargs):
+  ''' Scratch line plot (designed to be editted for ad-hoc plotting)'''
   prep_graph()
   plt.rcParams['agg.path.chunksize'] = 100000
   if isinstance(X, dict):
@@ -401,9 +534,45 @@ def line(X, **kwargs):
   plt.legend(loc='upper left')
   graph_args(kwargs)
 
-def linegraphcsv(X, title, nolabel=False):
-  """ Plots line series for a csv list
-  """
+def lines(series, xseries=None, showlegend=True, labels=None, lw=2, **kwargs):
+  ''' Generic line graph. Series can be either a list of lists or a mapping to lists
+  IF list: each line will be plotted and numbered in order
+  IF dict: keys will be used for line labels
+  IF no x-series is provided, values will be plotted from 0..N for each line
+  You can turn off the legend if you want (may be useful for many lines)'''
+  if isinstance(series, list):
+    seriesList = series
+    if labels is None:
+      labelList = ['Series %d' % (i+1) for i in range(len(seriesList))]
+    else:
+      labelList = labels
+  elif isinstance(series, dict):
+    if labels is None:
+      labelList = sorted(series.keys())
+    else:
+      labelList = labels
+    seriesList = [series[key] for key in labelList]
+  else:
+    print("Series must be either a list of lists or a mapping to lists")
+    return
+  print('LABELS:', labelList)
+  colorList = getColorList(len(seriesList)) if "colors" not in kwargs else kwargs['colors']
+  plt.clf()
+  ax = plt.subplot(111)
+  if xseries is None:
+    for X, C, L in zip(seriesList, colorList, labelList):
+      plt.plot(np.arange(len(X)), X, color=C, label=L, lw=lw)
+  else:
+    xseriesList = [xseries[k] for k in labelList]
+    for X, Y, C, L in zip(xseriesList, seriesList, colorList, labelList):
+      plt.plot(X, Y, color=C, label=L, lw=lw)
+  if showlegend:
+    plt.legend(loc='upper left')
+  graph_axis(kwargs)
+  graph_figure(kwargs)
+  graph_args(kwargs)
+
+#---- Specialty Line Graphs
 
 def step_lines(series, title, xlabel=None, scale=None):
   labelList = sorted(series.keys())
@@ -463,49 +632,21 @@ def seriesLines(X, series, title, xlabel=None):
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-def lines(series, xseries=None, showlegend=True, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
-  if isinstance(series, list):
-    seriesList = series
-    # if labelList is None:
-    labelList = ['Series %d' % (i+1) for i in range(len(seriesList))]
-  elif isinstance(series, dict):
-    labelList = sorted(series.keys())
-    seriesList = [series[key] for key in labelList]
-  else:
-    print("Series must be either a list of lists or a mapping to lists")
-    return
-  colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
-  plt.clf()
-  ax = plt.subplot(111)
-  if xseries is None:
-    for X, C, L in zip(seriesList, colorList, labelList):
-      plt.plot(np.arange(len(X)), X, color=C, label=L)
-  else:
-    xseriesList = [xseries[k] for k in labelList]
-    for X, Y, C, L in zip(xseriesList, seriesList, colorList, labelList):
-      plt.plot(X, Y, color=C, label=L)
-  if showlegend:
-    plt.legend(loc='upper left')
-  graph_axis(ax, kwargs)
-  graph_figure(kwargs)
-  graph_args(kwargs)
-
-
-def show_distr(series, xscale=None, showlegend=True, states=None, **kwargs):
+def show_distr(series, xscale=None, show_yaxis=True, colors=None, **kwargs):
+  prep_graph()
   labelList = sorted(series.keys())
   seriesList = [series[key] for key in labelList]
-  stcolor = ['red', 'blue', 'green', 'purple', 'cyan']
-  if states is None:
+  # stcolor = ['red', 'blue', 'green', 'purple', 'cyan']
+  if colors is None:
     colorList = plt.cm.brg(np.linspace(0, 1, len(seriesList)))
   else:
     colorList = []
     for k in labelList:
-      col = 'black' if k == 'All' else stcolor[states[k]]
+      col = 'black' if k == 'All' else colors[int(k)]
       colorList.append(col)
-  plt.clf()
-  ax = plt.subplot(111)
+  ax = plt.gca()
   for X, C, L in zip(seriesList, colorList, labelList):
-    col, lw, ls = ('black', 5, '--') if L == 'All' else (C, 1, '-')
+    col, lw, ls = ('black', 2, '--') if L == 'All' else (C, 1, '-')
     plt.plot(np.arange(len(X)), X, color=col, label=L, linewidth=lw, linestyle=ls)
   if xscale is not None:
     labels = [item.get_text() for item in ax.get_xticklabels(which='both')]
@@ -513,12 +654,39 @@ def show_distr(series, xscale=None, showlegend=True, states=None, **kwargs):
     xmin, xmax = xscale
     dx = (xmax-xmin) / len(labels)
     ax.set_xticklabels(['%.1f'%(xmin+(i*dx)) for i,tick in enumerate(labels)])
-  if showlegend and states is not None:
-    patches = [mpatches.Patch(color='black', label='All')]
-    for i, c in enumerate(stcolor):
-      patches.append(mpatches.Patch(color=c, label='State %d'%i))
-      plt.legend(handles=patches, loc='upper right', prop={'family': 'monospace'})
+  fig = plt.gcf()
+  # if showlegend is not None and states is not None:
+  #   patches = [mpatches.Patch(color='black', label='All')]
+  #   for i, c in enumerate(stcolor):
+  #     patches.append(mpatches.Patch(color=c, label='State %d'%i))
+  #   legend = plt.legend(handles=patches, loc='center right', bbox_to_anchor=showlegend)
+  # else:
+  #   legend = None
+
+  if show_yaxis:
+    start, end = ax.get_ylim()
+    ax.yaxis.set_ticks([start, (start+end)/2, end-.01])
+    ax.set_yticklabels([0., 0.5, 1.0])
+  else:
+    plt.yticks([])
+
+  graph_axis(kwargs)
+  graph_figure(kwargs)
   graph_args(kwargs)
+
+
+def kdistr_legend(stcolor, figsize=(.15,.25)):
+  prep_graph()
+  patches = [mpatches.Patch(color='black', label='All')]
+  for i, c in enumerate(stcolor):
+    patches.append(mpatches.Patch(color=c, label='State %d'%i))
+  legend = plt.legend(handles=patches, loc='center', labelspacing=.5)
+  kwargs = {'xticks':[], 'yticks':[], 'figsize':figsize, 'fname':'kdis_legend', 'latex':True}
+  ax = plt.gca()
+  ax.axis('off')
+  graph_axis(kwargs)
+  graph_figure(kwargs, legend)
+  graph_args(kwargs, legend = legend)
 
 
 def manylines(linelist, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
@@ -644,11 +812,14 @@ def elas_graph (series, title, size=10, xlabel=None, xlim=None, ylim=None, label
   plt.savefig(SAVELOC + '/' + title + '.png')
   plt.close()
 
-###### BAR PLOTS
+
+
+##################################################
+###### BAR GRAPHS
 def bargraph(data, title, label=None):
+  ''' Scratch bar plot (designed to be editted for ad-hoc plotting)'''
   colors = ['r','g','b','m','k']
-  plt.cla()
-  plt.clf()
+  prep_graph()
   nbars = len(data[0])
   # bw = 1. / nbars
   bw = 1
@@ -663,20 +834,148 @@ def bargraph(data, title, label=None):
   plt.bar(X, data[0], .4, color=colors[0], label=label[0])
   plt.bar(X+.4, data[1], .4, color=colors[1], label=label[1])
 
-  ax.set_xlim(0, nbars)
-  ax.set_ylim(0, 1.)
-  plt.legend()
-  fig.suptitle('Sampling Distribution for bin (%s): Biased vs Reweight' % title)
   fig.set_size_inches(16,6)
-  plt.tight_layout()
-  plt.savefig(SAVELOC + '/bar_' + title + '.png')
-  plt.close()  
-  plt.show()
+  kwargs['xlim'] = (0, nbars)
+  kwargs['ylim'] = (0, 1.)
+  graph_axis(kwargs)
+  graph_args(kwargs)
 
-def stackhisto(data, **kwargs):
-  """
-   Assumes a dict of labels to a list of ints representing counts
-  """
+def multibar(data, serieslabels=None, grouplabels=None, grouplines=True, **kwargs):
+  """ data = dict mapping labels => list of values. Each is a series OR
+      list of list of data values 
+      serieslabels: keys for each set of bars (1 per group). can be used to
+      ensure data is listed in a specified order
+      grouplabels: labels to on x-axis under bar groups"""
+  if isinstance(data, list) or isinstance(data, np.ndarray):
+    seriesList = data
+    if serieslabels is None:
+      labelList = ['Series %d' % (i+1) for i in range(len(seriesList))]
+    else:
+      labelList = serieslabels 
+  elif isinstance(data, dict):
+    labelList = sorted(data.keys()) if serieslabels is None else serieslabels
+    try:
+      seriesList = [data[key] for key in labelList]
+    except KeyError as err:
+      print('ERROR. Provided Series Label list does not contain all data keys')
+      raise
+  else:
+    print("Series must be either a list of lists or a mapping to lists")
+    return
+
+  prep_graph()
+  N = len(seriesList)
+  G = len(seriesList[0])
+  print(N, G, labelList)
+  bar_pad   = 0
+  group_pad = .8
+  colorList = kwargs['colors'] if 'colors' in kwargs else getColorList(N)
+
+  for i, Y, L, C in zip(range(G), seriesList, labelList, colorList):
+    offset = 0 #X + (pad/2.)
+    X = np.arange(G) * (N+group_pad) + i + group_pad/2.
+    print(X)
+    plt.bar(X, Y, 1, color=C, label=L, lw=0)
+
+  if grouplabels is not None:
+    X = np.arange(G) * (N+group_pad) + (.5 * G) + group_pad/2.
+    plt.xticks(X, grouplabels)
+
+  if grouplines:
+    for V in np.arange(G) * (N+group_pad):
+      plt.axvline(V, color='grey', linestyle=':')
+
+  xmax = (1+bar_pad)*N*G + G*group_pad
+  kwargs['xlim'] = (0, (1+bar_pad)*N*G + G*group_pad)
+  legend = plt.legend(ncol=2)
+  # legend.get_frame().set_alpha(1.0)
+
+  for v in [50,100,150,200]:
+    plt.axhline(v, color='lightgrey', lw=1, zorder=-1)
+
+
+  fig  =plt.gcf()
+  ax = plt.gca()
+  for tic in ax.xaxis.get_major_ticks():
+    tic.tick1On = tic.tick2On = False  
+
+  graph_figure(kwargs)
+  graph_axis(kwargs)
+  graph_args(kwargs)
+
+def stackbar(data, serieslabels, grouplabels=None, **kwargs):
+  """ data = dict mapping labels => list of values """
+  prep_graph()
+  N = len(serieslabels)
+  bar_pad = .1
+  X = np.arange(N) * (1+bar_pad) + (.5 * bar_pad)
+  Y0 = np.zeros(N)
+  colorList = kwargs['colors'] if 'colors' in kwargs else getColorList(len(data))
+  
+  dataLabels = data.keys() if grouplabels is None else grouplabels
+
+  for C, S in zip(colorList, dataLabels):
+    Y = data[S]
+    print('STACK DATA:', S, C, Y)
+    plt.bar(X, Y, bottom=Y0, color=C, lw=0, label=S)
+    Y0 += Y
+
+  plt.xticks(X+.5, serieslabels)
+  kwargs['xlim'] = (0, (1+bar_pad)*N + .5*bar_pad)
+
+  # legend = plt.legend()
+  ax = plt.gca()
+  for tic in ax.xaxis.get_major_ticks():
+    tic.tick1On = tic.tick2On = False  
+  for tic in ax.yaxis.get_major_ticks():
+    tic.tick1On = tic.tick2On = False  
+  graph_axis(kwargs)
+  graph_figure(kwargs)
+  graph_args(kwargs)
+
+def bargraph_simple(data, err=None, revsort=False, labels=None, vert=False, **kwargs):
+  ''' Single set of verticle bars'''
+  prep_graph()
+  fig, ax = plt.subplots()
+  if isinstance(data, list):
+    Y = data
+    if err is not None:
+      error = err
+    labelList = labels
+  elif isinstance(data, dict):
+    if labels is None:
+      labelList = sorted(data.keys(), reverse=revsort)
+    else:
+      labelList = labels
+    Y = [data[i] for i in labelList]
+    if err is not None:
+      error = [err[i] for i in labelList]
+  X = np.arange(len(Y))
+  print(X, Y)
+
+  colorList = kwargs['colors'] if 'colors' in kwargs else ['b']*len(Y)
+
+  if err is None:
+    plt.bar(X, Y, color=colorList, lw=0)
+  else:
+    plt.bar(X, Y, color=colorList, lw=0, yerr=error, error_kw=dict(ecolor='red'))
+  # plt.legend()
+  # rotate = 'vertical' if vert else 'horizontal'
+  # if labelList is not None:
+  #     plt.xticks(X+.5, labelList, rotation=rotate)
+  # vmax = 1. if np.max(Y) <= 1. else np.max(Y)
+  if 'ylim' not in kwargs:
+    vmax = np.max(Y)
+    if err is not None:
+      vmax += np.max(error)
+    kwargs['ylim'] = (0, vmax)
+  # plt.tight_layout()
+  graph_axis(kwargs)
+  graph_figure(kwargs)
+  graph_args(kwargs)
+
+def stackbar_simple(data, **kwargs):
+  """ data = dict mapping labels => list of values """
   prep_graph()
   X = 0
   for k, v in sorted(data.items()):
@@ -690,39 +989,18 @@ def stackhisto(data, **kwargs):
   state_legend()
   graph_args(kwargs)
 
-def bargraph_simple(data, err=None, revsort=False, **kwargs):
-  prep_graph()
-  fig, ax = plt.subplots()
-  labels = None
-  if isinstance(data, list):
-    Y = data
-    if err is not None:
-      error = err
-  elif isinstance(data, dict):
-    labels = sorted(data.keys(), reverse=revsort)
-    Y = [data[i] for i in labels]
-    if err is not None:
-      error = [err[i] for i in labels]
-  X = np.arange(len(Y))
-  if err is None:
-    plt.bar(X, Y)
-  else:
-    plt.bar(X, Y, yerr=error, error_kw=dict(ecolor='red'))
-  plt.legend()
-  if labels is not None:
-      plt.xticks(X+.5, labels, rotation='vertical')
-  # vmax = 1. if np.max(Y) <= 1. else np.max(Y)
-  if 'title' not in kwargs:
-    kwargs['title'] = 'bargraph'
 
-  if 'ylim' not in kwargs:
-    vmax = np.max(Y)
-    if err is not None:
-      vmax += np.max(error)
-    kwargs['ylim'] = (0, vmax)
-  # plt.tight_layout()
-  graph_axis(ax, kwargs)
-  graph_args(kwargs)
+def cost_legend(L, C, figsize=(4.81,.1)):
+  prep_graph()
+  patches = [mpatches.Patch(color=c, label=l) for c,l in zip(C,L)]
+  legend = plt.legend(handles=patches, loc='center', labelspacing=1, ncol=6)
+  kwargs = {'xticks':[], 'yticks':[], 'figsize':figsize, 'fname':'cost_legend', 'latex':True}
+  ax = plt.gca()
+  ax.axis('off')
+  graph_axis(kwargs)
+  graph_figure(kwargs, legend)
+  graph_args(kwargs, legend = legend)
+
 
 def feadist(data, title, fname=None, err=None, pcount=None, norm=1, negval=False):
   plt.cla()
@@ -818,13 +1096,194 @@ def histogram(data, title, ylim=None):
   plt.savefig(SAVELOC + '/histogram' + '.png')
   plt.close()  
 
-
 def histo_simple(data, bins=20, **kwargs):
   prep_graph()
   plt.hist(data, bins=bins)
   graph_args(kwargs)
 
 
+
+##################################################
+###### HEAT Map
+cdict = {
+         'red':   ((0.0,  1.0, 1.0),
+                   (0.5,  1.0, 1.0),
+                   (1.0,  0.0, 0.0)),
+
+         'green': ((0.0,  1.0, 1.0),
+                   (0.25, 1.0, 1.0),
+                   (0.75, 1.0, 1.0),
+                   (1.0,  0.0, 0.0)),
+
+         'blue':  ((0.0,  1.0, 1.0),
+                   (0.5,  1.0, 1.0),
+                   (1.0,  0.0, 0.0))}
+mycmap = LinearSegmentedColormap('mycmap', cdict)
+plt.register_cmap(cmap=mycmap)
+
+
+def heatmap(data, cols, rows, colmap='gnuplot2_r', showlegend=True, vmax=None, **kwargs):
+  prep_graph()
+  fig, ax = plt.subplots()
+  # heatmap = ax.matshow(data, interpolation='nearest')
+  # fig.colorbar(heatmap)
+  # heatmap = ax.pcolor(data, cmap='YlGnBu', vmin=0, vmax=300)
+  # heatmap = ax.pcolormesh(data, cmap='OrRd')
+
+  heatmap = ax.pcolormesh(data, cmap=colmap)
+  # if showlegend:
+  #   fig.colorbar(heatmap)
+
+  # # put the major ticks at the middle of each cell
+  # ax.set_xticks(np.arange(len(rows))+.5)
+  # ax.set_yticks(np.arange(len(cols))+.5)
+  vmin = 0
+  if vmax is None:
+    vmax = 1. if np.max(data) <= 1. else np.max(data)
+
+  # rotate = 'vertical' if max(cols, key=lambda x: len(x)) > 3 else 'horizontal'      
+  # ax.set_xticklabels(rows)
+  # ax.set_yticklabels(cols)
+  kwargs['xlim'] = (0, len(rows))
+  kwargs['ylim'] = (0, len(cols))
+  # if 'xlabel' not in kwargs:
+  #   kwargs['xlabel'] = "SOURCE"
+
+  # if 'ylabel' not in kwargs:
+  #   kwargs['ylabel'] = "DESTINATION"
+
+  kwargs['no_xtick'] = kwargs['no_ytick'] = True
+
+  # fig.suptitle('Heatmap: '+title)
+  # fig.set_size_inches(16,12)
+  # plt.tight_layout()
+  graph_figure(kwargs)
+  graph_axis(kwargs)
+  graph_args(kwargs)
+
+def heatmap_simple(data, title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, vlines=[], colmap='gnuplot2_r'):
+  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  vmin = min(0, np.min(data))
+  if vmax is None:
+    vmax = np.max(data)
+
+  # heatmap = ax.matshow(data, interpolation='nearest')
+  # fig.colorbar(heatmap)
+  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
+  # heatmap = ax.pcolormesh(data, cmap='OrRd')
+  # heatmap = ax.pcolormesh(data, cmap=colmap)
+  fig.colorbar(heatmap)
+
+  # Lcolor = ['k', 'grey', 'r', 'g', 'b']
+  # if labels is None:
+  #   print("LABEL MARKGIN IS ON")
+  #   return
+  # for i, L in enumerate(labels):
+  #   plt.scatter(i, 118, color=Lcolor[L], size=2)
+
+  for v in vlines:
+    plt.axvline(v, color='k', linewidth=1)
+    plt.axhline(v, color='k', linewidth=1)
+     
+  if xlabel is not None:
+    plt.xlabel(xlabel)
+
+  if xlabel is not None:
+    plt.ylabel(ylabel)
+
+  ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*nsscale))
+  ax.xaxis.set_major_formatter(ticks)
+  ax.yaxis.set_major_formatter(ticks)
+
+  fig.suptitle('Heatmap: '+title)
+  # fig.set_size_inches(16,12)
+  plt.tight_layout()
+  if fname is None:
+    fname = title
+  plt.savefig(SAVELOC + '/heatmap_' + fname + '.png')
+  plt.close()  
+  plt.show()
+
+def rmsd_matrix(data, labels, title, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
+  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  vmin = min(0, np.min(data))
+  if vmax is None:
+    vmax = np.max(data)
+
+  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
+  fig.colorbar(heatmap)
+
+  offset = len(data)/5
+
+  for x, y in enumerate(labels):
+    plt.scatter(x, offset*y+(offset/2), color='k')
+
+  for i in range(5):
+    plt.annotate('State %d' % i, xy=(10, 10+(offset/2)+offset*i))
+
+
+  if xlabel is not None:    plt.xlabel(xlabel)
+  if xlabel is not None:    plt.ylabel(ylabel)
+
+  plt.xlim(0, len(data))
+  plt.ylim(0, len(data))
+
+  ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*nsscale))
+  ax.xaxis.set_major_formatter(ticks)
+  ax.yaxis.set_major_formatter(ticks)
+
+  fig.suptitle('DEShaw: '+title)
+  # fig.set_size_inches(16,12)
+  plt.tight_layout()
+  if fname is None:
+    fname = title
+  plt.savefig(SAVELOC + '/heatmap_' + fname + '.png')
+  plt.close()  
+  plt.show()
+
+def heatmap_board(data, colmap='gnuplot2_r', vmax=None, **kwargs): # title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, vlines=[], ):
+  prep_graph()
+  fig, ax = plt.subplots()
+  vmin = min(0, np.min(data))
+  if vmax is None:
+    vmax = np.max(data)
+
+  # heatmap = ax.matshow(data, interpolation='nearest', cmap=colmap)
+  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
+  fig.colorbar(heatmap)
+
+  plt.xticks(range(len(data)))
+  plt.yticks(range(len(data)))
+
+  plt.tight_layout()
+  graph_args(kwargs)
+
+def heatmap_bar(data, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
+  rows = [5, 10, 25, 50, 75, 100, 200]
+  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
+  plt.cla()
+  plt.clf()
+  fig, ax = plt.subplots()
+  heatmap = ax.pcolormesh(np.asarray(data), cmap=colmap, vmax=vmax)
+  fig.colorbar(heatmap)
+  ax.set_yticklabels(rows)
+  ax.set_yticks(np.arange(len(rows))+.5)
+  fig.set_size_inches(16,2)
+  plt.tight_layout()
+  plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
+  plt.close()  
+  plt.show()
+
+
+
+
+##################################################
 ##### PIE CHARTS
 def pie(data, title):
   labelList = data.keys()
@@ -835,7 +1294,6 @@ def pie(data, title):
   plt.title(title)
   plt.savefig(SAVELOC + '/pie_' + title + '.png')
   plt.close()
-
 
 def stateviz(data, title):
   labelList = [0,1,2,3,6]
@@ -850,6 +1308,7 @@ def stateviz(data, title):
   plt.close()
 
 
+##################################################
 #### LATTICE
 ascii_greek = ''.join([chr(i) for i in itertools.chain(range(915,930), range(931, 938), range(945, 969))])
 label_domain = string.ascii_lowercase + string.ascii_uppercase + ascii_greek
@@ -1153,8 +1612,6 @@ def show_dlattice(L, Isize, U={}, theta=.05, clusters=[], **kwargs):
   kwargs.update(dict(xlim=(0,max_x), ylim=(0,K+.25)))
   graph_args(kwargs)
 
-
-
 def lattice_path_dist(linelist, step=1, **kwargs): #title, xlim=None, labelList=None, step=1, xlabel=None):
   prep_graph()
   selfs = []
@@ -1279,192 +1736,6 @@ def bipartite(nodeA, nodeB, edges, sizeA=None, sizeB=None, title='bipartite'):
 #   elist.append((a, b, c))
 
 
-
-###### HEAT Map
-cdict = {
-         'red':   ((0.0,  1.0, 1.0),
-                   (0.5,  1.0, 1.0),
-                   (1.0,  0.0, 0.0)),
-
-         'green': ((0.0,  1.0, 1.0),
-                   (0.25, 1.0, 1.0),
-                   (0.75, 1.0, 1.0),
-                   (1.0,  0.0, 0.0)),
-
-         'blue':  ((0.0,  1.0, 1.0),
-                   (0.5,  1.0, 1.0),
-                   (1.0,  0.0, 0.0))}
-mycmap = LinearSegmentedColormap('mycmap', cdict)
-plt.register_cmap(cmap=mycmap)
-
-
-def heatmap(data, cols, rows, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
-  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
-  plt.cla()
-  plt.clf()
-  fig, ax = plt.subplots()
-  # heatmap = ax.matshow(data, interpolation='nearest')
-  # fig.colorbar(heatmap)
-  # heatmap = ax.pcolor(data, cmap='YlGnBu', vmin=0, vmax=300)
-  # heatmap = ax.pcolormesh(data, cmap='OrRd')
-  heatmap = ax.pcolormesh(data, cmap=colmap)
-  fig.colorbar(heatmap)
-
-  # # put the major ticks at the middle of each cell
-  ax.set_xticks(np.arange(len(rows))+.5)
-  ax.set_yticks(np.arange(len(cols))+.5)
-  vmin = 0
-  if vmax is None:
-    vmax = 1. if np.max(data) <= 1. else np.max(data)
-      
-  ax.set_xticklabels(rows, rotation='vertical', fontsize=8)
-  ax.set_yticklabels(cols, fontsize=8)
-  ax.set_xlim(0, len(rows))
-  ax.set_ylim(0, len(cols))
-  if xlabel is None:
-    plt.xlabel("SOURCE")
-  else:
-    plt.xlabel(xlabel)
-
-  if xlabel is None:
-    plt.ylabel("DESTINATION")
-  else:
-    plt.ylabel(ylabel)
-
-  fig.suptitle('Heatmap: '+title)
-  fig.set_size_inches(16,12)
-  plt.tight_layout()
-  plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
-  plt.close()  
-  plt.show()
-
-def heatmap_simple(data, title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, vlines=[], colmap='gnuplot2_r'):
-  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
-  plt.cla()
-  plt.clf()
-  fig, ax = plt.subplots()
-  vmin = min(0, np.min(data))
-  if vmax is None:
-    vmax = np.max(data)
-
-  # heatmap = ax.matshow(data, interpolation='nearest')
-  # fig.colorbar(heatmap)
-  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
-  # heatmap = ax.pcolormesh(data, cmap='OrRd')
-  # heatmap = ax.pcolormesh(data, cmap=colmap)
-  fig.colorbar(heatmap)
-
-  # Lcolor = ['k', 'grey', 'r', 'g', 'b']
-  # if labels is None:
-  #   print("LABEL MARKGIN IS ON")
-  #   return
-  # for i, L in enumerate(labels):
-  #   plt.scatter(i, 118, color=Lcolor[L], size=2)
-
-  for v in vlines:
-    plt.axvline(v, color='k', linewidth=1)
-    plt.axhline(v, color='k', linewidth=1)
-     
-  if xlabel is not None:
-    plt.xlabel(xlabel)
-
-  if xlabel is not None:
-    plt.ylabel(ylabel)
-
-  ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*nsscale))
-  ax.xaxis.set_major_formatter(ticks)
-  ax.yaxis.set_major_formatter(ticks)
-
-  fig.suptitle('Heatmap: '+title)
-  # fig.set_size_inches(16,12)
-  plt.tight_layout()
-  if fname is None:
-    fname = title
-  plt.savefig(SAVELOC + '/heatmap_' + fname + '.png')
-  plt.close()  
-  plt.show()
-
-
-def rmsd_matrix(data, labels, title, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
-  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
-  plt.cla()
-  plt.clf()
-  fig, ax = plt.subplots()
-  vmin = min(0, np.min(data))
-  if vmax is None:
-    vmax = np.max(data)
-
-  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
-  fig.colorbar(heatmap)
-
-  offset = len(data)/5
-
-  for x, y in enumerate(labels):
-    plt.scatter(x, offset*y+(offset/2), color='k')
-
-  for i in range(5):
-    plt.annotate('State %d' % i, xy=(10, 10+(offset/2)+offset*i))
-
-
-  if xlabel is not None:    plt.xlabel(xlabel)
-  if xlabel is not None:    plt.ylabel(ylabel)
-
-  plt.xlim(0, len(data))
-  plt.ylim(0, len(data))
-
-  ticks = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x*nsscale))
-  ax.xaxis.set_major_formatter(ticks)
-  ax.yaxis.set_major_formatter(ticks)
-
-  fig.suptitle('DEShaw: '+title)
-  # fig.set_size_inches(16,12)
-  plt.tight_layout()
-  if fname is None:
-    fname = title
-  plt.savefig(SAVELOC + '/heatmap_' + fname + '.png')
-  plt.close()  
-  plt.show()
-
-
-
-
-def heatmap_board(data, colmap='gnuplot2_r', vmax=None, **kwargs): # title, labels=None, fname=None, nsscale=1, vmax=None, xlabel=None, ylabel=None, vlines=[], ):
-  prep_graph()
-  fig, ax = plt.subplots()
-  vmin = min(0, np.min(data))
-  if vmax is None:
-    vmax = np.max(data)
-
-  # heatmap = ax.matshow(data, interpolation='nearest', cmap=colmap)
-  heatmap = ax.pcolor(data, cmap=colmap, vmin=vmin, vmax=vmax)
-  fig.colorbar(heatmap)
-
-  plt.xticks(range(len(data)))
-  plt.yticks(range(len(data)))
-
-  plt.tight_layout()
-  graph_args(kwargs)
-
-
-
-def heatmap_bar(data, title, vmax=None, xlabel=None, ylabel=None, colmap='gnuplot2_r'):
-  rows = [5, 10, 25, 50, 75, 100, 200]
-  SAVELOC = os.path.join(os.getenv('HOME'), 'ddc', 'graph')
-  plt.cla()
-  plt.clf()
-  fig, ax = plt.subplots()
-  heatmap = ax.pcolormesh(np.asarray(data), cmap=colmap, vmax=vmax)
-  fig.colorbar(heatmap)
-  ax.set_yticklabels(rows)
-  ax.set_yticks(np.arange(len(rows))+.5)
-  fig.set_size_inches(16,2)
-  plt.tight_layout()
-  plt.savefig(SAVELOC + '/heatmap_' + title + '.png')
-  plt.close()  
-  plt.show()
-
-
-
 ##### GANTT CHART DISPLAY
 def gantt():
   # print("ROWS:", rows)
@@ -1579,3 +1850,24 @@ def printtiming(bench):
     if len(totals[k]) > 0:
       print ('%-22s  %6.2f' % (k, np.mean(totals[k])))
 
+
+
+
+# class Arrow3D(FancyArrowPatch):
+#   """
+#    re: http://stackoverflow.com/questions/22867620/putting-arrowheads-on-vectors-in-matplotlibs-3d-plot
+#   """
+#   def __init__(self, xs, ys, zs, *args, **kwargs):
+#       FancyArrowPatch.__init__(self, (0,0), (0,0), *args, **kwargs)
+#       self._verts3d = xs, ys, zs
+
+#   def draw(self, renderer):
+#       xs3d, ys3d, zs3d = self._verts3d
+#       xs, ys, zs = proj3d.proj_transform(xs3d, ys3d, zs3d, renderer.M)
+#       self.set_positions((xs[0],ys[0]),(xs[1],ys[1]))
+#       FancyArrowPatch.draw(self, renderer)
+
+
+  # for n in node['edges']:
+  #   x1, y1 = nodeList[n]['x'], nodeList[n]['y']
+  #   plt.plot((x0, x1), (y0, y1), linewidth=1, color='k')

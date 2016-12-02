@@ -102,7 +102,7 @@ class simulationJob(macrothread):
     # self.slurmParams['share'] = None
 
     self.slurmParams['cpus-per-task'] = PARALLELISM
-    # self.slurmParams['time'] = '2:00:0'
+    # self.slurmParams['time'] = '4-0:00:0'
 
     self.skip_simulation = False
     self.skip_timescape = False

@@ -264,6 +264,7 @@ class controlJob(macrothread):
         local_basins[global_basin_index]['label:25'] = label25 = bin_label_25(label_seq)
         bin_list_10[label10].append(global_basin_index)
         bin_list_25[label25].append(global_basin_index)
+        self.data['basin:processed'] += 1
 
 
       if len(new_basin_list) > 0 and len(prev_ds_raw) > 0:
@@ -319,7 +320,7 @@ class controlJob(macrothread):
         for i, b in enumerate(bin_list_10):
           if len(b) == 0:
             idx = 0
-          else:
+          else: 
             idx = np.floor(explore_factor * (len(b) - 1))
           samplecount[i] = idx
 
@@ -624,6 +625,7 @@ class controlJob(macrothread):
           pipe.rpush('bin:10:%s' % basin['label:10'], basin_idx)
           pipe.rpush('bin:25:%d_%d' % basin['label:25'], basin_idx)
           pipe.execute()
+      self.catalog.set('basin:processed', num_prev_basins + len(local_basins))
 
       # Clear current queue, mark previously queues jobs for GC, push new queue
       qlen = self.catalog.llen('jcqueue')

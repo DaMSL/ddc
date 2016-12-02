@@ -6,8 +6,89 @@ import datatools.lattice as lat
 import datatools.datareduce as DR
 import mdtools.timescape as TS
 
-TBIN10 = ['%s%d'%(a,b) for a in ['W', 'T'] for b in range(5)]
-# ['W0', 'W1', 'W2', 'W3', 'W4', 'T0', 'T1', 'T2', 'T3', 'T4']
+
+# TBIN10 = ['%s%d'%(a,b) for a in ['W', 'T'] for b in range(5)]
+TBIN10 = ['W0', 'T0', 'W1', 'T1', 'W2', 'T2', 'W3', 'T3', 'W4', 'T4']
+BIN5 = ['State-%d'%i for i in range(5)]
+BIN5 = ['%d'%i for i in range(5)]
+tidx = {k: i for i, k in enumerate(TBIN10)}
+
+def LABEL10(L, theta=0.9):
+  count = np.bincount(L, minlength=5)
+  A, A2 = np.argsort(count)[::-1][:2]
+  A_amt = count[A] / len(L)
+  return 'T%d' % A if A_amt < theta or (L[0] != L[-1]) else 'W%d' % A
+
+
+
+
+#  SCRAPE LABEL LOG FILE
+for expname in ['biased6', 'uniform6']:
+  data = []
+  with open('../results/{0}_prov.log'.format(expname)) as provfile:
+    for line in provfile.read().strip().split('\n'):
+      if line.startswith('BASIN'):
+        _,bid,targ,actual,labelseq = line.split(',')
+        data.append((bid,targ,actual,labelseq))
+  h, w, t = np.identity(10), np.identity(5), np.identity(5)
+  for _,a,b,_ in data:
+    i, j = tidx[a], tidx[b]
+    h[i][j] += 1
+    w[int(a[1])][int(b[1])] += 1
+    if a[0] == 'T':
+      t[int(a[1])][int(b[1])] += 1
+  h_norm = (h.T/h.sum()).T
+  w_norm = (w.T/w.sum()).T
+  t_norm = (t.T/t.sum()).T
+  # P.heatmap(np.rot90(h_norm,3).T, TBIN10[::-1], TBIN10, expname+'_accuracy_10bin', ylabel='Start State', xlabel='Output Distribution')
+  P.heatmap(np.rot90(w_norm,3).T, BIN5[::-1], BIN5, fname=expname+'_acc_states', ylabel='Start State', xlabel='Output Distribution', latex=True)
+  # P.heatmap(np.rot90(t_norm,3).T, BIN5[::-1], BIN5, fname=expname+'_acc_trans', ylabel='Start State', xlabel='Output Distribution')
+
+
+outbin = {k:defaultdict(list) for k in ['all', 'W', 'T']}
+exp = 'lattice2'
+h, w, t = np.identity(10), np.identity(5), np.identity(5)
+for exp in ['lattice2', 'lattrans']:
+  lab_all = np.load(home+'/work/results/label_{0}.npy'.format(exp)).astype(int)
+  with open(home+'/work/results/{0}/jclist'.format(exp)) as inf: 
+    idlist = inf.read().strip().split('\n')
+  for i, tid in enumerate(idlist):
+    for a,b in TS.TimeScape.windows(home+'/work/jc/{0}/{1}/{1}_transitions.log'.format(exp,tid)):
+      outbin['all'][tid].append(LABEL10(lab_all[i][a:b]))
+      if exp=='lattice2': 
+        outbin['W'][tid].append(LABEL10(lab_all[i][a:b]))
+      else:
+        outbin['T'][tid].append(LABEL10(lab_all[i][a:b]))
+
+for k,v in outbin['all'].items():
+  a = v[0]
+  for b in v:
+    i, j = tidx[a], tidx[b]
+    h[i][j] += 1
+
+for k,v in outbin['W'].items():
+  a = v[0]
+  for b in v:
+    i, j = tidx[a], tidx[b]
+    w[int(a[1])][int(b[1])] += 1
+
+for k,v in outbin['T'].items():
+  a = v[0]
+  for b in v:
+    i, j = tidx[a], tidx[b]
+    t[int(a[1])][int(b[1])] += 1
+
+expname='lattice'
+h_norm = (h.T/h.sum()).T
+w_norm = (w.T/w.sum()).T
+t_norm = (t.T/t.sum()).T
+# P.heatmap(np.rot90(h_norm,3).T, TBIN10[::-1], TBIN10, expname+'_accuracy_10bin', ylabel='Start State', xlabel='Output Distribution')
+P.heatmap(np.rot90(w_norm,3).T, BIN5[::-1], BIN5, fname=expname+'_acc_states', ylabel='Start State', xlabel='Output Distribution', latex=True)
+P.heatmap(np.rot90(t_norm,3).T, BIN5[::-1], BIN5, fname=expname+'_accuracy_trans', ylabel='Start State', xlabel='Output Distribution')
+
+
+
+
 
 def LABEL10(L, theta=0.75):
   count = np.bincount(L, minlength=5)
