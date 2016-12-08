@@ -61,9 +61,9 @@ fsize = (.2*TEXT_WIDTH, .2*TEXT_WIDTH)
 tex_param = {"axes.labelsize": fsz, "font.size": fsz,     "xtick.labelsize": fsz,   "ytick.labelsize": fsz}
 imp.reload(P)
 P.bargraph_simple(histdata, labels=EXP_N, fname='tran_hist', no_ytick=True, no_xtick=True, ygrid=True,\
-  colors=EXP_COLORS, figsize=fsize, latex=True)
+  colors=EXP_COLORS, figsize=fsize, yticks=[0,15,30,45,60], latex=True)
 P.bargraph_simple(denovo, labels=EXP_N, fname='tran_denovo', no_ytick=True, no_xtick=True, ygrid=True,\
-  colors=EXP_COLORS, figsize=fsize, latex=True)
+  colors=EXP_COLORS, figsize=fsize, yticks=[0,10,20,30,40], latex=True)
 
 
 
@@ -383,15 +383,15 @@ xticks = [4,5,6,7,8,9,10]
 fsize = (.4*TEXT_WIDTH, .30*TEXT_WIDTH)
 fsize_a = (.45*TEXT_WIDTH, .30*TEXT_WIDTH)
 DOLATEX=True
-
+max_a, max_b = 1.2*np.max(list(kdistr['q'].values())), 1.2*np.max(list(kdistr['p'].values()))
 imp.reload(P)
 P.kdistr_legend(STATE_COLORS, (.15*TEXT_WIDTH, .3*TEXT_WIDTH))
 P.show_distr(kdistr['q'], xscale=(4,10), show_yaxis=True, colors=STATE_COLORS, figsize=fsize_a,\
-    xlabel='Measurement (angstrom)', ylabel='Frequency', fname='distr_a', xticks=xticks, 
-    no_xtick=True, no_ytick=True, xlim=(0,42), (ylim=(0,1),latex=DOLATEX)
+    xlabel='Measurement (Angstrom)', ylabel='Frequency', fname='distr_a', xticks=xticks, 
+    no_xtick=True, no_ytick=True, xlim=(0,42), ylim=(0,max_a),latex=DOLATEX)
 P.show_distr(kdistr['p'], xscale=(4,10), show_yaxis=False, colors=STATE_COLORS, figsize=fsize,\
-    xlabel='Measurement (angstrom)', fname='distr_b', xticks=xticks, no_ytick=True, no_xtick=True,
-    xlim=(0,42), ylim=(0,1), latex=DOLATEX)
+    xlabel='Measurement (Angstrom)', fname='distr_b', xticks=xticks, no_ytick=True, no_xtick=True,
+    xlim=(0,42), ylim=(0,max_b), latex=DOLATEX)
 
 
 P.show_distr(kdistr['m'], xscale=(4,10), showlegend=None, show_yaxis=False, states=stlist, figsize=fsize,\

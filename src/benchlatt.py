@@ -68,6 +68,10 @@ for i in range(42):
 dL = [delabel[a:b] for a,b in DW]
 DE_LABEL = [LABEL10(i,.9) for i in dL]
 
+# mfis, lfis = lat.maxminer(CMr, support)
+# dlat5000, iset5000 = lat.derived_lattice(mfis, Dr, CMr)
+
+
 logging.info('Loading Lattice')
 iset    = pickle.load(open(home + '/work/latt_intrinsics/iset_%d.p' % support, 'rb')); len(iset)
 dlat    = pickle.load(open(home + '/work/latt_intrinsics/dlat_%d.p' % support, 'rb')); len(dlat)
