@@ -175,14 +175,14 @@ P.lines({k: v[:xmax] for k,v in X.items()}, showlegend=False, labels=EXP_NAMES[:
 fsize = (.5*TEXT_WIDTH, .4*TEXT_WIDTH)
 
 imp.reload(P)
-C = pickle.load(open('c_wc', 'rb'))
-V = pickle.load(open('v_wc', 'rb'))
+C = pickle.load(open('../results/c_wc', 'rb'))
+V = pickle.load(open('../results/v_wc', 'rb'))
 P.lines(V, C, False, labels=EXP_NAMES[::-1], lw=3, fname='tradeoff_wc', ylabel='VALUE: Frequency (in ns)', figsize=fsize,\
   yticks=[0, 0,50,100,150,200,250], xlabel='COST: Time (in hours)', xlim=(0,10), \
   no_xtick=True, no_ytick=True, ylim=(-10000,250000), colors = EXP_COLORS[::-1], latex=True)
 
-C = pickle.load(open('c_cpu', 'rb'))
-V = pickle.load(open('v_cpu', 'rb'))
+C = pickle.load(open('../results/c_cpu', 'rb'))
+V = pickle.load(open('../results/v_cpu', 'rb'))
 P.lines(V, C, True, labels=EXP_NAMES[::-1], lw=3, fname='tradeoff_cpu', ylabel='VALUE: Frequency (in ns)', figsize=fsize,\
   yticks=[0, 0,50,100,150,200,250], xlabel='COST: Monetary (CPU Hours)', xlim=(0,180),
   no_xtick=True, no_ytick=True, ylim=(-10000,250000), colors = EXP_COLORS[::-1], latex=True)
@@ -377,7 +377,7 @@ for a,b,c in data: print(a,b/baseT,c/baseT)
 #  see:  cluster_de.py for full data creation
 import pickle
 
-kdistr = pickle.load(open('kdistr', 'rb'))
+kdistr = pickle.load(open('../results/kdistr', 'rb'))
 stlist = {str(i):i for i in range(5)}
 xticks = [4,5,6,7,8,9,10]
 fsize = (.4*TEXT_WIDTH, .30*TEXT_WIDTH)

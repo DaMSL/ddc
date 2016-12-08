@@ -1,0 +1,144 @@
+#############################################################
+## JOB DESCRIPTION                                         ##
+#############################################################
+
+# BPTI w/Explicit Solvent based directly from D.E. Shaw research
+
+
+#############################################################
+## ADJUSTABLE PARAMETERS                                   ##
+#############################################################
+structure          %(psf)s
+coordinates        %(pdb)s
+cwd                %(workdir)s
+
+set temperature    %(temperature)s
+set outputname     %(outputloc)s%(name)s
+
+firsttimestep      0
+
+
+#############################################################
+## FORCE FIELD                                             ##
+#############################################################
+paraTypeCharmm     on; 
+parameters          %(ffield_dir)s/tip4p.par
+parameters          %(ffield_dir)s/par_all22_prot.inp
+
+
+
+#############################################################
+## SIMULATION PARAMETERS                                   ##
+#############################################################
+
+# Solvent
+waterModel          tip4
+
+# Force-Field Parameters
+exclude             scaled1-4
+1-4scaling          1.0
+vdwForceSwitching   yes
+cutoff              8.0
+switching           on
+switchdist          7.0
+pairlistdist        10.0
+pairlistsPerCycle    4
+stepspercycle       20
+
+# Integrator Parameters
+timestep            2.5  ;# 2fs/step
+rigidBonds          all  ;# needed for 2fs steps
+nonbondedFreq       1
+fullElectFrequency  2
+wrapWater           on                
+wrapAll             on                
+wrapNearest        off                
+
+# PME (for full-system periodic electrostatics)
+PME                yes
+PMEInterpOrder       6
+PMEGridSizeX        60
+PMEGridSizeY        60
+PMEGridSizeZ        60
+
+cellBasisVector1    52.0   0.   0.  ;# vector to the next image
+cellBasisVector2     0.    52.0 0.
+cellBasisVector3     0.    0    52.0
+cellOrigin           0.    0.   0.  ;# the *center* of the cell
+
+# Constant Pressure Control (variable volume)
+useGroupPressure       yes;            
+useFlexibleCell         no;            
+useConstantRatio        no;            
+langevinPiston          on;            
+langevinPistonTarget  1.01325;         
+langevinPistonPeriod  50.0;            
+langevinPistonDecay   25.0;            
+
+# Constant Temperature Control
+langevin            on    ;# do langevin dynamics
+langevinDamping     1     ;# damping coefficient (gamma) of 1/ps
+langevinHydrogen    off   ;# don't couple langevin bath to hydrogens
+
+
+
+#############################################################
+## OUTPUT PARAMETERS                                       ##
+#############################################################
+outputName          $outputname
+dcdfreq             %(dcdfreq)s 
+dcdUnitCell         yes;
+restartfreq         10000000
+xstFreq             10000000
+outputEnergies      10000000
+outputPressure      10000000
+outputTiming        10000000
+
+
+
+#############################################################
+## EXECUTION SCRIPT                                        ##
+#############################################################
+# Minimization
+
+# Set Contraints
+#constraints     on 
+#consref         %(pdb)s 
+#conskfile       %(pdb)s 
+#conskcol        B 
+#constraintScaling 1.0
+
+# Gradual Heating of the system
+temperature $temperature
+for {set TEMP 50} {$TEMP < $temperature} {incr TEMP 25} {
+langevinTemp        $TEMP
+langevinPistonTemp  $TEMP
+reinitvels          $TEMP
+minimize            100
+}
+
+langevinTemp        $temperature
+langevinPistonTemp  $temperature
+
+# FOR CONSTRAINTS ON BACKBONE ATOMS
+#constraintScaling 0.5 
+#reinitvels          $temperature
+#run                 1000 
+
+#constraintScaling 0.25 
+#reinitvels          $temperature
+#run                 1000 
+
+#constraintScaling 0.1 
+#reinitvels          $temperature
+#run                 1000 
+
+#constraintScaling 0.05 
+#reinitvels          $temperature
+#run                 1000 
+
+#"Removes" the constraints  and execute
+constraintScaling 0 ; 
+reinitvels          $temperature
+run                 %(runtime)s
+
